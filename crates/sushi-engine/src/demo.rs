@@ -8,7 +8,7 @@ use sushi_formats::reader::{cstr, f32_at, u32_at};
 use sushi_formats::shader_header::ShaderHeader;
 use sushi_formats::{anim, object, scene};
 use sushi_shader::wgsl::{self, ElementType};
-use sushi_shader::{Const, ShaderFile, VarKind};
+use sushi_shader::{Const, Constants, ShaderFile, VarKind};
 
 use crate::camera::Camera;
 use crate::gpu::Gpu;
@@ -881,6 +881,8 @@ impl Demo {
                     };
                     let key = (mesh.shader, shader, pass, stream.layout);
                     let Some(id) = self.pipeline(gpu, key) else {
+                        let w = format!("{}: no pipeline for pass {pass}", mesh.name);
+                        self.warnings.insert(w);
                         continue;
                     };
                     let mut slots = [0usize; 40];
@@ -1003,15 +1005,15 @@ fn rows(m: Mat4) -> Vec<[f32; 4]> {
     m.transpose().to_cols_array_2d().to_vec()
 }
 
-fn fill(out: &mut [[f32; 4]], consts: &BTreeMap<u32, Const>, file: &ShaderFile, ctx: &Context) {
-    for (reg, c) in consts {
+fn fill(out: &mut [[f32; 4]], consts: &Constants, file: &ShaderFile, ctx: &Context) {
+    for (reg, c) in consts.iter() {
         let values = match c {
             Const::Literal(v) => vec![*v],
             Const::Builtin(what, _) => builtin(what, ctx).unwrap_or_default(),
             Const::Var(name) => variable(name, file, ctx),
         };
         for (i, v) in values.into_iter().enumerate() {
-            if let Some(o) = out.get_mut(*reg as usize + i) {
+            if let Some(o) = out.get_mut(reg as usize + i) {
                 *o = v;
             }
         }

@@ -1,4 +1,4 @@
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat4, Quat, Vec3, Vec4};
 use sushi_formats::path::FlyPath;
 
 /// Values from `Sushi2.ini`.
@@ -14,20 +14,40 @@ pub struct Camera {
 }
 
 impl Camera {
-    /// Samples the fly path. The engine fits a cubic spline through the 30 Hz
-    /// samples (0x4093e0); this interpolates linearly and does not blend across
-    /// a frame whose flag marks a cut.
+    /// Samples the fly path with a spline through the 30 Hz samples, as the engine
+    /// does (0x4093e0, 0x40a1c0). A flagged sample is the last of its shot: the
+    /// camera holds it until the next shot begins.
     pub fn on_path(path: &FlyPath, time: f32) -> Self {
-        let last = path.frames.len() - 1;
+        let frames = &path.frames;
+        let last = frames.len() - 1;
         let f = (time / path.step).clamp(0.0, last as f32);
-        let i = (f as usize).min(last.saturating_sub(1));
-        let (a, b) = (&path.frames[i], &path.frames[(i + 1).min(last)]);
-        let t = f - i as f32;
-        let t = if b.flag != 0 && t < 1.0 { 0.0 } else { t };
-        let q = |q: [f32; 4]| Quat::from_array(q).normalize();
+        let i = f as usize;
+        let t = if i == last || frames[i].flag != 0 {
+            0.0
+        } else {
+            f - i as f32
+        };
+        // Neighbors beyond a cut repeat the end sample.
+        let before = if i == 0 || frames[i - 1].flag != 0 {
+            i
+        } else {
+            i - 1
+        };
+        let next = if t == 0.0 { i } else { i + 1 };
+        let after = if next == last || frames[next].flag != 0 {
+            next
+        } else {
+            next + 1
+        };
+        let pos = [before, i, next, after].map(|k| Vec3::from(frames[k].pos));
+        let here = Quat::from_array(frames[i].quat);
+        let quat = [before, i, next, after].map(|k| {
+            let q = Quat::from_array(frames[k].quat);
+            Vec4::from(if q.dot(here) < 0.0 { -q } else { q })
+        });
         Self {
-            position: Vec3::from(a.pos).lerp(Vec3::from(b.pos), t),
-            rotation: q(a.quat).slerp(q(b.quat), t),
+            position: spline(pos, t),
+            rotation: Quat::from_vec4(spline(quat, t)).normalize(),
         }
     }
 
@@ -54,6 +74,20 @@ impl Camera {
             [0.0, 0.0, -NEAR * FAR / depth, 0.0],
         ])
     }
+}
+
+/// Catmull-Rom through `p[1]` and `p[2]`.
+fn spline<V>(p: [V; 4], t: f32) -> V
+where
+    V: Copy
+        + std::ops::Add<Output = V>
+        + std::ops::Sub<Output = V>
+        + std::ops::Mul<f32, Output = V>,
+{
+    let [a, b, c, d] = p;
+    let (t2, t3) = (t * t, t * t * t);
+    b + ((c - a) * t + (a * 2.0 - b * 5.0 + c * 4.0 - d) * t2 + (b * 3.0 - a - c * 3.0 + d) * t3)
+        * 0.5
 }
 
 /// Interactive camera: the `control` lines of `Sushi2.ini` (0x411fb0, 0x4139c0).
@@ -175,20 +209,37 @@ mod tests {
         assert!((y(ORIGINAL_ASPECT) - y(16.0 / 9.0)).abs() < 1e-6);
     }
 
-    #[test]
-    fn path_does_not_blend_across_a_cut() {
-        let frame = |x, flag| PathFrame {
+    fn frame(x: f32, flag: i32) -> PathFrame {
+        PathFrame {
             pos: [x, 0.0, 0.0],
             fov: -1.0,
             flag,
             quat: [0.0, 0.0, 0.0, 1.0],
-        };
-        let path = |flag| FlyPath {
-            step: 1.0,
-            frames: vec![frame(0.0, 0), frame(10.0, flag)],
-        };
-        assert_eq!(Camera::on_path(&path(0), 0.5).position.x, 5.0);
-        assert_eq!(Camera::on_path(&path(1), 0.5).position.x, 0.0);
-        assert_eq!(Camera::on_path(&path(1), 1.0).position.x, 10.0);
+        }
+    }
+
+    #[test]
+    fn path_holds_the_last_frame_of_a_shot_then_cuts() {
+        let frames = vec![frame(0.0, 0), frame(1.0, 1), frame(50.0, 0), frame(51.0, 0)];
+        let path = FlyPath { step: 1.0, frames };
+        let x = |t| Camera::on_path(&path, t).position.x;
+        assert_eq!(x(1.0), 1.0);
+        assert_eq!(x(1.9), 1.0);
+        assert_eq!(x(2.0), 50.0);
+        // Nothing overshoots because of the other shot.
+        assert!((0.0..=1.0).contains(&x(0.5)) && (50.0..=51.0).contains(&x(2.5)));
+        assert_eq!(x(99.0), 51.0);
+    }
+
+    #[test]
+    fn path_is_exact_at_samples_and_straight_on_lines() {
+        let frames = (0..5).map(|i| frame(i as f32, 0)).collect();
+        let path = FlyPath { step: 1.0, frames };
+        for t in [0.0, 1.0, 1.5, 2.25, 3.0] {
+            assert!(
+                (Camera::on_path(&path, t).position.x - t).abs() < 1e-5,
+                "{t}"
+            );
+        }
     }
 }

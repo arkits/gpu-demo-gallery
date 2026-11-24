@@ -52,8 +52,8 @@ record's variable data in table order. See `scene.rs`. Two tables (0x290 and 0x3
 records) are empty in both demo files and rejected if present.
 
 ## .pth fly path
-Text: `v1.0`, step seconds, then pairs of lines: `x y z fov flag` and quaternion.
+Text: `v1.0`, step seconds, then pairs of lines: `x y z fov cut` and quaternion.
 
 ## Still unknown
-Meaning of many record fields (kept as `raw`), mesh `frames`, cell visibility lists,
-key blend rule between samples. Recovered behavior is in `../ENGINE.md`.
+Some record fields are kept as `raw`: cell visibility lists, morph frames (unused here),
+and several scene tables. None is needed to play the demo. Behavior is in `../ENGINE.md`.
