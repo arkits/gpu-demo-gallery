@@ -55,5 +55,5 @@ records) are empty in both demo files and rejected if present.
 Text: `v1.0`, step seconds, then pairs of lines: `x y z fov flag` and quaternion.
 
 ## Still unknown
-Meaning of many record fields (kept as `raw`), path `flag`, mesh `frames`, scene
-cells/groups, texture format/size fields, key blend rule between samples.
+Meaning of many record fields (kept as `raw`), mesh `frames`, cell visibility lists,
+key blend rule between samples. Recovered behavior is in `../ENGINE.md`.

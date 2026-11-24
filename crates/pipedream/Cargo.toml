@@ -1,0 +1,25 @@
+[package]
+name = "pipedream"
+description = "Pipe Dream player: native window and browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sushi-engine = { path = "../sushi-engine" }
+wgpu = "30.0.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "1.0.3"
+winit = "0.30"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
+wasm-bindgen = "0.2.130"
+wasm-bindgen-futures = "0.4.80"
+web-sys = { version = "0.3.107", features = ["HtmlCanvasElement"] }
+wgpu = { version = "30.0.2", features = ["webgl"] }
