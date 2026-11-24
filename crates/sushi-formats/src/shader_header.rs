@@ -21,9 +21,11 @@ pub struct Stream {
 #[derive(Debug, Clone)]
 pub struct Element {
     pub source: String,
-    pub unk1c: u32,
-    pub unk20: u32,
-    pub unk24: u8,
+    /// 0-3 float1-4, 4 D3DCOLOR, 5 ubyte4.
+    pub kind: u32,
+    /// Vertex register class; see [`Element::semantic`].
+    pub usage: u32,
+    pub usage_index: u8,
 }
 
 pub fn read_shader_header(r: &mut Reader) -> Result<ShaderHeader> {
@@ -38,9 +40,9 @@ pub fn read_shader_header(r: &mut Reader) -> Result<ShaderHeader> {
         for _ in 0..r.count()? {
             elements.push(Element {
                 source: r.pstring()?,
-                unk1c: r.u32()?,
-                unk20: r.u32()?,
-                unk24: r.u8()?,
+                kind: r.u32()?,
+                usage: r.u32()?,
+                usage_index: r.u8()?,
             });
         }
         h.streams.push(Stream {
@@ -60,4 +62,41 @@ pub fn read_shader_header(r: &mut Reader) -> Result<ShaderHeader> {
         h.textures.push((r.pstring()?, r.pstring()?));
     }
     Ok(h)
+}
+
+impl Element {
+    pub fn ty(&self) -> u32 {
+        self.kind
+    }
+    pub fn size(&self) -> usize {
+        match self.kind {
+            0..=3 => 4 * (self.kind as usize + 1),
+            _ => 4,
+        }
+    }
+    /// Semantic name as used by `dcl_*`, with its index.
+    pub fn semantic(&self) -> (&'static str, u32) {
+        let name = match self.usage {
+            0 => "position",
+            1 => "blendweight",
+            2 => "blendindices",
+            3 => "normal",
+            5 | 12 => "color",
+            6 | 13 => return ("color", 1),
+            7 => "texcoord",
+            8 => "tangent",
+            9 => "binormal",
+            _ => "other",
+        };
+        (name, u32::from(self.usage_index))
+    }
+}
+
+impl ShaderHeader {
+    pub fn element(&self, semantic: &str, index: u32) -> Option<&Element> {
+        self.streams
+            .iter()
+            .flat_map(|s| &s.elements)
+            .find(|e| e.semantic() == (semantic, index))
+    }
 }
