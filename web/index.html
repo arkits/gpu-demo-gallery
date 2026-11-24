@@ -22,6 +22,8 @@
   progress { width: min(320px, 80vw); accent-color: #d9772b; }
   #status[data-error] { color: #ff9d8a; }
 </style>
+<!-- Cloudflare Pages adds its analytics script to an explicit body. -->
+<body>
 <canvas id="view" tabindex="0" aria-label="Pipe Dream animation"></canvas>
 <main id="start">
   <h1>Pipe Dream</h1>
@@ -221,4 +223,5 @@
   }
   $("progress").hidden = true;
 </script>
+</body>
 </html>
