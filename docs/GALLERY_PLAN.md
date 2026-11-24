@@ -114,3 +114,16 @@ time, fades, logos, script) into data. *Check: the same frames as now, and `dev.
 ## Reproducing the analysis
 `tools/iscab.py data1.hdr data1.cab [out]` reads the InstallShield cabinets (all 285 files
 extract at their stated sizes). `unar` opens the outer installers.
+
+## Outcome (2026-11-24)
+
+All four demos are ported in their own repositories and live, with a gallery page at
+https://gpu-demo-gallery.pages.dev (repository `gpu-demo-gallery`):
+
+- Box of Smoke: https://box-of-smoke-port.pages.dev
+- Car Paint: https://car-paint-port.pages.dev
+- Principles of Shading: https://principles-of-shading-port.pages.dev
+- Creature: https://creature-port.pages.dev (without `drevil.wav`)
+
+Each live site passed its browser test in WebGPU and WebGL2 (headless Chrome). Not run:
+the Windows builds, Safari, Firefox, phones, Intel Macs.
