@@ -23,6 +23,8 @@
   #modes { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(14px, env(safe-area-inset-bottom)); display: flex; gap: 8px; }
   #modes button { background: #140c0cb0; padding: 8px 16px; min-height: 44px; }
 </style>
+<!-- Cloudflare Pages adds its analytics script to an explicit body. -->
+<body>
 <canvas id="view" tabindex="0" aria-label="Glass box of simulated smoke"></canvas>
 <div id="modes" hidden>
   <button data-key="s">Smoke</button><button data-key="w">Water</button><button data-key="n">Logo</button>
@@ -195,4 +197,5 @@
   }
   $("progress").hidden = true;
 </script>
+</body>
 </html>
