@@ -28,12 +28,23 @@ installed). `package-windows.sh` cross-builds with mingw-w64 and `x86_64-pc-wind
 Without a path the player looks beside and above itself, then uses the last file chosen,
 and only then shows a file dialog. Errors show a dialog only outside a terminal.
 
-## Vercel
-`scripts/deploy-vercel.sh` builds the browser version, adds the demo content in the
-git-ignored `dist/vercel`, and deploys it publicly. It stops if that folder is not ignored.
-The content is served from `/local/`, where `serve.py` puts it too. The account's
-"Vercel Authentication" covers only per-deployment URLs, not the production one. The
-content belongs to ATI and Animusic.
+## Deploying the browser version
+Both scripts assemble the page and demo content in git-ignored folders under `dist/`,
+refuse to run if those are not ignored, and publish without a login. The content belongs
+to ATI and Animusic.
+
+- `scripts/deploy-cloudflare.sh`: Cloudflare Pages project `pipedream-port`, uploaded
+  directly and not connected to Git. Files are limited to 25 MiB, so the archive is
+  repacked. Wrangler needs `--force` when creating a Pages project, or it makes a Workers
+  project instead; the script handles that.
+- `scripts/deploy-vercel.sh`: Vercel project `pipedream`, with the original `Sushi.ati`.
+  Linking connects the GitHub repository, and pushes would then replace the site with an
+  empty one, so the script disconnects it. "Vercel Authentication" covers only
+  per-deployment URLs.
+
+`scripts/pack.sh OUT.xz` repacks `Sushi.ati` (40.1 MB) losslessly to 24.3 MB and compares
+every file with the original. `Archive::open` reads both. The page looks for
+`local/pipedream.xz`, then `local/Sushi.ati`. A first visit is 31.0 MB on Cloudflare.
 
 ## Inspecting data
     cargo run -p sushi-formats --example inspect_scene  -- Sushi.ati

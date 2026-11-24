@@ -41,8 +41,10 @@ const frames = (ms) => page.evaluate((ms) => new Promise((done) => {
 async function start() {
   await page.goto(url);
   await page.waitForSelector("#play:not([hidden])", { timeout: 30000 });
+  const begin = Date.now();
   await page.click("#play");
   await started();
+  console.log("    ", `[${gpu}] ready ${Date.now() - begin} ms after Start`);
 }
 
 const commands = {
