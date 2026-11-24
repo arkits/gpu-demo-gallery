@@ -117,6 +117,24 @@ impl Player {
             }
             _ => return false,
         };
+        let mut enc = self.render();
+        let gpu = &self.gpu;
+        let view = frame.texture.create_view(&Default::default());
+        self.presenter.present(gpu, &mut enc, &self.targets, &view);
+        gpu.queue.submit([enc.finish()]);
+        gpu.queue.present(frame);
+        true
+    }
+
+    /// Draws the current frame without showing it, for tests without a visible
+    /// window. Waits for the GPU.
+    pub fn frame_offscreen(&mut self) {
+        let enc = self.render();
+        self.gpu.queue.submit([enc.finish()]);
+        let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
+    }
+
+    fn render(&mut self) -> wgpu::CommandEncoder {
         let (gpu, show) = (&self.gpu, &self.show);
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         match show.camera() {
@@ -127,10 +145,6 @@ impl Player {
         }
         self.overlay
             .draw(gpu, &mut enc, &self.targets, show.logos, show.brightness());
-        let view = frame.texture.create_view(&Default::default());
-        self.presenter.present(gpu, &mut enc, &self.targets, &view);
-        gpu.queue.submit([enc.finish()]);
-        gpu.queue.present(frame);
-        true
+        enc
     }
 }

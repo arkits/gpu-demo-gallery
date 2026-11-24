@@ -13,13 +13,14 @@ committed or redistributed.
 Put the demo folder `ATI_Radeon-9700_PipeDream-Demo_v1.1` in the repository root, or
 pass a path to `Sushi.ati` or its folder.
 
-    cargo run --release -p pipedream                      # native window
-    scripts/build-web.sh && python3 scripts/serve.py      # browser, http://127.0.0.1:8080/
-    scripts/package-macos.sh                              # dist/Pipe Dream.app
-    scripts/package-windows.sh                            # dist/windows/PipeDream.exe
+    scripts/dev.sh run          # native window
+    scripts/dev.sh web          # browser, http://127.0.0.1:8080/
+    scripts/dev.sh open         # build and open dist/Pipe Dream.app
+    scripts/dev.sh package      # macOS app and dist/windows/PipeDream.exe
+    scripts/dev.sh all          # every check; opens no windows
 
 The music, `AnimusicIntro.mp3`, is found in `Audio/` beside `Sushi.ati`; without it the
-show plays silently. `--mute` starts the native player muted.
+show plays silently. Native options: `--mute`, `--start SECONDS`, `--smoke SECONDS` (hidden test run).
 
 | Key | Action |
 |---|---|
