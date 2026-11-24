@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use sushi_formats::{anim, archive::Archive, object, path, scene};
+use sushi_formats::{anim, archive::Archive, object, path, scene, texture};
 
 fn demo() -> &'static Archive {
     static A: OnceLock<Archive> = OnceLock::new();
@@ -138,4 +138,88 @@ fn every_named_object_texture_has_data_somewhere() {
     }
     let missing: Vec<_> = want.difference(&have).collect();
     assert!(!want.is_empty() && missing.is_empty(), "{missing:?}");
+}
+
+#[test]
+fn every_texture_decodes_with_an_exact_mip_chain() {
+    let mut n = 0;
+    let mut check = |t: &texture::Texture| {
+        if t.texels.is_empty() {
+            return;
+        }
+        n += 1;
+        let faces = t.decode().unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(faces.len(), if t.is_cube() { 6 } else { 1 }, "{}", t.name);
+        for l in faces.iter().flatten() {
+            assert_eq!(l.rgba.len(), l.width * l.height * 4);
+        }
+    };
+    for f in ["Globals.ati", "Scenes/Animusic.ati"] {
+        scene::read_scene(demo().get(f).unwrap())
+            .unwrap()
+            .textures
+            .iter()
+            .for_each(&mut check);
+    }
+    for (_, d) in each(".so2") {
+        object::read_object(d)
+            .unwrap()
+            .textures
+            .iter()
+            .for_each(&mut check);
+    }
+    assert!(n > 30, "only {n} textures");
+}
+
+#[test]
+fn scene_draws_reference_valid_data() {
+    let s = scene::read_scene(demo().get("Scenes/Animusic.ati").unwrap()).unwrap();
+    let mut triangles = 0;
+    for item in s.groups.iter().flat_map(|g| g.draw_items()) {
+        let d = &s.draws[item.draw];
+        let g = &s.geometry[d.geometry()];
+        assert!(g.shader() < s.shaders.len());
+        let st = &g.chunk.streams[0];
+        let ib = st.index_buffer_of(item.vertex_buffer).unwrap();
+        let verts = st.buffers[0][item.vertex_buffer].1.len() as u32 / st.stride();
+        let range = item.start as usize..(item.start + item.count) as usize;
+        let idx = g.chunk.indices[ib].1.get(range).expect("index range");
+        assert_eq!(idx.len() % 3, 0);
+        assert!(idx.iter().all(|&i| u32::from(i) < verts));
+        triangles += idx.len() / 3;
+        for l in d.lights() {
+            assert!(s.lights[l].is_fast_rt(), "light {l}");
+        }
+    }
+    // Every index of every buffer is drawn exactly once.
+    let total: usize = s
+        .geometry
+        .iter()
+        .flat_map(|g| &g.chunk.indices)
+        .map(|i| i.1.len())
+        .sum();
+    assert_eq!(triangles, total / 3);
+    let end = |a: &scene::Attribute| a.offset + a.size;
+    for st in s.geometry.iter().flat_map(|g| &g.chunk.streams) {
+        assert_eq!(st.attributes().iter().map(end).max(), Some(st.stride()));
+    }
+}
+
+#[test]
+fn fast_rt_lights_have_orthonormal_axes() {
+    let s = scene::read_scene(demo().get("Scenes/Animusic.ati").unwrap()).unwrap();
+    let fast: Vec<_> = s.lights.iter().filter(|l| l.is_fast_rt()).collect();
+    assert_eq!(fast.len(), 7);
+    for l in fast {
+        let m = l.fast_rt_matrix();
+        let dot = |a: [f32; 4], b: [f32; 4]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        for i in 1..4 {
+            for j in 1..4 {
+                let want = if i == j { 1.0 } else { 0.0 };
+                assert!((dot(m[i], m[j]) - want).abs() < 1e-3, "{m:?}");
+            }
+        }
+        assert!(s.textures[l.texture().unwrap()].name.contains("SpotLight"));
+        println!("{:?} {:?} {:?}", l.position(), l.color(), m);
+    }
 }

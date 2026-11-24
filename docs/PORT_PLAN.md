@@ -1,6 +1,6 @@
 # Pipe Dream port: analysis and plan
 
-Status: in progress. Approach B (Rust + wgpu) chosen 2026-11-24. M0 and M1 done.
+Status: in progress. Approach B (Rust + wgpu) chosen 2026-11-24. M0, M1 and M2 done.
 Labels: [V] verified against the files, [I] inferred, [?] still unknown.
 
 ## 1. Goal
@@ -22,7 +22,7 @@ Non-goals: a general Sushi engine or D3D9 emulator; remastered art.
 | `AnimusicIntro.mp3` | 204.07 s, 44.1 kHz stereo, 192 kbps. [V] |
 | `Shaders/*.ssh` | Plain-text source: 62 vs.1.1, 61 ps.2.0, 2 ps.1.4 programs, plus render states. About 40 distinct asm opcodes. No flow control seen in the opcode survey. [V] |
 | `Scripts/Normal.sds` | The whole frame: 1 clear and 6 draw calls (section 4). [V] |
-| `FlyPaths/Animusic.pth` | Text camera path: position, FOV field (-1 throughout the parts seen), flag, quaternion; step 0.033333 s; 6,448 frames = 214.9 s. [V] The flag's meaning (camera cut?) is [?]. |
+| `FlyPaths/Animusic.pth` | Text camera path: position, FOV (always -1 = default), flag, quaternion; step 0.033333 s; 6,448 frames = 214.9 s. [V] The flag (22 frames) is a camera cut. [I] |
 | `Objects/animusic.ini` | 344 animated instances (67 Global, 277 SGlobal) of 101 meshes. Global vs SGlobal is [?]. |
 | `Sushi2.ini` | near 1, far 5000, fov 35, startTime 10, four interactive orbit cameras. [V] |
 
@@ -76,9 +76,9 @@ Each ends in something checkable.
 - **M0 Setup. DONE.** Git repo with the demo ignored; Cargo workspace.
 - **M1 Formats. DONE.** *Every data file parses to exactly end of file; tests also
   check index ranges, quaternions, key timing and texture references.*
-- **M2 Static scene.** Field meanings for scene geometry, draws, cells and texture
-  formats; wgpu renderer; free camera; browser and macOS.
-  *Check: complete room on screen in a browser and a native window.*
+- **M2 Static scene. DONE.** Scene, textures and baked lighting along the original
+  camera path. *Checked in headless Chrome (WebGPU and WebGL2) and offscreen Metal;
+  the native window runs but was not inspected visually.* A free camera moved to M7.
 - **M3 Shaders.** `.ssh` parser (including `.ssi` `#replicate`) and translator from
   vs.1.1/ps.1.4/ps.2.0 asm to WGSL. *Check: every program validates; golden tests
   per opcode.*
