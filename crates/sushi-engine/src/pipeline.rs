@@ -372,6 +372,10 @@ impl Pipelines {
         p.textures.insert(textures.to_vec(), group);
     }
 
+    pub fn forget_textures(&mut self) {
+        self.list.iter_mut().for_each(|p| p.textures.clear());
+    }
+
     pub fn bind_uniforms(&mut self, gpu: &Gpu, arena: &Arena) {
         for p in &mut self.list {
             if p.uniforms.as_ref().is_some_and(|u| u.0 == arena.generation) {

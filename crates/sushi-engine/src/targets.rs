@@ -69,6 +69,25 @@ impl Targets {
     }
 }
 
+impl Targets {
+    /// Draws on top of the resolved frame, without depth or multisampling.
+    pub fn begin_overlay<'e>(&self, enc: &'e mut wgpu::CommandEncoder) -> wgpu::RenderPass<'e> {
+        enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("overlay"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.resolved_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        })
+    }
+}
+
 pub struct Presenter {
     pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,

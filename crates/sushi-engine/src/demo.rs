@@ -10,7 +10,7 @@ use sushi_formats::{anim, object, scene};
 use sushi_shader::wgsl::{self, ElementType};
 use sushi_shader::{Const, ShaderFile, VarKind};
 
-use crate::camera::{Camera, ORIGINAL_ASPECT};
+use crate::camera::Camera;
 use crate::gpu::Gpu;
 use crate::light::Light;
 use crate::object::Clip;
@@ -113,6 +113,7 @@ pub struct Demo {
     /// Problems found while drawing, each reported once.
     warnings: std::collections::BTreeSet<String>,
     draw_calls: usize,
+    chip_logo: Vec<sushi_formats::texture::Level>,
 }
 
 fn element_type(kind: u32) -> Result<ElementType> {
@@ -171,9 +172,25 @@ impl Demo {
             quad: None,
             warnings: Default::default(),
             draw_calls: 0,
+            chip_logo: Vec::new(),
         };
         demo.load_scene(gpu, &archive, &scene)?;
         demo.load_objects(gpu, &archive, &text("Objects/animusic.ini")?)?;
+        demo.prewarm(gpu);
+        let globals = scene::read_scene(file("Globals.ati")?)?;
+        // Texture 3 of Globals.ati is ChipLogo.tga (0x421c50).
+        if let Some(t) = globals
+            .textures
+            .get(3)
+            .filter(|t| t.name.contains("ChipLogo"))
+        {
+            // Stored bottom row first; the original draws it with v = 0 at the bottom.
+            demo.chip_logo = t.decode()?.swap_remove(0);
+            for l in &mut demo.chip_logo {
+                let rows = l.rgba.chunks_exact(l.width * 4).rev().flatten().copied();
+                l.rgba = rows.collect();
+            }
+        }
         Ok(demo)
     }
 
@@ -414,6 +431,83 @@ impl Demo {
         self.path.frames.len() as f32 * self.path.step
     }
 
+    pub fn chip_logo(&self) -> &[sushi_formats::texture::Level] {
+        &self.chip_logo
+    }
+
+    /// Compiles every pipeline the show can need, so playback does not stall.
+    fn prewarm(&mut self, gpu: &Gpu) {
+        let mut keys: std::collections::HashSet<PipelineKey> = Default::default();
+        let wanted = |s: &sushi_shader::Shader| s.has("Normal") || s.has("Shadow");
+        for d in &self.scene_draws {
+            for (i, s) in self.shaders[d.shader].shaders.iter().enumerate() {
+                if s.has("Normal") && s.properties.iter().any(|p| p.starts_with("FastRT")) {
+                    keys.extend((0..s.passes.len()).map(|p| (d.shader, i, p, d.layout.clone())));
+                }
+            }
+        }
+        for m in self
+            .models
+            .iter()
+            .flat_map(|m| &m.meshes)
+            .filter(|m| m.flags & HIDDEN == 0 || m.flags & CASTS != 0)
+        {
+            for (i, s) in self.shaders[m.shader]
+                .shaders
+                .iter()
+                .enumerate()
+                .filter(|s| wanted(s.1))
+            {
+                for (p, pass) in s.passes.iter().enumerate() {
+                    let stream = m.maps.get(&pass.stream_map).and_then(|s| m.streams.get(*s));
+                    if let Some(stream) = stream {
+                        keys.insert((m.shader, i, p, stream.layout.clone()));
+                    }
+                }
+            }
+        }
+        for k in keys {
+            self.pipeline(gpu, k);
+        }
+        // Unused variants may legitimately not fit a mesh; only report real draws.
+        self.warnings.clear();
+    }
+
+    /// Draws nothing visible with every pipeline. Browsers compile pipelines on
+    /// first use, so wait for this work to finish before starting the show.
+    pub fn warm_up(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, targets: &Targets) {
+        let vertices = self.buffer(gpu, &[0; 1024], wgpu::BufferUsages::VERTEX);
+        let indices = self.index_buffer(gpu, &[0; 4]);
+        self.arena.clear();
+        self.arena.upload(gpu);
+        self.pipelines.bind_uniforms(gpu, &self.arena);
+        let none = BTreeMap::new();
+        let mut calls = Vec::new();
+        for pipeline in 0..self.pipelines.list.len() {
+            let n = self.pipelines.list[pipeline].module.samplers.len();
+            let textures = vec![BLACK; n];
+            self.pipelines
+                .prepare(gpu, &mut self.textures, pipeline, &textures, &none);
+            calls.push(DrawCall {
+                pipeline,
+                vs_offset: 0,
+                ps_offset: 0,
+                textures,
+                vertices,
+                indices,
+                start: 0,
+                count: 3,
+            });
+        }
+        let mut pass = targets.begin(enc);
+        for c in &calls {
+            self.pipelines.record(&mut pass, c, &self.buffers);
+        }
+        // The placeholder bind groups use default samplers; do not reuse them.
+        drop(pass);
+        self.pipelines.forget_textures();
+    }
+
     /// Draws in the last frame.
     pub fn draw_calls(&self) -> usize {
         self.draw_calls
@@ -526,10 +620,8 @@ impl Demo {
         targets: &Targets,
         time: f32,
     ) {
-        let size = targets.resolved.size();
-        let aspect = size.width as f32 / size.height as f32;
         let camera = Camera::on_path(&self.path, time);
-        self.draw_from(gpu, enc, targets, time, &camera, aspect);
+        self.draw_from(gpu, enc, targets, time, &camera);
     }
 
     /// Runs the original frame script, `Normal.sds`.
@@ -540,14 +632,11 @@ impl Demo {
         targets: &Targets,
         time: f32,
         camera: &Camera,
-        aspect: f32,
     ) {
         self.arena.clear();
-        let vp = Camera::projection(if aspect > 0.0 {
-            aspect
-        } else {
-            ORIGINAL_ASPECT
-        }) * camera.view();
+        let size = targets.resolved.size();
+        let aspect = size.width as f32 / size.height as f32;
+        let vp = Camera::projection(aspect) * camera.view();
         let mut calls = Vec::new();
         let visible = self.visible(time, camera.position);
         // The shadow pass alone ignores HIDDEN.
