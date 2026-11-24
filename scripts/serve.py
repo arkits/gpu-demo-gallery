@@ -12,6 +12,8 @@ LOCAL = {
     f"/local/{n}": DEMO / n for n in ("Sushi.ati", "Logo2.tga", "Audio/AnimusicIntro.mp3")
 }
 
+LOCAL["/local/pipedream.xz"] = ROOT / "target/package/pipedream.xz"
+
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def translate_path(self, path):

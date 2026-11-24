@@ -81,7 +81,9 @@ Calls made (correct any of these):
   needs no fallback shader variant and reports no missing pipeline.
 - **M7 Show. DONE.** Music, fades, logos, free cameras, seeking. A full-length run in
   headless Chrome (WebGPU): 13,203 frames at 60 fps, none late, at most 12 ms from the
-  music, and it looped. WebGL2 gives the same picture.
+  music, and it looped. WebGL2 differs only along anti-aliased edges (mean 0.03 to 0.28
+  of 255 at three times). Before 2026-11-24 the WebGL2 tests really ran WebGPU, because
+  Chrome's flags no longer turn it off; the driver now checks which API the canvas uses.
 - **M8 Native. BUILT.** macOS app runs. `PipeDream.exe` is cross-built but has **not been
   run on Windows**.
 

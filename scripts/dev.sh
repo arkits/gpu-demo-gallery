@@ -57,7 +57,10 @@ browser() {
   trap - EXIT INT TERM
   return $status
 }
-build_web() { sh scripts/build-web.sh >"$OUT/build-web.log" 2>&1 || { cat "$OUT/build-web.log"; exit 1; }; }
+build_web() {
+  sh scripts/build-web.sh >"$OUT/build-web.log" 2>&1 || { cat "$OUT/build-web.log"; exit 1; }
+  sh scripts/pack.sh target/package/pipedream.xz >"$OUT/pack.log" 2>&1 || { cat "$OUT/pack.log"; exit 1; }
+}
 
 command=${1:-help}
 [ $# -eq 0 ] || shift

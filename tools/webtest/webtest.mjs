@@ -10,7 +10,7 @@ const [, , url, out, command, gpu = "webgpu", arg] = process.argv;
 mkdirSync(out, { recursive: true });
 const flags = {
   webgpu: ["--enable-unsafe-webgpu"],
-  webgl: ["--disable-blink-features=WebGPU", "--disable-features=WebGPU"],
+  webgl: [],
 }[gpu];
 if (!flags) throw new Error(`unknown gpu ${gpu}`);
 const problems = [];
@@ -20,6 +20,13 @@ const check = (ok, what) => {
 };
 const browser = await chromium.launch({ channel: "chrome", headless: true, args: [...flags, "--mute-audio"] });
 const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+// Chrome's flags for turning WebGPU off do not work; hide it from the page instead.
+if (gpu === "webgl") await page.addInitScript(() => Object.defineProperty(Navigator.prototype, "gpu", { get: () => undefined }));
+// What the canvas really uses: asking for another kind of context gives null.
+const uses = () => page.evaluate(() => {
+  const c = document.getElementById("view");
+  return c.getContext("webgpu") ? "webgpu" : c.getContext("webgl2") ? "webgl" : "nothing";
+});
 page.on("console", (m) => m.type() === "error" && check(false, `console: ${m.text().slice(0, 300)}`));
 page.on("pageerror", (e) => check(false, `page: ${String(e).slice(0, 300)}`));
 const shot = (name) => page.screenshot({ path: `${out}/${name}.png` });
@@ -44,6 +51,8 @@ async function start() {
   const begin = Date.now();
   await page.click("#play");
   await started();
+  const used = await uses();
+  check(used === gpu, `canvas uses ${used}`);
   console.log("    ", `[${gpu}] ready ${Date.now() - begin} ms after Start`);
 }
 
@@ -79,6 +88,8 @@ const commands = {
   async still() {
     await page.goto(`${url}?t=${arg ?? 100}`);
     await started();
+    const used = await uses();
+    check(used === gpu, `canvas uses ${used}`);
     await page.keyboard.press("l");
     await page.waitForTimeout(1500);
     await shot(`${gpu}-still`);
