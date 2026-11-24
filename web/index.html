@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU demos, 2000 to 2006</title>
+<meta name="description" content="Five graphics card demos by NVIDIA and ATI from 2000 to 2006, running in the browser.">
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;800&family=Martian+Mono:wght@300;500&display=swap">
+<style>
+  :root { color-scheme: dark; --ink: #f1ede2; --dim: #b9b4a6; --black: #0b0a09; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100svh; background: var(--black); color: var(--ink); font: 300 13px/1.6 "Martian Mono", ui-monospace, monospace; display: flex; flex-direction: column; }
+  header { display: flex; justify-content: space-between; align-items: end; gap: 12px 40px; flex-wrap: wrap; padding: 22px 28px 18px; }
+  h1 { margin: 0; font: 800 clamp(34px, 5vw, 64px)/.9 "Big Shoulders Display", Impact, sans-serif; text-transform: uppercase; }
+  header p { margin: 0; max-width: 56ch; color: var(--dim); }
+  main { flex: 1; display: flex; min-height: 420px; }
+  a.demo { --c: #fff; container-type: inline-size; position: relative; flex: 1 1 0; min-width: 0; overflow: hidden; color: inherit; text-decoration: none; border-top: 3px solid var(--c); transition: flex-grow .6s cubic-bezier(.2, .8, .2, 1); animation: rise .9s cubic-bezier(.2, .8, .2, 1) both; }
+  a.demo + a.demo { margin-left: 2px; }
+  .demo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: var(--at, 50% 50%); filter: saturate(.85) brightness(.85); transition: filter .5s; }
+  .demo::after { content: ""; position: absolute; inset: 40% 0 0; background: linear-gradient(#0b0a0900, #0b0a09d0 55%, #0b0a09f5); }
+  .text { position: absolute; z-index: 1; left: clamp(12px, 7cqi, 22px); right: 12px; bottom: 22px; }
+  .year { font: 800 clamp(44px, 38cqi, 108px)/.8 "Big Shoulders Display", Impact, sans-serif; color: var(--c); }
+  h2 { margin: 12px 0 4px; font: 500 clamp(19px, 11cqi, 32px)/1 "Big Shoulders Display", Impact, sans-serif; white-space: nowrap; }
+  .by { color: var(--dim); white-space: nowrap; font-size: clamp(11px, 5cqi, 13px); }
+  .more { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows .6s cubic-bezier(.2, .8, .2, 1), opacity .4s; }
+  .more > div { overflow: hidden; }
+  .more p { margin: 14px 0 0; width: min(46ch, 70vw); }
+  .go { display: inline-block; margin-top: 16px; padding: 9px 16px; background: var(--c); color: #0b0a09; font-weight: 500; }
+  @media (min-width: 821px) {
+    main:hover a, main:focus-within a { flex-grow: .75; }
+    main a.demo:hover, main a.demo:focus-visible { flex-grow: 3; }
+    /* Only one opens: the one under the pointer. */
+    main:hover a.demo:focus-visible:not(:hover) { flex-grow: .75; }
+    .demo:hover img, .demo:focus-visible img { filter: none; }
+    .demo:hover .more, .demo:focus-visible .more { grid-template-rows: 1fr; opacity: 1; }
+    main:hover .demo:focus-visible:not(:hover) .more { grid-template-rows: 0fr; opacity: 0; }
+  }
+  .demo:focus-visible { outline: 3px solid var(--c); outline-offset: -3px; }
+  @media (max-width: 820px) {
+    header { padding: 20px 16px 16px; }
+    main { flex-direction: column; gap: 2px; }
+    a.demo { flex: none; height: 72svh; min-height: 400px; }
+    a.demo + a.demo { margin-left: 0; }
+    .demo img { filter: none; }
+    .text { left: 16px; right: 16px; bottom: 18px; }
+    .more { grid-template-rows: 1fr; opacity: 1; }
+    .more p { width: auto; }
+  }
+  footer { padding: 16px 28px 20px; color: var(--dim); }
+  @keyframes rise { from { opacity: 0; transform: translateY(40px); } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+<header>
+  <h1>GPU demos</h1>
+  <p>What graphics cards shipped to show off with, rebuilt from the original files and running in this browser.</p>
+</header>
+<main>
+  <a class="demo" style="--c:#8fe04a;--at:38% 40%" href="https://principles-of-shading-port.pages.dev/">
+    <img src="img/principles-of-shading.jpg" alt="">
+    <div class="text"><div class="year">2000</div><h2>Principles of Shading</h2><div class="by">NVIDIA, GeForce2</div>
+      <div class="more"><div><p>A logo taken apart and shaded again in six steps, from points to bump maps and reflections.</p><span class="go">Play</span></div></div></div>
+  </a>
+  <a class="demo" style="--c:#4fd6a4;--at:49% 30%" href="https://creature-port.pages.dev/">
+    <img src="img/creature.jpg" alt="">
+    <div class="text"><div class="year">2000</div><h2>Creature</h2><div class="by">NVIDIA, GeForce2</div>
+      <div class="more"><div><p>A sea monster under caustic light, 500 fish that avoid it, and a laser.</p><span class="go">Play</span></div></div></div>
+  </a>
+  <a class="demo" style="--c:#ff7a2e;--at:20% 30%;animation-delay:.16s" href="https://car-paint-port.pages.dev/">
+    <img src="img/car-paint.jpg" alt="">
+    <div class="text"><div class="year">2002</div><h2>Car Paint</h2><div class="by">ATI, Radeon 9700</div>
+      <div class="more"><div><p>Two-tone paint with metal flakes and clear coat, and how it is built up layer by layer.</p><span class="go">Play</span></div></div></div>
+  </a>
+  <a class="demo" style="--c:#e8c34a;--at:52% 50%;animation-delay:.24s" href="https://pipedream-port.pages.dev/">
+    <img src="img/pipe-dream.jpg" alt="">
+    <div class="text"><div class="year">2003</div><h2>Pipe Dream</h2><div class="by">ATI, Radeon 9700</div>
+      <div class="more"><div><p>Animusic's machine plays itself: every note is a ball that has to land on time.</p><span class="go">Play</span></div></div></div>
+  </a>
+  <a class="demo" style="--c:#c7b1e6;--at:54% 50%;animation-delay:.32s" href="https://box-of-smoke-port.pages.dev/">
+    <img src="img/box-of-smoke.jpg" alt="">
+    <div class="text"><div class="year">2006</div><h2>Box of Smoke</h2><div class="by">NVIDIA, GeForce 8</div>
+      <div class="more"><div><p>Smoke and water simulated on the card itself. Stir it with the pointer.</p><span class="go">Play</span></div></div></div>
+  </a>
+</main>
+<footer>The demos and their art belong to NVIDIA, ATI and Animusic. The ports are unofficial. Best with sound.</footer>
+</html>
