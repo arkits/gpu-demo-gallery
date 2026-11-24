@@ -1725,6 +1725,7 @@ dependencies = [
  "png",
  "pollster",
  "sushi-formats",
+ "sushi-shader",
  "wgpu",
 ]
 
@@ -1733,6 +1734,14 @@ name = "sushi-formats"
 version = "0.1.0"
 dependencies = [
  "zip",
+]
+
+[[package]]
+name = "sushi-shader"
+version = "0.1.0"
+dependencies = [
+ "naga",
+ "sushi-formats",
 ]
 
 [[package]]

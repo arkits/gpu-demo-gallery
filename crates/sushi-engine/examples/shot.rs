@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out = args.next().ok_or(usage)?;
 
     let gpu = pollster::block_on(Gpu::headless())?;
-    let demo = Demo::load(&gpu, &data)?;
+    let mut demo = Demo::load(&gpu, &data)?;
     let targets = Targets::new(&gpu, SIZE.0, SIZE.1);
     let mut enc = gpu.device.create_command_encoder(&Default::default());
     demo.draw(&gpu, &mut enc, &targets, time);
@@ -27,6 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .flat_map(|p| [p[0], p[1], p[2]])
         .collect();
     png.write_header()?.write_image_data(&rgb)?;
+    demo.warnings().for_each(|w| eprintln!("warning: {w}"));
     println!("wrote {out} at t={time} of {:.2}", demo.duration());
     Ok(())
 }
