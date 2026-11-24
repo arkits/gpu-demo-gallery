@@ -1,11 +1,23 @@
-use sushi_engine::{
-    demo::Demo,
-    gpu::Gpu,
-    targets::{Presenter, Targets},
-};
+use sushi_engine::demo::Demo;
+use sushi_engine::gpu::Gpu;
+use sushi_engine::overlay::{Corner, Overlay, read_tga};
+use sushi_engine::targets::{Presenter, Targets};
 use wgpu::CurrentSurfaceTexture as Frame;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::Show;
+
 type Error = Box<dyn std::error::Error>;
+
+/// The user's own demo files.
+pub struct Data {
+    /// `Sushi.ati`.
+    pub archive: Vec<u8>,
+    /// `Logo2.tga`, if available.
+    pub logo: Option<Vec<u8>>,
+}
 
 pub struct Player {
     gpu: Gpu,
@@ -13,7 +25,10 @@ pub struct Player {
     config: wgpu::SurfaceConfiguration,
     targets: Targets,
     presenter: Presenter,
+    overlay: Overlay,
     demo: Demo,
+    pub show: Show,
+    ready: Arc<AtomicBool>,
 }
 
 impl Player {
@@ -21,12 +36,13 @@ impl Player {
         instance: &wgpu::Instance,
         target: impl Into<wgpu::SurfaceTarget<'static>>,
         (width, height): (u32, u32),
-        data: &[u8],
+        data: &Data,
     ) -> Result<Self, Error> {
         let surface = instance.create_surface(target)?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 compatible_surface: Some(&surface),
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 ..Default::default()
             })
             .await?;
@@ -36,29 +52,46 @@ impl Player {
             .get_default_config(&adapter, width.max(1), height.max(1))
             .ok_or("surface not supported by this adapter")?;
         // The renderer works in gamma space, as the original did.
-        config.format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| !f.is_srgb())
-            .unwrap_or(config.format);
+        let plain = caps.formats.iter().copied().find(|f| !f.is_srgb());
+        config.format = plain.unwrap_or(config.format);
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&gpu.device, &config);
         let targets = Targets::new(&gpu, config.width, config.height);
         let presenter = Presenter::new(&gpu, config.format);
-        let demo = Demo::load(&gpu, data)?;
+        let mut demo = Demo::load(&gpu, &data.archive)?;
+        let mut overlay = Overlay::new(&gpu);
+        // Sizes and corners from 0x421c50.
+        if !demo.chip_logo().is_empty() {
+            overlay.add_logo(&gpu, demo.chip_logo(), Corner::BottomRight, 0.27);
+        }
+        if let Some(logo) = data.logo.as_deref().and_then(read_tga) {
+            overlay.add_logo(&gpu, &[logo], Corner::BottomLeft, 0.25);
+        }
+        let ready = Arc::new(AtomicBool::new(false));
+        let mut enc = gpu.device.create_command_encoder(&Default::default());
+        demo.warm_up(&gpu, &mut enc, &targets);
+        gpu.queue.submit([enc.finish()]);
+        let done = ready.clone();
+        gpu.queue
+            .on_submitted_work_done(move || done.store(true, Ordering::Release));
+        let show = Show::new(demo.duration());
         Ok(Self {
             gpu,
             surface,
             config,
             targets,
             presenter,
+            overlay,
             demo,
+            show,
+            ready,
         })
     }
 
-    pub fn duration(&self) -> f32 {
-        self.demo.duration()
+    /// True once the GPU has compiled everything. Poll before starting.
+    pub fn ready(&self) -> bool {
+        let _ = self.gpu.device.poll(wgpu::PollType::Poll);
+        self.ready.load(Ordering::Acquire)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -71,22 +104,33 @@ impl Player {
         }
     }
 
-    /// Draws the frame for `time` seconds. Skips if the surface is unavailable.
-    pub fn frame(&mut self, time: f32) {
+    /// Advances the show to wall-clock `now` and draws it. `audio` is the music
+    /// position while it plays. Returns false if the surface was unavailable and
+    /// nothing was drawn.
+    pub fn frame(&mut self, now: f64, audio: Option<f64>) -> bool {
+        self.show.advance(now, audio);
         let frame = match self.surface.get_current_texture() {
             Frame::Success(t) | Frame::Suboptimal(t) => t,
             Frame::Outdated | Frame::Lost => {
                 self.surface.configure(&self.gpu.device, &self.config);
-                return;
+                return false;
             }
-            _ => return,
+            _ => return false,
         };
-        let mut enc = self.gpu.device.create_command_encoder(&Default::default());
-        self.demo.draw(&self.gpu, &mut enc, &self.targets, time);
+        let (gpu, show) = (&self.gpu, &self.show);
+        let mut enc = gpu.device.create_command_encoder(&Default::default());
+        match show.camera() {
+            Some(c) => self
+                .demo
+                .draw_from(gpu, &mut enc, &self.targets, show.time(), &c),
+            None => self.demo.draw(gpu, &mut enc, &self.targets, show.time()),
+        }
+        self.overlay
+            .draw(gpu, &mut enc, &self.targets, show.logos, show.brightness());
         let view = frame.texture.create_view(&Default::default());
-        self.presenter
-            .present(&self.gpu, &mut enc, &self.targets, &view);
-        self.gpu.queue.submit([enc.finish()]);
-        self.gpu.queue.present(frame);
+        self.presenter.present(gpu, &mut enc, &self.targets, &view);
+        gpu.queue.submit([enc.finish()]);
+        gpu.queue.present(frame);
+        true
     }
 }

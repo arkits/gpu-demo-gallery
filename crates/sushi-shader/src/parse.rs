@@ -316,6 +316,9 @@ fn stencil_op(s: &str) -> Result<StencilOp> {
     })
 }
 
+/// Loop variables (name, start, step), repeat count and body lines.
+type Replicate = (Vec<(String, i64, i64)>, i64, Vec<(usize, String)>);
+
 /// Removes `/* */`, keeping line numbers. `//` comments hide block markers.
 fn strip_block_comments(text: &str) -> String {
     let mut out = String::new();
@@ -352,7 +355,7 @@ fn strip_block_comments(text: &str) -> String {
 /// Expands `#replicate ($i, start, count, step) ($j, start, step)`.
 fn preprocess(text: &str) -> Result<Vec<(usize, String)>> {
     let mut out = Vec::new();
-    let mut block: Option<(Vec<(String, i64, i64)>, i64, Vec<(usize, String)>)> = None;
+    let mut block: Option<Replicate> = None;
     let text = strip_block_comments(text);
     for (n, raw) in text.lines().enumerate() {
         let line = raw.split("//").next().unwrap_or("").trim().to_string();
