@@ -187,19 +187,28 @@
   }
   const mb = (n) => (n / 1e6).toFixed(0);
   try {
-    const found = await fetch("./local/Sushi.ati", { method: "HEAD" }).catch(() => null);
-    if (found?.ok) {
+    // The repacked archive first, then the original. Some hosts answer unknown
+    // paths with a page, so the type matters as well as the status.
+    const exists = async (url) => {
+      const r = await fetch(url, { method: "HEAD" }).catch(() => null);
+      return r?.ok && !r.headers.get("content-type")?.includes("text/html");
+    };
+    let url = null;
+    for (const name of ["./local/pipedream.xz", "./local/Sushi.ati"]) {
+      if (await exists(name)) { url = name; break; }
+    }
+    if (url) {
       for (const id of ["choose", "need"]) $(id).hidden = true;
       $("progress").hidden = false;
       const [archive, music, logo] = await Promise.all([
-        get("./local/Sushi.ati", (n, total) => {
+        get(url, (n, total) => {
           if (total) [$("progress").max, $("progress").value] = [total, Math.min(n, total)];
           status(`Downloading ${mb(n)}${total ? ` of ${mb(total)}` : ""} MB…`);
         }),
         get("./local/Audio/AnimusicIntro.mp3"),
         get("./local/Logo2.tga"),
       ]);
-      if (!archive) throw new Error("Sushi.ati could not be downloaded");
+      if (!archive) throw new Error("the demo data could not be downloaded");
       data.archive = new Uint8Array(await archive.arrayBuffer());
       data.music = music && new Blob([music], { type: "audio/mpeg" });
       data.logo = logo && new Uint8Array(await logo.arrayBuffer());
