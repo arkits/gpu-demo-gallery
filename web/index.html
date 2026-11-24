@@ -19,6 +19,7 @@
   label input { position: absolute; opacity: 0; width: 1px; height: 1px; }
   p { margin: 0; max-width: 52ch; color: #9b92ad; }
   kbd { font: 12px ui-monospace, monospace; border: 1px solid #4a4160; border-radius: 4px; padding: 1px 5px; }
+  progress { width: min(320px, 80vw); accent-color: #d9772b; }
   #status[data-error] { color: #ff9d8a; }
 </style>
 <canvas id="view" tabindex="0" aria-label="Pipe Dream animation"></canvas>
@@ -29,9 +30,10 @@
     <label>Choose demo folder <input id="folder" type="file" webkitdirectory></label>
     <label>Choose files <input id="files" type="file" multiple accept=".ati,.mp3,.tga"></label>
   </div>
-  <p>Needs your copy of ATI's demo: <code>Sushi.ati</code>, plus <code>AnimusicIntro.mp3</code> for the music. Files stay on this computer.</p>
+  <p id="need">Needs your copy of ATI's demo: <code>Sushi.ati</code>, plus <code>AnimusicIntro.mp3</code> for the music. Files stay on this computer.</p>
   <p><kbd>Space</kbd> pause &nbsp; <kbd>←</kbd> <kbd>→</kbd> skip &nbsp; <kbd>F</kbd> free camera &nbsp; <kbd>1</kbd>–<kbd>4</kbd> views &nbsp; <kbd>L</kbd> logos &nbsp; <kbd>M</kbd> mute &nbsp; <kbd>Enter</kbd> full screen</p>
   <p>Animusic's “Pipe Dream”, © 2001 Animusic. Real-time version by ATI Research, 2002.</p>
+  <progress id="progress" hidden></progress>
   <p id="status" role="status"></p>
 </main>
 <script type="module">
@@ -168,15 +170,46 @@
   for (const id of ["folder", "files"]) $(id).addEventListener("change", (e) => take(e.target.files));
   addEventListener("dragover", (e) => e.preventDefault());
   addEventListener("drop", dropped);
-  // Local development: scripts/serve.py exposes the user's own copy here.
-  const get = async (url) => { const r = await fetch(url).catch(() => null); return r?.ok ? r.blob() : null; };
-  const archive = await get("./local/Sushi.ati");
-  if (archive) {
-    data.archive = new Uint8Array(await archive.arrayBuffer());
-    data.music = await get("./local/Audio/AnimusicIntro.mp3");
-    const logo = await get("./local/Logo2.tga");
-    data.logo = logo && new Uint8Array(await logo.arrayBuffer());
-    offer();
+  // Content served with the page: scripts/serve.py locally, or a bundled deployment.
+  async function get(url, onProgress) {
+    const r = await fetch(url).catch(() => null);
+    if (!r?.ok) return null;
+    const total = Number(r.headers.get("content-length")) || 0;
+    const parts = [];
+    let done = 0;
+    for (const reader = r.body.getReader(); ; ) {
+      const { done: end, value } = await reader.read();
+      if (end) break;
+      parts.push(value);
+      onProgress?.((done += value.length), total);
+    }
+    return new Blob(parts);
   }
+  const mb = (n) => (n / 1e6).toFixed(0);
+  try {
+    const found = await fetch("./local/Sushi.ati", { method: "HEAD" }).catch(() => null);
+    if (found?.ok) {
+      for (const id of ["choose", "need"]) $(id).hidden = true;
+      $("progress").hidden = false;
+      const [archive, music, logo] = await Promise.all([
+        get("./local/Sushi.ati", (n, total) => {
+          if (total) [$("progress").max, $("progress").value] = [total, Math.min(n, total)];
+          status(`Downloading ${mb(n)}${total ? ` of ${mb(total)}` : ""} MB…`);
+        }),
+        get("./local/Audio/AnimusicIntro.mp3"),
+        get("./local/Logo2.tga"),
+      ]);
+      if (!archive) throw new Error("Sushi.ati could not be downloaded");
+      data.archive = new Uint8Array(await archive.arrayBuffer());
+      data.music = music && new Blob([music], { type: "audio/mpeg" });
+      data.logo = logo && new Uint8Array(await logo.arrayBuffer());
+      offer();
+    }
+  } catch (e) {
+    console.error(e);
+    for (const id of ["choose", "need"]) $(id).hidden = false;
+    status(`Download failed: ${e.message ?? e}`, true);
+  }
+  $("progress").hidden = true;
 </script>
 </html>
