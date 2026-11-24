@@ -50,7 +50,11 @@ struct Music {
 
 impl Music {
     fn open(data: Vec<u8>) -> Result<Self, Error> {
-        let device = rodio::DeviceSinkBuilder::open_default_sink()?;
+        // rodio's preferred buffer size is too big for some devices, such as AirPods.
+        let mut device = rodio::DeviceSinkBuilder::from_default_device()?
+            .with_buffer_size(rodio::cpal::BufferSize::Default)
+            .open_sink_or_fallback()?;
+        device.log_on_drop(false);
         let player = rodio::Player::connect_new(device.mixer());
         let len = data.len() as u64;
         let decoder = rodio::Decoder::builder()
@@ -163,7 +167,10 @@ impl App {
             audio = (!m.player.empty() && !m.player.is_paused())
                 .then(|| m.player.get_pos().as_secs_f64());
         }
-        player.frame(self.start.elapsed().as_secs_f64(), audio);
+        if !player.frame(self.start.elapsed().as_secs_f64(), audio) {
+            // Hidden window: nothing paces us, so avoid spinning.
+            std::thread::sleep(Duration::from_millis(16));
+        }
     }
 
     fn key(&mut self, el: &ActiveEventLoop, key: &Key) {

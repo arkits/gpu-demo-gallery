@@ -105,16 +105,17 @@ impl Player {
     }
 
     /// Advances the show to wall-clock `now` and draws it. `audio` is the music
-    /// position while it plays. Skips drawing if the surface is unavailable.
-    pub fn frame(&mut self, now: f64, audio: Option<f64>) {
+    /// position while it plays. Returns false if the surface was unavailable and
+    /// nothing was drawn.
+    pub fn frame(&mut self, now: f64, audio: Option<f64>) -> bool {
         self.show.advance(now, audio);
         let frame = match self.surface.get_current_texture() {
             Frame::Success(t) | Frame::Suboptimal(t) => t,
             Frame::Outdated | Frame::Lost => {
                 self.surface.configure(&self.gpu.device, &self.config);
-                return;
+                return false;
             }
-            _ => return,
+            _ => return false,
         };
         let (gpu, show) = (&self.gpu, &self.show);
         let mut enc = gpu.device.create_command_encoder(&Default::default());
@@ -130,5 +131,6 @@ impl Player {
         self.presenter.present(gpu, &mut enc, &self.targets, &view);
         gpu.queue.submit([enc.finish()]);
         gpu.queue.present(frame);
+        true
     }
 }
