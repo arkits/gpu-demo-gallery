@@ -5,16 +5,23 @@ Rust 1.92 or newer with the `wasm32-unknown-unknown` target. `scripts/build-web.
 installs the matching `wasm-bindgen` under `target/tools`, not globally.
 
 ## Checking frames
-    cargo run --release -p sushi-engine --example shot -- Sushi.ati 60 out.png
-renders one frame offscreen at 1024x768. In the browser, `?t=60` freezes the same
-moment. At t=60, native Metal, Chrome WebGPU and Chrome WebGL2 differ by a mean of
-0.001/255 (84 of 2.4 million channel values differ by more than 8), measured on
-2026-11-24 on Apple silicon. Safari, Firefox and Windows are not tested yet.
+    cargo run --release -p sushi-engine --example shot  -- Sushi.ati 60 out.png
+    cargo run --release -p sushi-engine --example sweep -- Sushi.ati 0.25
+`shot` renders one frame offscreen at 1024x768. `sweep` renders the whole timeline and
+reports warnings (missing shader variants or pipelines) and cost. In the browser, `?t=60`
+freezes the same moment and `window.pipedream` exposes the player.
+
+## Native packages
+`package-macos.sh` makes an ad-hoc signed app (universal if `x86_64-apple-darwin` is
+installed). `package-windows.sh` cross-builds with mingw-w64 and `x86_64-pc-windows-gnu`.
+Without a path the player looks beside itself, then shows a file dialog.
 
 ## Inspecting data
     cargo run -p sushi-formats --example inspect_scene  -- Sushi.ati
     cargo run -p sushi-formats --example inspect_layout -- Sushi.ati
     cargo run -p sushi-formats --example inspect_anim   -- Sushi.ati
+    cargo run -p sushi-formats --example inspect_mesh   -- Sushi.ati marimba-00
+    cargo run -p sushi-formats --example glow_times     -- Sushi.ati
 
 ## Studying the original program
 Addresses in the code and docs refer to `SushiDX.exe` (image base 0x400000).

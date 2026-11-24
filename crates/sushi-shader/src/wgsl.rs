@@ -169,7 +169,13 @@ pub fn translate(
         let _ = writeln!(s, "  @location({t}) t{t}: vec4<f32>,");
     }
     for c in &col {
-        let _ = writeln!(s, "  @location({}) d{c}: vec4<f32>,", 8 + c);
+        // On the original hardware colors never extrapolate past the triangle,
+        // which shaders such as oMarimbaGlow.ssh rely on.
+        let _ = writeln!(
+            s,
+            "  @location({}) @interpolate(perspective, centroid) d{c}: vec4<f32>,",
+            8 + c
+        );
     }
     s.push_str("};\n@vertex\nfn vs(i: In) -> V2F {\n  var o: V2F;\n");
     let wide: Vec<String> = m

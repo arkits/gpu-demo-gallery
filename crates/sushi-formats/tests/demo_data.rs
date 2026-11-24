@@ -65,6 +65,11 @@ fn fly_path_covers_the_music() {
     let p = path::read_path(t).unwrap();
     assert_eq!(p.frames.len(), 6448);
     assert!((p.frames.len() as f32 * p.step - 214.93).abs() < 0.05);
+    // Every jump follows a flagged sample.
+    for w in p.frames.windows(2) {
+        let d: f32 = (0..3).map(|i| (w[1].pos[i] - w[0].pos[i]).powi(2)).sum();
+        assert!(d.sqrt() < 15.0 || w[0].flag == 1, "unmarked jump {w:?}");
+    }
     for f in &p.frames {
         let n: f32 = f.quat.iter().map(|q| q * q).sum();
         assert!((n - 1.0).abs() < 1e-3, "non-unit quaternion {f:?}");

@@ -58,6 +58,29 @@ pub enum Const {
     Builtin(String, String),
 }
 
+/// Constant registers in the order they were set. A matrix covers several
+/// registers, so a later write must win over an earlier one it overlaps.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Constants(Vec<(u32, Const)>);
+
+impl Constants {
+    pub fn insert(&mut self, register: u32, value: Const) {
+        self.0.retain(|c| c.0 != register);
+        self.0.push((register, value));
+    }
+    pub fn extend(&mut self, other: Constants) {
+        for (r, c) in other.0 {
+            self.insert(r, c);
+        }
+    }
+    pub fn get(&self, register: u32) -> Option<&Const> {
+        self.0.iter().find(|c| c.0 == register).map(|c| &c.1)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &Const)> {
+        self.0.iter().map(|(r, c)| (*r, c))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sampler {
     pub texture: String,
@@ -146,8 +169,8 @@ pub struct Pass {
     pub stream_map: String,
     pub vs: Option<Arc<str>>,
     pub ps: Option<Arc<str>>,
-    pub vs_const: BTreeMap<u32, Const>,
-    pub ps_const: BTreeMap<u32, Const>,
+    pub vs_const: Constants,
+    pub ps_const: Constants,
     pub samplers: BTreeMap<u32, Sampler>,
     pub blend: Option<(Factor, Factor)>,
     pub z_test: bool,
@@ -169,8 +192,8 @@ impl Default for Pass {
             stream_map: String::new(),
             vs: None,
             ps: None,
-            vs_const: BTreeMap::new(),
-            ps_const: BTreeMap::new(),
+            vs_const: Constants::default(),
+            ps_const: Constants::default(),
             samplers: BTreeMap::new(),
             blend: None,
             z_test: true,
@@ -788,10 +811,26 @@ mod tests {
         .unwrap();
         let s = &f.shaders[0];
         assert!(s.has("p") && s.has("Q"));
-        assert_eq!(s.passes[0].vs_const[&5], Const::Var("a".into()));
-        assert_eq!(s.passes[1].vs_const[&5], Const::Var("b".into()));
+        assert_eq!(s.passes[0].vs_const.get(5), Some(&Const::Var("a".into())));
+        assert_eq!(s.passes[1].vs_const.get(5), Some(&Const::Var("b".into())));
         assert_eq!(s.passes[1].cull, Cull::None);
         assert_eq!(f.vars["a"].default, [1.0, 2.0]);
+    }
+
+    #[test]
+    fn later_constants_come_after_the_ones_they_overlap() {
+        let f = parse(
+            "StartShader \"s\"\nStartPass\nVsConst 5 eye\nVsConst 4 x\nEndPass\n\
+             StartPass\nVsConst 4 matrix\nEndPass\nEndShader",
+            &none,
+        )
+        .unwrap();
+        let order: Vec<u32> = f.shaders[0].passes[1]
+            .vs_const
+            .iter()
+            .map(|c| c.0)
+            .collect();
+        assert_eq!(order, [5, 4]);
     }
 
     #[test]

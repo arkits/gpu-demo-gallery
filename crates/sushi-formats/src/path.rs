@@ -12,6 +12,7 @@ pub struct PathFrame {
     pub pos: [f32; 3],
     /// -1 throughout the demo: use the default field of view (inferred).
     pub fov: f32,
+    /// 1 on the last sample of a shot; the next sample starts another.
     pub flag: i32,
     pub quat: [f32; 4],
 }
