@@ -176,7 +176,7 @@ impl Default for Pass {
             z_test: true,
             z_write: true,
             z_func: Compare::LessEqual,
-            cull: Cull::Ccw,
+            cull: Cull::Cw,
             stencil: None,
             color_write: true,
             wireframe: false,

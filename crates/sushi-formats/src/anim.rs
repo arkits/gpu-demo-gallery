@@ -109,7 +109,7 @@ pub fn read_animation(data: &[u8]) -> Result<Animation> {
         let n = u32_at(raw, 0x54) as usize;
         params.push(ParamTrack {
             raw: raw.to_vec(),
-            name: cstr(raw),
+            name: cstr(&raw[4..0x44]),
             keys: keys(&mut r, n)?,
         });
     }

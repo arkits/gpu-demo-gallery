@@ -2,5 +2,7 @@
 pub mod camera;
 pub mod demo;
 pub mod gpu;
-pub mod scene_renderer;
+pub mod light;
+pub mod object;
+pub mod pipeline;
 pub mod targets;

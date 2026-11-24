@@ -1725,6 +1725,7 @@ dependencies = [
  "png",
  "pollster",
  "sushi-formats",
+ "sushi-shader",
  "wgpu",
 ]
 
