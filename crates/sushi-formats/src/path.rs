@@ -1,0 +1,60 @@
+use crate::reader::{Error, Result};
+
+/// Camera fly path (`.pth`, text).
+#[derive(Debug, Clone)]
+pub struct FlyPath {
+    pub step: f32,
+    pub frames: Vec<PathFrame>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PathFrame {
+    pub pos: [f32; 3],
+    /// -1 throughout the demo: use the default field of view (inferred).
+    pub fov: f32,
+    pub flag: i32,
+    pub quat: [f32; 4],
+}
+
+pub fn read_path(text: &str) -> Result<FlyPath> {
+    let eof = || Error::Bad {
+        at: 0,
+        what: "truncated path".into(),
+    };
+    if text.lines().next().map(str::trim) != Some("v1.0") {
+        return Err(Error::Bad {
+            at: 1,
+            what: "expected v1.0".into(),
+        });
+    }
+    let body = text.split_once('\n').ok_or_else(eof)?.1;
+    let mut rows = body
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty());
+    let mut row = |want: usize| -> Result<Option<Vec<f32>>> {
+        let Some((i, l)) = rows.next() else {
+            return Ok(None);
+        };
+        let v: std::result::Result<Vec<f32>, _> = l.split_whitespace().map(str::parse).collect();
+        match v {
+            Ok(v) if v.len() == want => Ok(Some(v)),
+            _ => Err(Error::Bad {
+                at: i + 2,
+                what: format!("expected {want} numbers: {l:?}"),
+            }),
+        }
+    };
+    let step = row(1)?.ok_or_else(eof)?[0];
+    let mut frames = Vec::new();
+    while let Some(a) = row(5)? {
+        let q = row(4)?.ok_or_else(eof)?;
+        frames.push(PathFrame {
+            pos: [a[0], a[1], a[2]],
+            fov: a[3],
+            flag: a[4] as i32,
+            quat: [q[0], q[1], q[2], q[3]],
+        });
+    }
+    Ok(FlyPath { step, frames })
+}
