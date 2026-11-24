@@ -27,6 +27,8 @@
   #modes button[aria-pressed=true] { border-color: #9ed13c; color: #d5f29a; }
   #modes button { background: #0a0f08c0; padding: 6px 12px; min-height: 44px; }
 </style>
+<!-- Cloudflare Pages adds its analytics script to an explicit body. -->
+<body>
 <canvas id="view" tabindex="0" aria-label="The NVIDIA logo, shaded step by step"></canvas>
 <div id="modes" hidden>
   <button data-key="1" data-model="0">Shiny</button><button data-key="2" data-model="1">Techy</button><button data-key="3" data-model="2">Bumpy</button>
@@ -275,4 +277,5 @@
   }
   $("progress").hidden = true;
 </script>
+</body>
 </html>
