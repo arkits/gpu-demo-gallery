@@ -8,7 +8,7 @@ Status: DRAFT, awaiting decisions (last section). Nothing is built.
 | Demo | Made by | Engine | Shading | Data |
 |---|---|---|---|---|
 | Car Paint | ATI, 2002-03 | Sushi; **same exe as Pipe Dream, byte for byte** [V] | 21 demo `.ssh` files, vs.1.1/ps.1.4/ps.2.0 | 24 MB `Sushi.ati`, two WAVs |
-| Box of Smoke | NVIDIA, 2006 | Own program, OpenGL + Cg, 176 KB exe [V] | ~55 Cg files **in source** [V] | 13 MB of OBJ and raw files, no sound |
+| Box of Smoke | NVIDIA, 2006 | Own program, OpenGL + Cg, 176 KB exe [V] | 56 Cg files **in source** [V] | 16 MB of OBJ and raw files, no sound |
 | Principles of Shading | NVIDIA, June 2000 | NVIDIA viewer, OpenGL | Texture and combiner descriptions in the models | 72 MB unpacked, four WAVs |
 | Creature | NVIDIA, June 2000 | NVIDIA viewer, DirectX 7 | Same kind of descriptions | 25 MB unpacked, three WAVs |
 
@@ -50,7 +50,8 @@ One WASM file per engine, so a page downloads only what it needs.
   made for, and what it showed off. Cards link to `/pipedream`, `/carpaint`, ...
 - Player page: the current one, with download size shown before Start and per-demo controls.
 - Same Cloudflare approach: direct upload, content outside Git, xz packs under 25 MiB each
-  (Principles of Shading needs more than one pack).
+  (unpacked folders, plain xz: Principles of Shading 23.3 MiB, Creature 13.1, Smoke 3.9 [V];
+  the first only just fits).
 - The current Pipe Dream link keeps working.
 - Native: one app with a chooser.
 
@@ -60,8 +61,8 @@ One WASM file per engine, so a page downloads only what it needs.
 time, fades, logos, script) into data. *Check: the same frames as now, and `dev.sh all`.*
 
 **1. Car Paint.** Best value for effort.
-- Scene 0x290 records: mirrors. `DrawReflections` (0x415610) walks them with mirrored views
-  and clip planes [V].
+- Scene 0x290 records: mirrors. `0x415610` walks them, pushes a matrix from each record and
+  enables clip planes (render state 0x98) [V]. That the matrix is a mirror is [I].
 - Run `.sds` scripts instead of the hard-coded frame: render targets, viewports, scissor,
   reflections, quads, text. Five chapters, each a script and a camera path.
 - Texture format 12: 32 bits per pixel, two 16-bit channels [V]; used for the car's
@@ -69,8 +70,9 @@ time, fades, logos, script) into data. *Check: the same frames as now, and `dev.
 - *Check: every chapter renders; a timeline sweep has no warnings.*
 
 **2. Box of Smoke.** Independent of the rest, small download, interactive.
-- Port the Cg by hand to WGSL. 3D grids are stored as flat atlases, so it needs float render
-  targets, not 3D rendering.
+- Port the Cg by hand to WGSL. The simulation shaders read 3D grids as flat 2D atlases [V],
+  so it needs float render targets. `raycast_f.cg` samples a 3D texture, but the exe does
+  not name that file, only the slice and level-set casters [V].
 - Recover pass order, constants and grid size from the 176 KB exe.
 - Controls: drag moves the source, Ctrl-drag turns the box, N logo, W water, S smoke.
 - *Check: solver tests (divergence falls, smoke is conserved) and 60 fps at full grid.*
