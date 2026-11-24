@@ -6,13 +6,9 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-DEMO = ROOT / "ATI_Radeon-9700_PipeDream-Demo_v1.1/ATI Demos/PipeDream"
-# Only these are exposed, and they are never copied into dist/.
-LOCAL = {
-    f"/local/{n}": DEMO / n for n in ("Sushi.ati", "Logo2.tga", "Audio/AnimusicIntro.mp3")
-}
-
-LOCAL["/local/pipedream.xz"] = ROOT / "target/package/pipedream.xz"
+# Exposed, but never copied into dist/.
+LOCAL = {f"/local/Audio/CarRoom{n}.wav": ROOT / f"data/Audio/CarRoom{n}.wav" for n in ("Intro", "Loop")}
+LOCAL["/local/carpaint.xz"] = ROOT / "target/package/carpaint.xz"
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):

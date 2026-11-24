@@ -659,7 +659,7 @@ impl Demo {
     /// Finds the first shader with all the properties (0x445c20). If none exists
     /// for this many lights, fewer lights are used so the object still draws.
     fn variant(&self, file: usize, property: &str, lights: usize, mirrored: bool) -> Option<usize> {
-        // What a mirror shows prefers its own shaders (0x41455c).
+        // What a mirror shows prefers its own shaders (0x413f50).
         if mirrored && let Some(s) = self.lit_variant(file, "Reflections", lights) {
             return Some(s);
         }
@@ -944,6 +944,8 @@ impl Demo {
                     self.pipelines.record(&mut pass, c, &self.buffers);
                 }
             }
+            // In WebGL the scissor also limits the resolve at the end of the pass.
+            pass.set_scissor_rect(0, 0, w, h);
         }
         marks
     }
@@ -1021,11 +1023,15 @@ impl Demo {
                 let lit: Vec<&Light> = d.lights.iter().map(|l| &lights[*l]).collect();
                 let variant = self.variant(d.shader, property, lit.len(), eye.mirror.is_some());
                 let Some(shader) = variant else {
-                    let name = &self.shader_names[d.shader];
-                    self.warnings.insert(format!(
-                        "{name}: no {property} shader for {} lights",
-                        lit.len()
-                    ));
+                    // A mirror shows only what its shaders name; the original skips the
+                    // rest as well (0x413f50).
+                    if eye.mirror.is_none() {
+                        let name = &self.shader_names[d.shader];
+                        self.warnings.insert(format!(
+                            "{name}: no {property} shader for {} lights",
+                            lit.len()
+                        ));
+                    }
                     continue;
                 };
                 let ctx = Context {
@@ -1295,7 +1301,7 @@ fn builtin(name: &str, ctx: &Context) -> Option<Vec<[f32; 4]>> {
         let Some(l) = ctx.lights.get(n) else {
             return Some(vec![[0.0; 4]; 4]);
         };
-        // A mirror moves every row as a point (0x426xxx), keeping its scale.
+        // A mirror moves every row as a point (0x4265f0), keeping its scale.
         let row = |r: &[f32; 4]| match ctx.mirror {
             Some(m) => {
                 let p = m.transform_point3(Vec3::new(r[0], r[1], r[2]));

@@ -1,6 +1,6 @@
 [package]
-name = "pipedream"
-description = "Pipe Dream player: native window and browser"
+name = "carpaint"
+description = "Car Paint player: native window and browser"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,7 +16,7 @@ wgpu = "30.0.2"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "1.0.3"
 rfd = "0.18.0"
-rodio = { version = "0.23.0", default-features = false, features = ["playback", "mp3"] }
+rodio = { version = "0.23.0", default-features = false, features = ["playback"] }
 winit = "0.30"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

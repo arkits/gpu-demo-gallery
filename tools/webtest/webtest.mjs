@@ -1,12 +1,11 @@
 // Drives the web build in headless Chrome: webtest.mjs <url> <out dir> <command> [gpu] [arg]
-//   show   start, sync, seek, pause, free camera, resize
-//   still  one frozen frame without logos (arg: scene seconds)
-//   full   the whole show in real time
+//   show   start, chapters, music, pause, free camera, resize
+//   still  one frozen frame without the logo (args: chapter, seconds)
 import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
 const { chromium } = createRequire(process.env.PLAYWRIGHT_FROM + "/")("playwright-core");
 
-const [, , url, out, command, gpu = "webgpu", arg] = process.argv;
+const [, , url, out, command, gpu = "webgpu", chapter = "1", time = "12"] = process.argv;
 mkdirSync(out, { recursive: true });
 const flags = {
   webgpu: ["--enable-unsafe-webgpu"],
@@ -30,11 +29,11 @@ const uses = () => page.evaluate(() => {
 page.on("console", (m) => m.type() === "error" && check(false, `console: ${m.text().slice(0, 300)}`));
 page.on("pageerror", (e) => check(false, `page: ${String(e).slice(0, 300)}`));
 const shot = (name) => page.screenshot({ path: `${out}/${name}.png` });
-const started = () => page.waitForFunction(() => window.pipedream, null, { timeout: 90000 });
+const started = () => page.waitForFunction(() => window.demo, null, { timeout: 90000 });
 const state = () => page.evaluate(() => ({
-  time: pipedream.player.time(), audio: pipedream.audio?.currentTime, paused: pipedream.player.paused(),
+  time: demo.player.time(), chapter: demo.player.chapter(), paused: demo.player.paused(),
+  audio: demo.audio?.context.currentTime, sound: demo.audio?.context.state,
 }));
-const offset = (s) => Math.abs(s.time - 10 - s.audio);
 const frames = (ms) => page.evaluate((ms) => new Promise((done) => {
   const start = performance.now();
   let n = 0, last = start, worst = 0;
@@ -59,16 +58,26 @@ async function start() {
 const commands = {
   async show() {
     await start();
-    await page.waitForTimeout(3500);
-    let s = await state();
-    check(offset(s) < 0.06, `in sync at start (${(offset(s) * 1000).toFixed(0)} ms)`);
-    for (let i = 0; i < 12; i++) await page.keyboard.press("ArrowRight");
     await page.waitForTimeout(2500);
+    let s = await state();
+    check(s.chapter === 0 && s.time > 1.5 && s.sound === "running", `plays with music (${s.time.toFixed(1)} s, ${s.sound})`);
+    for (let c = 1; c <= 5; c++) {
+      await page.keyboard.press(String(c));
+      await page.keyboard.press("ArrowRight");
+      await page.waitForTimeout(700);
+      const f = await frames(1500);
+      s = await state();
+      check(s.chapter === c - 1 && f.fps > 50 && f.worst < 100, `chapter ${c}: ${f.fps.toFixed(0)} fps, worst frame ${f.worst.toFixed(0)} ms`);
+      await shot(`${gpu}-chapter${c}`);
+    }
+    for (let i = 0; i < 12; i++) await page.keyboard.press("ArrowRight");
+    await page.waitForTimeout(700);
     s = await state();
-    check(s.time > 70 && offset(s) < 0.06, `in sync after seeking (${(offset(s) * 1000).toFixed(0)} ms)`);
-    const f = await frames(3000);
-    check(f.fps > 50 && f.worst < 100, `${f.fps.toFixed(0)} fps, worst frame ${f.worst.toFixed(0)} ms`);
-    await shot(`${gpu}-play`);
+    check(s.chapter === 0 && s.time < 1, "the last chapter leads to the first");
+    await page.click("#chapters button:nth-child(2)");
+    await page.waitForTimeout(1500);
+    s = await state();
+    check(s.chapter === 1, "chapter buttons");
     await page.keyboard.press("Space");
     await page.waitForTimeout(400);
     const a = await state();
@@ -76,8 +85,8 @@ const commands = {
     const b = await state();
     check(a.paused && a.time === b.time && a.audio === b.audio, "pause holds picture and music");
     await page.keyboard.press("Space");
-    await page.keyboard.press("4");
     await page.mouse.move(500, 400); await page.mouse.down(); await page.mouse.move(430, 370, { steps: 4 }); await page.mouse.up();
+    await page.mouse.wheel(0, -200);
     await page.waitForTimeout(400);
     await shot(`${gpu}-orbit`);
     await page.keyboard.press("f");
@@ -86,37 +95,13 @@ const commands = {
     await shot(`${gpu}-wide`);
   },
   async still() {
-    await page.goto(`${url}?t=${arg ?? 100}`);
+    await page.goto(`${url}?chapter=${chapter}&t=${time}`);
     await started();
     const used = await uses();
     check(used === gpu, `canvas uses ${used}`);
     await page.keyboard.press("l");
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(1200);
     await shot(`${gpu}-still`);
-    check(true, `still at ${arg ?? 100}`);
-  },
-  async full() {
-    await start();
-    await page.evaluate(() => {
-      const s = (window.stats = { n: 0, late: 0, offset: 0, looped: false, last: performance.now(), time: 0 });
-      const tick = (now) => {
-        s.n++; if (now - s.last > 25) s.late++; s.last = now;
-        const t = pipedream.player.time(), a = pipedream.audio;
-        if (t < s.time - 100) s.looped = true;
-        s.time = t;
-        if (!a.paused && !a.ended && a.currentTime > 0.5) s.offset = Math.max(s.offset, Math.abs(t - 10 - a.currentTime));
-        requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    });
-    for (let i = 0; i < 11; i++) {
-      await page.waitForTimeout(20000);
-      console.log("    ", JSON.stringify(await page.evaluate(() => window.stats)));
-    }
-    const s = await page.evaluate(() => window.stats);
-    check(s.looped, "show restarts");
-    check(s.offset < 0.1, `stays in sync (${(s.offset * 1000).toFixed(0)} ms at worst)`);
-    check(s.late < s.n / 100, `${s.late} late of ${s.n} frames`);
   },
 };
 try {

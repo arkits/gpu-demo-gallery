@@ -1,23 +1,24 @@
-# Car Paint (work in progress)
+# Car Paint
 
-A port of ATI's Radeon 9700 "Car Paint" demo (2002) to browsers, macOS and Windows, built
-on the Sushi engine from the Pipe Dream port. The demo's files are ATI's and are not in this
-repository: put your `Sushi.ati` and `Audio` folder in `data/`.
+A port of ATI's Radeon 9700 "Car Paint" demo (2002, Direct3D 9) to current systems: browsers
+(WebGPU, or WebGL2), macOS and Windows. Written in Rust with wgpu. It reads the demo's own
+data, shaders and frame scripts.
 
-    cargo run --release -p sushi-engine --example shot -- data/Sushi.ati 4 12 out.png
+The demo's files are ATI's and are not in this repository. Put your `Sushi.ati` and `Audio`
+folder in `data/`.
 
-## Status
+    scripts/dev.sh run      native player
+    scripts/dev.sh web      browser version at http://127.0.0.1:8080/
+    scripts/dev.sh all      every check
 
-Done: all data parses, every shader needed at 12 s of chapters 1 and 4 translates, mirrors
-(`0x415610`), frame scripts, viewports and scissors, 16-bit normal maps (as half floats),
-alpha test, text and outlines. The five chapters load.
+| Input | Action |
+|---|---|
+| 1 to 5 | Chapters: the car, normal maps, 8 and 16 bits, paint build up, colors |
+| Space, ← → | Pause, skip |
+| Drag, scroll, F | Free camera (not in the original); F returns |
+| L, M | Logo, mute |
+| Enter, Esc | Full screen, quit (native) |
 
-Left:
-- `crates/carpaint` is still Pipe Dream's player and does not build: needs chapters with
-  1 s fades and automatic advance (`cycleAllModes`), keys 1 to 5, the orbit camera.
-- Music: MS ADPCM WAVs, so they need a decoder. Intro, then the loop starting 6.92 s before
-  the intro ends; both restart with each chapter (0x4253a0).
-- `scripts/`, `web/`, `tools/` and the crates' data tests are still Pipe Dream's copies.
-- `global/gvlight.ssh` has no shader for the chapter's property in the mirror, so it is
-  skipped there with a warning. Check whether the original skips it too.
-- Look at every chapter along its whole path; check WebGPU, WebGL2 and native.
+The engine is the one in the [Pipe Dream port](https://github.com/arkits/pipedream), whose
+`SushiDX.exe` is byte for byte the same; its `docs` describe the parts not listed in
+[docs/ENGINE.md](docs/ENGINE.md).

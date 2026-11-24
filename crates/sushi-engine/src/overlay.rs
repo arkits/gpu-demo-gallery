@@ -29,7 +29,7 @@ pub enum Mark {
     },
 }
 
-/// Character width over height (0x405xxx, command 0xc).
+/// Character width over height (0x404810, command 0xc).
 const CHARACTER: f32 = 0.3125;
 
 struct Logo {

@@ -1,9 +1,10 @@
-use std::io::Cursor;
+use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use pipedream::{Data, Player};
+use carpaint::Player;
+use carpaint::music::Music as Score;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -13,14 +14,14 @@ use winit::window::{Fullscreen, Window, WindowId};
 
 type Error = Box<dyn std::error::Error>;
 
-const DEMO: &str = "ATI_Radeon-9700_PipeDream-Demo_v1.1/ATI Demos/PipeDream/Sushi.ati";
+const DEMO: &str = "data/Sushi.ati";
 
 #[derive(Default)]
 struct Options {
     path: Option<PathBuf>,
     mute: bool,
-    /// Scene seconds to start at.
-    start: Option<f32>,
+    /// Chapter to start with, from 1.
+    chapter: Option<usize>,
     /// Run this many seconds in a hidden window, report, and quit.
     smoke: Option<f64>,
 }
@@ -37,7 +38,7 @@ fn options() -> Result<Options, Error> {
         };
         match a.to_str() {
             Some("--mute") => o.mute = true,
-            Some("--start") => o.start = Some(number()? as f32),
+            Some("--chapter") => o.chapter = Some(number()? as usize),
             Some("--smoke") => o.smoke = Some(number()?),
             Some(f) if f.starts_with("--") => return Err(format!("unknown option {f}").into()),
             _ => o.path = Some(a.into()),
@@ -56,17 +57,17 @@ fn remembered() -> Option<PathBuf> {
     } else {
         var("XDG_CONFIG_HOME").or_else(|| Some(var("HOME")?.join(".config")))?
     };
-    Some(base.join("pipedream").join("archive-path.txt"))
+    Some(base.join("carpaint").join("archive-path.txt"))
 }
 
-/// Finds `Sushi.ati`: argument, `PIPEDREAM_DATA`, beside or above the program,
+/// Finds `Sushi.ati`: argument, `CARPAINT_DATA`, beside or above the program,
 /// the last choice, then a dialog.
 fn find_archive(o: &Options) -> Option<PathBuf> {
     let from = |p: PathBuf| if p.is_dir() { p.join("Sushi.ati") } else { p };
     if let Some(p) = o
         .path
         .clone()
-        .or_else(|| std::env::var_os("PIPEDREAM_DATA").map(Into::into))
+        .or_else(|| std::env::var_os("CARPAINT_DATA").map(Into::into))
     {
         return Some(from(p));
     }
@@ -96,7 +97,7 @@ fn find_archive(o: &Options) -> Option<PathBuf> {
         return None;
     }
     let picked = rfd::FileDialog::new()
-        .set_title("Choose Sushi.ati from the original Pipe Dream demo")
+        .set_title("Choose Sushi.ati from the original Car Paint demo")
         .add_filter("Sushi.ati", &["ati"])
         .pick_file()?;
     if let Some(s) = saved {
@@ -108,28 +109,54 @@ fn find_archive(o: &Options) -> Option<PathBuf> {
 
 struct Music {
     player: rodio::Player,
+    score: Arc<Score>,
     _device: rodio::MixerDeviceSink,
 }
 
+/// Plays the score from its start, without end.
+struct Playing(Arc<Score>, usize);
+
+impl Iterator for Playing {
+    type Item = f32;
+    fn next(&mut self) -> Option<f32> {
+        self.1 += 1;
+        Some(self.0.sample(self.1 - 1))
+    }
+}
+
+impl rodio::Source for Playing {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> rodio::ChannelCount {
+        NonZero::new(self.0.intro.channels as u16).expect("checked while decoding")
+    }
+    fn sample_rate(&self) -> rodio::SampleRate {
+        NonZero::new(self.0.intro.rate).expect("checked while decoding")
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+}
+
 impl Music {
-    fn open(data: Vec<u8>) -> Result<Self, Error> {
+    fn open(score: Score) -> Result<Self, Error> {
         // rodio's preferred buffer size is too big for some devices, such as AirPods.
         let mut device = rodio::DeviceSinkBuilder::from_default_device()?
             .with_buffer_size(rodio::cpal::BufferSize::Default)
             .open_sink_or_fallback()?;
         device.log_on_drop(false);
-        let player = rodio::Player::connect_new(device.mixer());
-        let len = data.len() as u64;
-        let decoder = rodio::Decoder::builder()
-            .with_data(Cursor::new(data))
-            .with_byte_len(len)
-            .with_seekable(true)
-            .build()?;
-        player.append(decoder);
         Ok(Self {
-            player,
+            player: rodio::Player::connect_new(device.mixer()),
+            score: Arc::new(score),
             _device: device,
         })
+    }
+
+    fn restart(&self) {
+        self.player.clear();
+        self.player.append(Playing(self.score.clone(), 0));
+        self.player.play();
     }
 }
 
@@ -144,23 +171,18 @@ pub fn run() -> Result<(), Error> {
     let archive =
         std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let dir = path.parent().unwrap_or(Path::new("."));
-    let data = Data {
-        archive,
-        logo: std::fs::read(dir.join("Logo2.tga")).ok(),
+    let wav = |name: &str| -> Result<Vec<u8>, Error> {
+        let name = format!("CarRoom{name}.wav");
+        let near = std::fs::read(dir.join("Audio").join(&name));
+        Ok(near.or_else(|_| std::fs::read(dir.join(&name)))?)
     };
-    let mp3 = dir.join("Audio").join("AnimusicIntro.mp3");
-    let mp3 = if mp3.is_file() {
-        mp3
-    } else {
-        dir.join("AnimusicIntro.mp3")
-    };
-    let mp3 = std::fs::read(&mp3).map_err(Error::from);
-    let music = mp3.and_then(Music::open);
-    let music = music
+    let music =
+        || -> Result<Music, Error> { Music::open(Score::new(&wav("Intro")?, &wav("Loop")?)?) };
+    let music = music()
         .inspect_err(|e| eprintln!("playing without music: {e}"))
         .ok();
     let mut app = App {
-        data,
+        archive,
         music,
         muted: options.mute || options.smoke.is_some(),
         options,
@@ -177,7 +199,7 @@ pub fn run() -> Result<(), Error> {
 }
 
 struct App {
-    data: Data,
+    archive: Vec<u8>,
     music: Option<Music>,
     muted: bool,
     options: Options,
@@ -194,7 +216,7 @@ struct App {
 impl App {
     fn open(&mut self, el: &ActiveEventLoop) -> Result<(), Error> {
         let attrs = Window::default_attributes()
-            .with_title("Pipe Dream")
+            .with_title("Car Paint")
             .with_visible(self.options.smoke.is_none())
             .with_active(self.options.smoke.is_none())
             .with_inner_size(LogicalSize::new(1024, 768));
@@ -205,14 +227,14 @@ impl App {
             &instance,
             window.clone(),
             (size.width, size.height),
-            &self.data,
+            &self.archive,
         );
         let mut player = pollster::block_on(player)?;
         while !player.ready() {
             std::thread::sleep(Duration::from_millis(5));
         }
-        if let Some(t) = self.options.start {
-            player.show.set_time(t);
+        if let Some(c) = self.options.chapter {
+            player.show.go(c.max(1) - 1);
         }
         self.player = Some(player);
         if self.options.smoke.is_none() {
@@ -228,12 +250,9 @@ impl App {
         let Some(player) = &mut self.player else {
             return;
         };
-        let mut audio = None;
         if let Some(m) = &self.music {
-            if let Some(t) = player.show.take_seek()
-                && let Err(e) = m.player.try_seek(Duration::from_secs_f64(t))
-            {
-                eprintln!("seek: {e}");
+            if player.show.take_restart() {
+                m.restart();
             }
             match player.show.paused() {
                 true => m.player.pause(),
@@ -244,14 +263,13 @@ impl App {
             } else {
                 player.show.brightness()
             });
-            audio = (!m.player.empty() && !m.player.is_paused())
-                .then(|| m.player.get_pos().as_secs_f64());
         }
-        if !player.frame(self.start.elapsed().as_secs_f64(), audio) {
+        let now = self.start.elapsed().as_secs_f64();
+        if !player.frame(now) {
             // Hidden window: nothing paces us, so avoid spinning.
             std::thread::sleep(Duration::from_millis(16));
             if self.options.smoke.is_some() {
-                player.frame_offscreen();
+                player.frame_offscreen(now);
                 self.frames.1 += 1;
             }
         } else {
@@ -319,7 +337,7 @@ impl ApplicationHandler for App {
                         "unavailable"
                     };
                     println!(
-                        "frames {} (shown {shown}, offscreen {hidden}) scene time {time:.2} music {music}",
+                        "frames {} (shown {shown}, offscreen {hidden}) time {time:.2} music {music}",
                         shown + hidden
                     );
                     return el.exit();

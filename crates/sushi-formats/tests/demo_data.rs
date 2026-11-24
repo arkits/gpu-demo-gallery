@@ -1,5 +1,5 @@
 //! Parses the original demo data end to end. Needs the user's own copy:
-//! set `SUSHI_ATI`, or keep the demo folder at the repository root.
+//! set `SUSHI_ATI`, or keep it in `data/`.
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
@@ -9,11 +9,7 @@ fn demo() -> &'static Archive {
     static A: OnceLock<Archive> = OnceLock::new();
     A.get_or_init(|| {
         let p = std::env::var("SUSHI_ATI").unwrap_or_else(|_| {
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../ATI_Radeon-9700_PipeDream-Demo_v1.1/ATI Demos/PipeDream/Sushi.ati"
-            )
-            .into()
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/Sushi.ati").into()
         });
         let data = std::fs::read(&p).unwrap_or_else(|e| panic!("need Sushi.ati at {p}: {e}"));
         Archive::open(&data).expect("open archive")
@@ -31,7 +27,7 @@ fn each(ext: &str) -> Vec<(&'static str, &'static [u8])> {
 #[test]
 fn every_object_parses_to_eof() {
     let files = each(".so2");
-    assert_eq!(files.len(), 101);
+    assert_eq!(files.len(), 3);
     let bad: Vec<_> = files
         .iter()
         .filter_map(|(n, d)| object::read_object(d).err().map(|e| format!("{n}: {e}")))
@@ -42,7 +38,7 @@ fn every_object_parses_to_eof() {
 #[test]
 fn every_animation_parses_to_eof() {
     let files = each(".sa2");
-    assert_eq!(files.len(), 344);
+    assert_eq!(files.len(), 3);
     let bad: Vec<_> = files
         .iter()
         .filter_map(|(n, d)| anim::read_animation(d).err().map(|e| format!("{n}: {e}")))
@@ -52,7 +48,7 @@ fn every_animation_parses_to_eof() {
 
 #[test]
 fn scenes_parse_to_eof() {
-    for n in ["Globals.ati", "Scenes/Animusic.ati"] {
+    for n in ["Globals.ati", "Scenes/CarRoom.ati"] {
         if let Err(e) = scene::read_scene(demo().get(n).unwrap()) {
             panic!("{n}: {e}");
         }
@@ -60,20 +56,38 @@ fn scenes_parse_to_eof() {
 }
 
 #[test]
-fn fly_path_covers_the_music() {
-    let t = std::str::from_utf8(demo().get("FlyPaths/Animusic.pth").unwrap()).unwrap();
-    let p = path::read_path(t).unwrap();
-    assert_eq!(p.frames.len(), 6448);
-    assert!((p.frames.len() as f32 * p.step - 214.93).abs() < 0.05);
-    // Every jump follows a flagged sample.
-    for w in p.frames.windows(2) {
-        let d: f32 = (0..3).map(|i| (w[1].pos[i] - w[0].pos[i]).powi(2)).sum();
-        assert!(d.sqrt() < 15.0 || w[0].flag == 1, "unmarked jump {w:?}");
+fn fly_paths() {
+    for (name, seconds) in [
+        ("CarRoom", 61.33),
+        ("NormalMap", 37.53),
+        ("NormalMap8vs16", 31.0),
+        ("Paint", 33.37),
+    ] {
+        let t = std::str::from_utf8(demo().get(&format!("FlyPaths/{name}.pth")).unwrap()).unwrap();
+        let p = path::read_path(t).unwrap();
+        let length = p.frames.len() as f32 * p.step;
+        assert!((length - seconds).abs() < 0.01, "{name} {length}");
+        for f in &p.frames {
+            let n: f32 = f.quat.iter().map(|q| q * q).sum();
+            assert!((n - 1.0).abs() < 1e-3, "{name}: non-unit quaternion {f:?}");
+        }
     }
-    for f in &p.frames {
-        let n: f32 = f.quat.iter().map(|q| q * q).sum();
-        assert!((n - 1.0).abs() < 1e-3, "non-unit quaternion {f:?}");
-    }
+}
+
+#[test]
+fn the_floor_is_the_only_mirror() {
+    let s = scene::read_scene(demo().get("Scenes/CarRoom.ati").unwrap()).unwrap();
+    let [m] = s.mirrors.as_slice() else {
+        panic!("{} mirrors", s.mirrors.len());
+    };
+    let (p, t) = (m.plane(), m.matrix());
+    // Points on the plane stay; the normal turns around.
+    assert!(
+        (p[1] - 1.0).abs() < 1e-6 && (p[3] - 11.0606).abs() < 1e-3,
+        "{p:?}"
+    );
+    let y = |y: f32| y * t[5] + t[13];
+    assert!((y(-p[3]) + p[3]).abs() < 1e-3 && (y(0.0) + 2.0 * p[3]).abs() < 1e-3);
 }
 
 /// Structural checks: would fail if fields were mislabelled even at EOF.
@@ -103,7 +117,7 @@ fn animation_keys_are_sane() {
     let mut tracks = 0;
     for (n, d) in each(".sa2") {
         let a = anim::read_animation(d).unwrap();
-        assert!((a.duration - 215.333).abs() < 0.01, "{n}: {}", a.duration);
+        assert!((a.duration - 30.0).abs() < 0.01, "{n}: {}", a.duration);
         for t in &a.bones {
             tracks += 1;
             // The last key is a -1 terminator; the rest span the duration exactly.
@@ -121,7 +135,7 @@ fn animation_keys_are_sane() {
             }
         }
     }
-    assert_eq!(tracks, 942);
+    assert_eq!(tracks, 3);
 }
 
 #[test]
@@ -159,7 +173,7 @@ fn every_texture_decodes_with_an_exact_mip_chain() {
             assert_eq!(l.rgba.len(), l.width * l.height * 4);
         }
     };
-    for f in ["Globals.ati", "Scenes/Animusic.ati"] {
+    for f in ["Globals.ati", "Scenes/CarRoom.ati"] {
         scene::read_scene(demo().get(f).unwrap())
             .unwrap()
             .textures
@@ -173,14 +187,18 @@ fn every_texture_decodes_with_an_exact_mip_chain() {
             .iter()
             .for_each(&mut check);
     }
-    assert!(n > 30, "only {n} textures");
+    assert_eq!(n, 49);
 }
 
 #[test]
 fn scene_draws_reference_valid_data() {
-    let s = scene::read_scene(demo().get("Scenes/Animusic.ati").unwrap()).unwrap();
+    let s = scene::read_scene(demo().get("Scenes/CarRoom.ati").unwrap()).unwrap();
     let mut triangles = 0;
-    for item in s.groups.iter().flat_map(|g| g.draw_items()) {
+    let mirrored = s
+        .mirrors
+        .iter()
+        .flat_map(|m| m.sets.iter().flat_map(|v| &v.groups));
+    for item in s.groups.iter().chain(mirrored).flat_map(|g| g.draw_items()) {
         let d = &s.draws[item.draw];
         let g = &s.geometry[d.geometry()];
         assert!(g.shader() < s.shaders.len());
@@ -212,9 +230,9 @@ fn scene_draws_reference_valid_data() {
 
 #[test]
 fn fast_rt_lights_have_orthonormal_axes() {
-    let s = scene::read_scene(demo().get("Scenes/Animusic.ati").unwrap()).unwrap();
+    let s = scene::read_scene(demo().get("Scenes/CarRoom.ati").unwrap()).unwrap();
     let fast: Vec<_> = s.lights.iter().filter(|l| l.is_fast_rt()).collect();
-    assert_eq!(fast.len(), 7);
+    assert_eq!(fast.len(), 2);
     for l in fast {
         let m = l.fast_rt_matrix();
         let dot = |a: [f32; 4], b: [f32; 4]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];

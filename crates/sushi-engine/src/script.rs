@@ -1,4 +1,4 @@
-//! Frame scripts (`Scripts/*.sds`): parsed as the engine does (0x404xxx).
+//! Frame scripts (`Scripts/*.sds`): run by 0x404810 in the engine.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {

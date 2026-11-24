@@ -1,6 +1,6 @@
 use sushi_engine::demo::Demo;
 use sushi_engine::gpu::Gpu;
-use sushi_engine::overlay::{Corner, Overlay, read_tga};
+use sushi_engine::overlay::{Corner, Overlay};
 use sushi_engine::targets::{Presenter, Targets};
 use wgpu::CurrentSurfaceTexture as Frame;
 
@@ -10,14 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::Show;
 
 type Error = Box<dyn std::error::Error>;
-
-/// The user's own demo files.
-pub struct Data {
-    /// `Sushi.ati`.
-    pub archive: Vec<u8>,
-    /// `Logo2.tga`, if available.
-    pub logo: Option<Vec<u8>>,
-}
 
 pub struct Player {
     gpu: Gpu,
@@ -36,7 +28,7 @@ impl Player {
         instance: &wgpu::Instance,
         target: impl Into<wgpu::SurfaceTarget<'static>>,
         (width, height): (u32, u32),
-        data: &Data,
+        archive: &[u8],
     ) -> Result<Self, Error> {
         let surface = instance.create_surface(target)?;
         let adapter = instance
@@ -58,15 +50,13 @@ impl Player {
         surface.configure(&gpu.device, &config);
         let targets = Targets::new(&gpu, config.width, config.height);
         let presenter = Presenter::new(&gpu, config.format);
-        let mut demo = Demo::load(&gpu, &data.archive)?;
+        let mut demo = Demo::load(&gpu, archive)?;
         let mut overlay = Overlay::new(&gpu);
         // Sizes and corners from 0x421c50.
         if !demo.chip_logo().is_empty() {
             overlay.add_logo(&gpu, demo.chip_logo(), Corner::BottomRight, 0.27);
         }
-        if let Some(logo) = data.logo.as_deref().and_then(read_tga) {
-            overlay.add_logo(&gpu, &[logo], Corner::BottomLeft, 0.25);
-        }
+        overlay.set_font(&gpu, demo.font());
         let ready = Arc::new(AtomicBool::new(false));
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         demo.warm_up(&gpu, &mut enc, &targets);
@@ -74,7 +64,8 @@ impl Player {
         let done = ready.clone();
         gpu.queue
             .on_submitted_work_done(move || done.store(true, Ordering::Release));
-        let show = Show::new(demo.duration());
+        let show = demo.chapters().iter().map(|c| f64::from(c.duration()));
+        let show = Show::new(show.collect());
         Ok(Self {
             gpu,
             surface,
@@ -86,6 +77,10 @@ impl Player {
             show,
             ready,
         })
+    }
+
+    pub fn titles(&self) -> Vec<&'static str> {
+        self.demo.chapters().iter().map(|c| c.title).collect()
     }
 
     /// True once the GPU has compiled everything. Poll before starting.
@@ -104,11 +99,10 @@ impl Player {
         }
     }
 
-    /// Advances the show to wall-clock `now` and draws it. `audio` is the music
-    /// position while it plays. Returns false if the surface was unavailable and
-    /// nothing was drawn.
-    pub fn frame(&mut self, now: f64, audio: Option<f64>) -> bool {
-        self.show.advance(now, audio);
+    /// Advances the show to wall-clock `now` and draws it. Returns false if the
+    /// surface was unavailable and nothing was drawn.
+    pub fn frame(&mut self, now: f64) -> bool {
+        self.show.advance(now);
         let frame = match self.surface.get_current_texture() {
             Frame::Success(t) | Frame::Suboptimal(t) => t,
             Frame::Outdated | Frame::Lost => {
@@ -128,7 +122,8 @@ impl Player {
 
     /// Draws the current frame without showing it, for tests without a visible
     /// window. Waits for the GPU.
-    pub fn frame_offscreen(&mut self) {
+    pub fn frame_offscreen(&mut self, now: f64) {
+        self.show.advance(now);
         let enc = self.render();
         self.gpu.queue.submit([enc.finish()]);
         let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
@@ -137,14 +132,18 @@ impl Player {
     fn render(&mut self) -> wgpu::CommandEncoder {
         let (gpu, show) = (&self.gpu, &self.show);
         let mut enc = gpu.device.create_command_encoder(&Default::default());
-        match show.camera() {
-            Some(c) => self
-                .demo
-                .draw_from(gpu, &mut enc, &self.targets, show.time(), &c),
-            None => self.demo.draw(gpu, &mut enc, &self.targets, show.time()),
-        }
-        self.overlay
-            .draw(gpu, &mut enc, &self.targets, show.logos, show.brightness());
+        let (chapter, time) = (show.chapter(), show.time());
+        let marks = self
+            .demo
+            .draw(gpu, &mut enc, &self.targets, chapter, time, show.camera());
+        self.overlay.draw(
+            gpu,
+            &mut enc,
+            &self.targets,
+            &marks,
+            show.logos,
+            show.brightness(),
+        );
         enc
     }
 }

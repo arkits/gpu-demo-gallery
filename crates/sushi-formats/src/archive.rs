@@ -59,7 +59,7 @@ impl Archive {
     fn unpack(data: Vec<u8>) -> Result<Self> {
         let mut r = Reader::new(&data);
         if r.bytes(8)? != PACK_MAGIC {
-            return r.bad("not a Pipe Dream pack");
+            return r.bad("not a Sushi pack");
         }
         let mut sizes = Vec::new();
         for _ in 0..r.count()? {

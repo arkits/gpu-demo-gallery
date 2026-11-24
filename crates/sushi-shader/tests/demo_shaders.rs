@@ -3,13 +3,8 @@ use sushi_formats::{archive::Archive, object, scene, shader_header::ShaderHeader
 use sushi_shader::{parse, wgsl};
 
 fn demo() -> Archive {
-    let p = std::env::var("SUSHI_ATI").unwrap_or_else(|_| {
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../ATI_Radeon-9700_PipeDream-Demo_v1.1/ATI Demos/PipeDream/Sushi.ati"
-        )
-        .into()
-    });
+    let p = std::env::var("SUSHI_ATI")
+        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/Sushi.ati").into());
     Archive::open(&std::fs::read(&p).unwrap_or_else(|e| panic!("need Sushi.ati at {p}: {e}")))
         .unwrap()
 }
@@ -57,7 +52,7 @@ fn every_file_parses() {
         .filter(|n| n.ends_with(".ssh"))
         .map(String::from)
         .collect();
-    assert_eq!(names.len(), 35);
+    assert_eq!(names.len(), 32);
     for n in names {
         load(&a, n.strip_prefix("shaders/").unwrap());
     }
@@ -74,19 +69,19 @@ fn every_drawable_pass_translates_to_valid_wgsl() {
             }
         }
     }
-    let s = scene::read_scene(a.get("Scenes/Animusic.ati").unwrap()).unwrap();
+    let s = scene::read_scene(a.get("Scenes/CarRoom.ati").unwrap()).unwrap();
     for sh in s.shaders {
         let name = sushi_formats::reader::cstr(&sh.raw);
         if !uses.iter().any(|u| u.0 == name) {
             uses.push((name, sh.header));
         }
     }
-    assert!(uses.len() > 20);
+    assert_eq!(uses.len(), 23);
     let mut passes = 0;
     for (name, header) in &uses {
         let file = load(&a, name);
         for shader in &file.shaders {
-            if !(shader.has("Normal") || shader.has("Shadow")) {
+            if shader.properties.is_empty() {
                 continue;
             }
             for (i, pass) in shader.passes.iter().enumerate() {
@@ -103,5 +98,5 @@ fn every_drawable_pass_translates_to_valid_wgsl() {
         }
     }
     println!("{passes} passes");
-    assert!(passes > 60, "{passes}");
+    assert!(passes > 40, "{passes}");
 }

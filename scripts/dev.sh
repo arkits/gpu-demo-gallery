@@ -1,33 +1,31 @@
 #!/bin/sh
 # Development and testing in one place. Nothing here opens a window except
-# `run` and `open`. Needs the demo folder at the repository root, or SUSHI_ATI.
+# `run` and `open`. Needs data/Sushi.ati (or SUSHI_ATI) and data/Audio.
 #
 #   scripts/dev.sh run [args]      build and open the native player in front
 #   scripts/dev.sh open            build and open the macOS app
 #   scripts/dev.sh web [port]      build and serve the browser version (8080)
 #   scripts/dev.sh check           format, lints (native and wasm) and tests
-#   scripts/dev.sh shot T [out]    render one frame at scene second T
-#   scripts/dev.sh sweep [step]    render the whole timeline, report problems
+#   scripts/dev.sh shot C T [out]  render one frame of chapter C at second T
+#   scripts/dev.sh sweep [step]    render every chapter, report problems
 #   scripts/dev.sh smoke [secs]    run the native player in a hidden window, muted
 #   scripts/dev.sh webtest         drive the browser version (WebGPU and WebGL2)
-#   scripts/dev.sh compare [T]     same frame natively, in WebGPU and in WebGL2
-#   scripts/dev.sh full            play the whole show in headless Chrome (4 min)
+#   scripts/dev.sh compare [C T]   same frames natively, in WebGPU and in WebGL2
 #   scripts/dev.sh package         macOS app and Windows exe
 #   scripts/dev.sh all             check, sweep, smoke, webtest, compare
 set -eu
 cd "$(dirname "$0")/.."
-DEMO="ATI_Radeon-9700_PipeDream-Demo_v1.1/ATI Demos/PipeDream"
-SUSHI_ATI=${SUSHI_ATI:-$PWD/$DEMO/Sushi.ati}
+SUSHI_ATI=${SUSHI_ATI:-$PWD/data/Sushi.ati}
 export SUSHI_ATI
 OUT=target/devtest
-PORT=8099
+PORT=8097
 mkdir -p "$OUT"
 
 need_data() {
   [ -f "$SUSHI_ATI" ] || { echo "Sushi.ati not found: $SUSHI_ATI" >&2; exit 1; }
 }
 shot() {
-  cargo run -q --release -p sushi-engine --example shot -- "$SUSHI_ATI" "$1" "$2"
+  cargo run -q --release -p sushi-engine --example shot -- "$SUSHI_ATI" "$1" "$2" "$3"
 }
 # Installs the browser driver under target/, not globally; uses installed Chrome.
 driver() {
@@ -59,45 +57,48 @@ browser() {
 }
 build_web() {
   sh scripts/build-web.sh >"$OUT/build-web.log" 2>&1 || { cat "$OUT/build-web.log"; exit 1; }
-  sh scripts/pack.sh target/package/pipedream.xz >"$OUT/pack.log" 2>&1 || { cat "$OUT/pack.log"; exit 1; }
+  sh scripts/pack.sh target/package/carpaint.xz >"$OUT/pack.log" 2>&1 || { cat "$OUT/pack.log"; exit 1; }
 }
 
 command=${1:-help}
 [ $# -eq 0 ] || shift
 case $command in
-run) need_data; exec cargo run -q --release -p pipedream -- "$@" "$SUSHI_ATI" ;;
+run) need_data; exec cargo run -q --release -p carpaint -- "$@" "$SUSHI_ATI" ;;
 open) sh scripts/package-macos.sh >"$OUT/package.log" 2>&1 || { cat "$OUT/package.log"; exit 1; }
-  open "dist/Pipe Dream.app" ;;
+  open "dist/Car Paint.app" ;;
 web) build_web; exec python3 scripts/serve.py "${1:-8080}" ;;
 check)
   need_data
   cargo fmt --check
   cargo clippy -q --workspace --all-targets -- -D warnings
-  cargo clippy -q -p pipedream --lib --target wasm32-unknown-unknown -- -D warnings
+  cargo clippy -q -p carpaint --lib --target wasm32-unknown-unknown -- -D warnings
   cargo test -q --workspace
   ;;
-shot) need_data; shot "$1" "${2:-$OUT/shot-$1.png}" ;;
+shot) need_data; shot "$1" "$2" "${3:-$OUT/shot-$1-$2.png}" ;;
 sweep)
   need_data
-  cargo run -q --release -p sushi-engine --example sweep -- "$SUSHI_ATI" "${1:-0.25}" | tee "$OUT/sweep.log"
+  cargo run -q --release -p sushi-engine --example sweep -- "$SUSHI_ATI" "${1:-0.5}" | tee "$OUT/sweep.log"
   ! grep -q '^warning' "$OUT/sweep.log"
   ;;
 smoke)
   need_data
-  cargo build -q --release -p pipedream
-  target/release/pipedream --smoke "${1:-5}" "$SUSHI_ATI" | tee "$OUT/smoke.log"
+  cargo build -q --release -p carpaint
+  target/release/carpaint --smoke "${1:-5}" "$SUSHI_ATI" | tee "$OUT/smoke.log"
   # A hidden window cannot present, so frames are drawn offscreen.
   grep -q '^frames [1-9][0-9]' "$OUT/smoke.log"
   ;;
 webtest) need_data; driver; build_web; browser "show webgpu" "show webgl" ;;
 compare)
   need_data; driver; build_web
-  t=${1:-100}
-  shot "$t" "$OUT/native-still.png"
-  browser "still webgpu $t" "still webgl $t"
-  python3 tools/compare_png.py --max-mean 0.1 "$OUT/native-still.png" "$OUT/webgpu-still.png" "$OUT/webgl-still.png"
+  # Chapter 3 uses the scissor, 5 the viewport.
+  if [ $# -eq 0 ]; then set -- 1 12 3 8 5 25; fi
+  while [ $# -ge 2 ]; do
+    c=$1; t=$2; shift 2
+    shot "$c" "$t" "$OUT/native-still.png"
+    browser "still webgpu $c $t" "still webgl $c $t"
+    python3 tools/compare_png.py --max-mean 0.6 "$OUT/native-still.png" "$OUT/webgpu-still.png" "$OUT/webgl-still.png"
+  done
   ;;
-full) need_data; driver; build_web; browser "full webgpu" ;;
 package) sh scripts/package-macos.sh; sh scripts/package-windows.sh ;;
 all) for c in check sweep smoke webtest compare; do echo "== $c"; sh "$0" $c; done; echo "all passed" ;;
 *) sed -n '2,/^set/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
