@@ -31,7 +31,7 @@ const TRANSPARENT: u32 = 8;
 const HIDDEN: u32 = 0x10;
 
 struct Stream {
-    layout: VertexLayout,
+    layout: LayoutId,
     buffers: Vec<usize>,
     index_buffers: Vec<usize>,
     commands: usize,
@@ -71,7 +71,7 @@ struct SceneItem {
 
 struct SceneDraw {
     shader: usize,
-    layout: VertexLayout,
+    layout: LayoutId,
     lights: Vec<usize>,
     textures: Vec<Option<TextureId>>,
 }
@@ -92,7 +92,9 @@ struct Context<'a> {
     orientation: Mat4,
 }
 
-type PipelineKey = (usize, usize, usize, VertexLayout);
+type LayoutId = usize;
+/// Shader file, shader, pass, vertex layout.
+type PipelineKey = (usize, usize, usize, LayoutId);
 
 pub struct Demo {
     path: FlyPath,
@@ -102,6 +104,7 @@ pub struct Demo {
     buffers: Vec<wgpu::Buffer>,
     shaders: Vec<ShaderFile>,
     shader_ids: HashMap<String, usize>,
+    layouts: Vec<VertexLayout>,
     cache: HashMap<PipelineKey, Option<PipelineId>>,
     lights: Vec<Light>,
     light_textures: Vec<TextureId>,
@@ -162,6 +165,7 @@ impl Demo {
             buffers: Vec::new(),
             shaders: Vec::new(),
             shader_ids: HashMap::new(),
+            layouts: Vec::new(),
             cache: HashMap::new(),
             lights: scene.lights.iter().map(Light::new).collect(),
             light_textures: Vec::new(),
@@ -192,6 +196,16 @@ impl Demo {
             }
         }
         Ok(demo)
+    }
+
+    fn intern(&mut self, layout: VertexLayout) -> LayoutId {
+        self.layouts
+            .iter()
+            .position(|l| *l == layout)
+            .unwrap_or_else(|| {
+                self.layouts.push(layout);
+                self.layouts.len() - 1
+            })
     }
 
     fn buffer(&mut self, gpu: &Gpu, data: &[u8], usage: wgpu::BufferUsages) -> usize {
@@ -254,12 +268,13 @@ impl Demo {
             let sh = &s.shaders[g.shader()];
             let shader = self.shader(archive, &cstr(&sh.raw))?;
             let n = self.shaders[shader].textures.len();
+            let layout = self.intern(layout(&sh.header, 0).unwrap_or(VertexLayout {
+                stride: 0,
+                elements: Vec::new(),
+            }));
             self.scene_draws.push(SceneDraw {
                 shader,
-                layout: layout(&sh.header, 0).unwrap_or(VertexLayout {
-                    stride: 0,
-                    elements: Vec::new(),
-                }),
+                layout,
                 lights: d.lights(),
                 textures: (0..n)
                     .map(|k| d.texture(k).and_then(|t| textures[t]))
@@ -284,7 +299,7 @@ impl Demo {
                     (v, i)
                 }
             };
-            if self.scene_draws[item.draw].layout.stride != st.stride() {
+            if self.layouts[self.scene_draws[item.draw].layout].stride != st.stride() {
                 return Err(format!("scene vertex stride mismatch in geometry {gi}").into());
             }
             self.scene_items.push(SceneItem {
@@ -295,6 +310,16 @@ impl Demo {
                 count: item.count,
             });
         }
+        // Merge neighboring index ranges of the same draw.
+        self.scene_items
+            .sort_by_key(|i| (i.draw, i.vertices, i.start));
+        self.scene_items.dedup_by(|b, a| {
+            let joins = (a.draw, a.vertices, a.start + a.count) == (b.draw, b.vertices, b.start);
+            if joins {
+                a.count += b.count;
+            }
+            joins
+        });
         let shader = self.shader(archive, "Animusic/qDestAlphaShadow.ssh")?;
         let corners: [[f32; 3]; 4] = [
             [-1.0, 1.0, 0.0],
@@ -383,7 +408,7 @@ impl Demo {
                     }
                 }
                 streams.push(Stream {
-                    layout,
+                    layout: self.intern(layout),
                     buffers: a.vertex_buffers.iter().map(|v| vb[*v as usize]).collect(),
                     index_buffers: a.offsets.iter().map(|i| ib[*i as usize]).collect(),
                     commands: u32_at(&a.raw, 0x10) as usize,
@@ -442,7 +467,7 @@ impl Demo {
         for d in &self.scene_draws {
             for (i, s) in self.shaders[d.shader].shaders.iter().enumerate() {
                 if s.has("Normal") && s.properties.iter().any(|p| p.starts_with("FastRT")) {
-                    keys.extend((0..s.passes.len()).map(|p| (d.shader, i, p, d.layout.clone())));
+                    keys.extend((0..s.passes.len()).map(|p| (d.shader, i, p, d.layout)));
                 }
             }
         }
@@ -461,7 +486,7 @@ impl Demo {
                 for (p, pass) in s.passes.iter().enumerate() {
                     let stream = m.maps.get(&pass.stream_map).and_then(|s| m.streams.get(*s));
                     if let Some(stream) = stream {
-                        keys.insert((m.shader, i, p, stream.layout.clone()));
+                        keys.insert((m.shader, i, p, stream.layout));
                     }
                 }
             }
@@ -533,10 +558,11 @@ impl Demo {
         if let Some(p) = self.cache.get(&key) {
             return *p;
         }
-        let (file, shader, pass, layout) = &key;
-        let f = &self.shaders[*file];
-        let s = &f.shaders[*shader];
-        let p = &s.passes[*pass];
+        let (file, shader, pass, layout) = key;
+        let layout = &self.layouts[layout];
+        let f = &self.shaders[file];
+        let s = &f.shaders[shader];
+        let p = &s.passes[pass];
         let cube = |stage: u32| {
             p.samplers
                 .get(&stage)
@@ -707,8 +733,9 @@ impl Demo {
         let lights = std::mem::take(&mut self.lights);
         let draws = std::mem::take(&mut self.scene_draws);
         let items = std::mem::take(&mut self.scene_items);
-        for item in &items {
-            let d = &draws[item.draw];
+        // Items are grouped by draw, which all share constants and textures.
+        for items in items.chunk_by(|a, b| a.draw == b.draw) {
+            let d = &draws[items[0].draw];
             let lit: Vec<&Light> = d.lights.iter().map(|l| &lights[*l]).collect();
             let Some(shader) = self.variant(d.shader, "Normal", lit.len(), "") else {
                 self.warnings
@@ -732,13 +759,28 @@ impl Demo {
             let by_light: Vec<TextureId> =
                 d.lights.iter().map(|l| self.light_textures[*l]).collect();
             for pass in 0..self.shaders[d.shader].shaders[shader].passes.len() {
-                let key = (d.shader, shader, pass, d.layout.clone());
-                let Some(id) = self.pipeline(gpu, key.clone()) else {
+                let key = (d.shader, shader, pass, d.layout);
+                let Some(id) = self.pipeline(gpu, key) else {
                     continue;
                 };
-                let geometry = (item.vertices, item.indices, item.start, item.count);
                 let tex = |k: usize| d.textures.get(k).copied().flatten();
-                self.emit(gpu, &key, id, &ctx, &by_light, &tex, geometry, out);
+                let geometry = |i: &SceneItem| (i.vertices, i.indices, i.start, i.count);
+                self.emit(
+                    gpu,
+                    &key,
+                    id,
+                    &ctx,
+                    &by_light,
+                    &tex,
+                    geometry(&items[0]),
+                    out,
+                );
+                let first = out.len() - 1;
+                for i in &items[1..] {
+                    let mut call = out[first].clone();
+                    (call.vertices, call.indices, call.start, call.count) = geometry(i);
+                    out.push(call);
+                }
             }
         }
         self.lights = lights;
@@ -837,8 +879,8 @@ impl Demo {
                             .insert(format!("no stream map {:?}", p.stream_map));
                         continue;
                     };
-                    let key = (mesh.shader, shader, pass, stream.layout.clone());
-                    let Some(id) = self.pipeline(gpu, key.clone()) else {
+                    let key = (mesh.shader, shader, pass, stream.layout);
+                    let Some(id) = self.pipeline(gpu, key) else {
                         continue;
                     };
                     let mut slots = [0usize; 40];
@@ -911,8 +953,9 @@ impl Demo {
         else {
             return;
         };
+        let layout = self.intern(layout);
         let key = (file, shader, 0, layout);
-        let Some(id) = self.pipeline(gpu, key.clone()) else {
+        let Some(id) = self.pipeline(gpu, key) else {
             return;
         };
         let none = BTreeMap::new();

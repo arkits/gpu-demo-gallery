@@ -415,7 +415,7 @@ impl Pipelines {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DrawCall {
     pub pipeline: PipelineId,
     pub vs_offset: u32,
