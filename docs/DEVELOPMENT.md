@@ -28,6 +28,13 @@ installed). `package-windows.sh` cross-builds with mingw-w64 and `x86_64-pc-wind
 Without a path the player looks beside and above itself, then uses the last file chosen,
 and only then shows a file dialog. Errors show a dialog only outside a terminal.
 
+## Vercel
+`scripts/deploy-vercel.sh` builds the browser version, adds the demo content in the
+git-ignored `dist/vercel`, and deploys it publicly. It stops if that folder is not ignored.
+The content is served from `/local/`, where `serve.py` puts it too. The account's
+"Vercel Authentication" covers only per-deployment URLs, not the production one. The
+content belongs to ATI and Animusic.
+
 ## Inspecting data
     cargo run -p sushi-formats --example inspect_scene  -- Sushi.ati
     cargo run -p sushi-formats --example inspect_layout -- Sushi.ati
