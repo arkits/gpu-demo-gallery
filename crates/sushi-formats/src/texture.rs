@@ -88,7 +88,7 @@ impl Texture {
         };
         let fmt = self.format().ok_or_else(|| bad("unknown format"))?;
         let faces = self.faces();
-        if faces == 0 || self.texels.len() % faces != 0 {
+        if faces == 0 || !self.texels.len().is_multiple_of(faces) {
             return Err(bad("face count does not divide data"));
         }
         let size = self.texels.len() / faces;
