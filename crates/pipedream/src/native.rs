@@ -18,10 +18,8 @@ const DEMO: &str = "ATI_Radeon-9700_PipeDream-Demo_v1.1/ATI Demos/PipeDream/Sush
 /// Finds `Sushi.ati`: argument, `PIPEDREAM_DATA`, nearby folders, then a dialog.
 fn find_archive() -> Option<PathBuf> {
     let from = |p: PathBuf| if p.is_dir() { p.join("Sushi.ati") } else { p };
-    if let Some(p) = std::env::args_os()
-        .nth(1)
-        .or_else(|| std::env::var_os("PIPEDREAM_DATA"))
-    {
+    let arg = std::env::args_os().skip(1).find(|a| a != "--mute");
+    if let Some(p) = arg.or_else(|| std::env::var_os("PIPEDREAM_DATA")) {
         return Some(from(p.into()));
     }
     let exe = std::env::current_exe().ok();
@@ -93,7 +91,7 @@ pub fn run() -> Result<(), Error> {
     let mut app = App {
         data,
         music,
-        muted: false,
+        muted: std::env::args().any(|a| a == "--mute"),
         window: None,
         player: None,
         start: Instant::now(),
