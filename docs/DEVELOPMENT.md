@@ -4,17 +4,29 @@
 Rust 1.92 or newer with the `wasm32-unknown-unknown` target. `scripts/build-web.sh`
 installs the matching `wasm-bindgen` under `target/tools`, not globally.
 
-## Checking frames
-    cargo run --release -p sushi-engine --example shot  -- Sushi.ati 60 out.png
-    cargo run --release -p sushi-engine --example sweep -- Sushi.ati 0.25
-`shot` renders one frame offscreen at 1024x768. `sweep` renders the whole timeline and
-reports warnings (missing shader variants or pipelines) and cost. In the browser, `?t=60`
-freezes the same moment and `window.pipedream` exposes the player.
+## One script
+`scripts/dev.sh` (no arguments for help) runs everything. Results go to `target/devtest`.
+
+| Command | What it proves |
+|---|---|
+| `check` | Formatting, lints as errors (native and wasm), all tests |
+| `sweep` | Every moment draws with exact shader variants and no missing pipeline |
+| `smoke` | The native player starts, opens audio (muted) and draws, in a hidden window |
+| `webtest` | Sync, seeking, frame rate and pause in Chrome, WebGPU and WebGL2 |
+| `compare` | One frame matches between native, WebGPU and WebGL2 |
+| `full` | The whole show in real time in Chrome: sync, late frames, restart |
+| `all` | All of these except `full` |
+
+macOS gives a hidden window no surface, so `smoke` draws its frames offscreen and does not
+test showing them. The browser driver (playwright-core) installs under `target/tools` and
+uses the installed Chrome. `?t=60` in the browser freezes one moment, and
+`window.pipedream` exposes the player.
 
 ## Native packages
 `package-macos.sh` makes an ad-hoc signed app (universal if `x86_64-apple-darwin` is
 installed). `package-windows.sh` cross-builds with mingw-w64 and `x86_64-pc-windows-gnu`.
-Without a path the player looks beside itself, then shows a file dialog.
+Without a path the player looks beside and above itself, then uses the last file chosen,
+and only then shows a file dialog. Errors show a dialog only outside a terminal.
 
 ## Inspecting data
     cargo run -p sushi-formats --example inspect_scene  -- Sushi.ati

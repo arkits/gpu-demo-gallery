@@ -9,11 +9,14 @@ mod native;
 fn main() {
     if let Err(e) = native::run() {
         eprintln!("{e}");
-        rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Error)
-            .set_title("Pipe Dream")
-            .set_description(e.to_string())
-            .show();
+        // In a terminal the line above is enough; from a desktop, show a dialog.
+        if !std::io::IsTerminal::is_terminal(&std::io::stderr()) && std::env::args().len() == 1 {
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("Pipe Dream")
+                .set_description(e.to_string())
+                .show();
+        }
         std::process::exit(1);
     }
 }

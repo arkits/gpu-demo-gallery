@@ -15,32 +15,95 @@ type Error = Box<dyn std::error::Error>;
 
 const DEMO: &str = "ATI_Radeon-9700_PipeDream-Demo_v1.1/ATI Demos/PipeDream/Sushi.ati";
 
-/// Finds `Sushi.ati`: argument, `PIPEDREAM_DATA`, nearby folders, then a dialog.
-fn find_archive() -> Option<PathBuf> {
+#[derive(Default)]
+struct Options {
+    path: Option<PathBuf>,
+    mute: bool,
+    /// Scene seconds to start at.
+    start: Option<f32>,
+    /// Run this many seconds in a hidden window, report, and quit.
+    smoke: Option<f64>,
+}
+
+fn options() -> Result<Options, Error> {
+    let mut o = Options::default();
+    let mut args = std::env::args_os().skip(1);
+    while let Some(a) = args.next() {
+        let mut number = || -> Result<f64, Error> {
+            let v = args
+                .next()
+                .and_then(|v| v.to_str().and_then(|v| v.parse().ok()));
+            v.ok_or_else(|| format!("{} needs a number", a.to_string_lossy()).into())
+        };
+        match a.to_str() {
+            Some("--mute") => o.mute = true,
+            Some("--start") => o.start = Some(number()? as f32),
+            Some("--smoke") => o.smoke = Some(number()?),
+            Some(f) if f.starts_with("--") => return Err(format!("unknown option {f}").into()),
+            _ => o.path = Some(a.into()),
+        }
+    }
+    Ok(o)
+}
+
+/// Remembers the chosen archive so the dialog appears at most once.
+fn remembered() -> Option<PathBuf> {
+    let var = |n: &str| std::env::var_os(n).map(PathBuf::from);
+    let base = if cfg!(target_os = "macos") {
+        var("HOME")?.join("Library/Application Support")
+    } else if cfg!(windows) {
+        var("APPDATA")?
+    } else {
+        var("XDG_CONFIG_HOME").or_else(|| Some(var("HOME")?.join(".config")))?
+    };
+    Some(base.join("pipedream").join("archive-path.txt"))
+}
+
+/// Finds `Sushi.ati`: argument, `PIPEDREAM_DATA`, beside or above the program,
+/// the last choice, then a dialog.
+fn find_archive(o: &Options) -> Option<PathBuf> {
     let from = |p: PathBuf| if p.is_dir() { p.join("Sushi.ati") } else { p };
-    let arg = std::env::args_os().skip(1).find(|a| a != "--mute");
-    if let Some(p) = arg.or_else(|| std::env::var_os("PIPEDREAM_DATA")) {
-        return Some(from(p.into()));
+    if let Some(p) = o
+        .path
+        .clone()
+        .or_else(|| std::env::var_os("PIPEDREAM_DATA").map(Into::into))
+    {
+        return Some(from(p));
     }
     let exe = std::env::current_exe().ok();
-    let exe_dir = exe.as_deref().and_then(Path::parent).map(Path::to_path_buf);
     let mut near = vec![PathBuf::from("."), PathBuf::from("assets")];
-    near.extend(exe_dir.iter().cloned());
-    // Beside a macOS bundle: Name.app/Contents/MacOS/pipedream.
+    // Covers a bundle or build inside the repository.
     near.extend(
-        exe_dir
-            .iter()
-            .filter_map(|d| d.ancestors().nth(3).map(Path::to_path_buf)),
+        exe.iter()
+            .flat_map(|e| e.ancestors().skip(1).take(6))
+            .map(Path::to_path_buf),
     );
-    let found = near
+    let mut found = near
         .iter()
         .flat_map(|d| [d.join("Sushi.ati"), d.join(DEMO)]);
-    found.into_iter().find(|p| p.is_file()).or_else(|| {
-        rfd::FileDialog::new()
-            .set_title("Choose Sushi.ati from the original Pipe Dream demo")
-            .add_filter("Sushi.ati", &["ati"])
-            .pick_file()
-    })
+    if let Some(p) = found.find(|p| p.is_file()) {
+        return Some(p);
+    }
+    let saved = remembered();
+    let last = saved
+        .as_ref()
+        .and_then(|s| std::fs::read_to_string(s).ok())
+        .map(PathBuf::from);
+    if let Some(p) = last.filter(|p| p.is_file()) {
+        return Some(p);
+    }
+    if o.smoke.is_some() {
+        return None;
+    }
+    let picked = rfd::FileDialog::new()
+        .set_title("Choose Sushi.ati from the original Pipe Dream demo")
+        .add_filter("Sushi.ati", &["ati"])
+        .pick_file()?;
+    if let Some(s) = saved {
+        let _ = s.parent().map(std::fs::create_dir_all);
+        let _ = std::fs::write(s, picked.to_string_lossy().as_bytes());
+    }
+    Some(picked)
 }
 
 struct Music {
@@ -71,8 +134,12 @@ impl Music {
 }
 
 pub fn run() -> Result<(), Error> {
-    let Some(path) = find_archive() else {
-        return Ok(());
+    let options = options()?;
+    let Some(path) = find_archive(&options) else {
+        return match options.smoke {
+            Some(_) => Err("Sushi.ati not found".into()),
+            None => Ok(()),
+        };
     };
     let archive =
         std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -95,7 +162,9 @@ pub fn run() -> Result<(), Error> {
     let mut app = App {
         data,
         music,
-        muted: std::env::args().any(|a| a == "--mute"),
+        muted: options.mute || options.smoke.is_some(),
+        options,
+        frames: (0, 0),
         window: None,
         player: None,
         start: Instant::now(),
@@ -111,6 +180,9 @@ struct App {
     data: Data,
     music: Option<Music>,
     muted: bool,
+    options: Options,
+    /// Shown, and drawn offscreen while hidden.
+    frames: (u32, u32),
     window: Option<Arc<Window>>,
     player: Option<Player>,
     start: Instant,
@@ -123,6 +195,8 @@ impl App {
     fn open(&mut self, el: &ActiveEventLoop) -> Result<(), Error> {
         let attrs = Window::default_attributes()
             .with_title("Pipe Dream")
+            .with_visible(self.options.smoke.is_none())
+            .with_active(self.options.smoke.is_none())
             .with_inner_size(LogicalSize::new(1024, 768));
         let window = Arc::new(el.create_window(attrs)?);
         let size = window.inner_size();
@@ -133,11 +207,17 @@ impl App {
             (size.width, size.height),
             &self.data,
         );
-        let player = pollster::block_on(player)?;
+        let mut player = pollster::block_on(player)?;
         while !player.ready() {
             std::thread::sleep(Duration::from_millis(5));
         }
+        if let Some(t) = self.options.start {
+            player.show.set_time(t);
+        }
         self.player = Some(player);
+        if self.options.smoke.is_none() {
+            window.focus_window();
+        }
         self.start = Instant::now();
         window.request_redraw();
         self.window = Some(window);
@@ -170,6 +250,12 @@ impl App {
         if !player.frame(self.start.elapsed().as_secs_f64(), audio) {
             // Hidden window: nothing paces us, so avoid spinning.
             std::thread::sleep(Duration::from_millis(16));
+            if self.options.smoke.is_some() {
+                player.frame_offscreen();
+                self.frames.1 += 1;
+            }
+        } else {
+            self.frames.0 += 1;
         }
     }
 
@@ -220,6 +306,24 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.redraw();
+                if self
+                    .options
+                    .smoke
+                    .is_some_and(|s| self.start.elapsed().as_secs_f64() >= s)
+                {
+                    let time = self.player.as_ref().map_or(0.0, |p| p.show.time());
+                    let (shown, hidden) = self.frames;
+                    let music = if self.music.is_some() {
+                        "open"
+                    } else {
+                        "unavailable"
+                    };
+                    println!(
+                        "frames {} (shown {shown}, offscreen {hidden}) scene time {time:.2} music {music}",
+                        shown + hidden
+                    );
+                    return el.exit();
+                }
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
