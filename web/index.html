@@ -26,6 +26,8 @@
   #chapters [aria-current] { border-color: #e0562f; color: #ff9a78; }
   #status[data-error] { color: #ff9d8a; }
 </style>
+<!-- Cloudflare Pages adds its analytics script to an explicit body. -->
+<body>
 <canvas id="view" tabindex="0" aria-label="Car in a showroom"></canvas>
 <nav id="chapters" aria-label="Chapters" hidden></nav>
 <main id="start">
@@ -271,4 +273,5 @@
   }
   $("progress").hidden = true;
 </script>
+</body>
 </html>
