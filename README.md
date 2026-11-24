@@ -1,6 +1,6 @@
 # Creature
 
-A port of NVIDIA's "Creature" demo (GeForce 3, 2001; Direct3D 7 viewer) to the browser,
+A port of NVIDIA's "Creature" demo (June 2000, Direct3D 7) to the browser,
 macOS and Windows: an animated sea monster under water with caustics, fog, plankton, a
 school of 500 fish and a laser, with music.
 

@@ -1,4 +1,4 @@
-//! Port of NVIDIA's "Creature" demo (2001). See `docs/ENGINE.md`.
+//! Port of NVIDIA's "Creature" demo (2000). See `docs/ENGINE.md`.
 pub mod anim;
 pub mod data;
 pub mod dds;
