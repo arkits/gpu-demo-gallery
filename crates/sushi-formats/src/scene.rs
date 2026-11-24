@@ -289,3 +289,141 @@ pub fn read_scene(data: &[u8]) -> Result<Scene> {
         textures_182,
     })
 }
+
+/// Vertex attribute (0x18 element record).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Attribute {
+    pub semantic: Semantic,
+    pub offset: u32,
+    pub size: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Semantic {
+    Position,
+    Normal,
+    Uv,
+    /// Baked vertex light, D3DCOLOR (BGRA).
+    VertexLight,
+    /// Material color, D3DCOLOR (BGRA).
+    BaseColor,
+    Other(u32),
+}
+
+impl ChunkStream {
+    /// Attributes are packed in order; records hold sizes, not offsets.
+    pub fn attributes(&self) -> Vec<Attribute> {
+        let mut offset = 0;
+        let mut attr = |e: &Vec<u8>| {
+            let size = u32_at(e, 12);
+            let semantic = match u32_at(e, 0) {
+                1 => Semantic::Position,
+                2 => Semantic::Normal,
+                7 => Semantic::Uv,
+                10 => Semantic::VertexLight,
+                14 => Semantic::BaseColor,
+                k => Semantic::Other(k),
+            };
+            let a = Attribute {
+                semantic,
+                offset,
+                size,
+            };
+            offset += size;
+            a
+        };
+        self.elements.iter().map(&mut attr).collect()
+    }
+    pub fn stride(&self) -> u32 {
+        u32_at(&self.raw, 0x42)
+    }
+    /// Index buffer paired with vertex buffer `i` (record +0x14).
+    pub fn index_buffer_of(&self, i: usize) -> Option<usize> {
+        self.buffers
+            .first()?
+            .get(i)
+            .map(|b| u32_at(&b.0, 0x14) as usize)
+    }
+}
+
+impl Geometry {
+    pub fn transparent(&self) -> bool {
+        self.raw[0] == 1
+    }
+    pub fn shader(&self) -> usize {
+        u32_at(&self.raw, 1) as usize
+    }
+}
+
+impl Draw {
+    pub fn geometry(&self) -> usize {
+        u32_at(&self.raw, 0) as usize
+    }
+    /// Scene texture index bound to shader texture slot `slot`.
+    pub fn texture(&self, slot: usize) -> Option<usize> {
+        assert!(slot < 64);
+        usize::try_from(u32_at(&self.raw, 4 + slot * 4) as i32).ok()
+    }
+    /// FastRT lights affecting this draw, in shader order.
+    pub fn lights(&self) -> Vec<usize> {
+        let n = count_at(&self.raw, 0x104).min(4);
+        (0..n)
+            .filter_map(|i| usize::try_from(u32_at(&self.raw, 0x108 + i * 4) as i32).ok())
+            .collect()
+    }
+}
+
+/// One indexed triangle list inside a draw's geometry.
+#[derive(Debug, Clone, Copy)]
+pub struct Item {
+    pub draw: usize,
+    pub vertex_buffer: usize,
+    pub start: u32,
+    pub count: u32,
+}
+
+impl Group {
+    pub fn draw_items(&self) -> impl Iterator<Item = Item> + '_ {
+        self.items.iter().map(|i| Item {
+            draw: i[0] as usize,
+            vertex_buffer: i[2] as usize,
+            start: i[3],
+            count: i[4],
+        })
+    }
+}
+
+impl Light {
+    /// Projects through a spotlight texture and is applied per pixel (+0x2b).
+    pub fn is_fast_rt(&self) -> bool {
+        self.raw[0x2b] == 1
+    }
+    /// Uses the object-ambient path (+0x2a).
+    pub fn is_object_ambient(&self) -> bool {
+        self.raw[0x2a] == 1
+    }
+    pub fn color(&self) -> [f32; 3] {
+        [0x36, 0x3a, 0x3e].map(|o| f32_at(&self.raw, o))
+    }
+    pub fn position(&self) -> [f32; 3] {
+        [0x5f, 0x63, 0x67].map(|o| f32_at(&self.raw, o))
+    }
+    pub fn texture(&self) -> Option<usize> {
+        usize::try_from(u32_at(&self.raw, 0x15f) as i32).ok()
+    }
+    /// `FastRTPosMatrix`: position with 1/(+0x32), then the light-space axes,
+    /// the first with 1/(+0x6b) (0x4265f0).
+    pub fn fast_rt_matrix(&self) -> [[f32; 4]; 4] {
+        let row = |o: usize, w: f32| {
+            let f = |k| f32_at(&self.raw, o + k);
+            [f(0), f(4), f(8), w]
+        };
+        let inv = |o| 1.0 / f32_at(&self.raw, o);
+        [
+            row(0x5f, inv(0x32)),
+            row(0x6f, inv(0x6b)),
+            row(0x7f, 0.0),
+            row(0x8f, 0.0),
+        ]
+    }
+}
