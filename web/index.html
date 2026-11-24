@@ -51,6 +51,8 @@
   @keyframes rise { from { opacity: 0; transform: translateY(40px); } }
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
+<!-- Cloudflare Pages adds its analytics script to an explicit body. -->
+<body>
 <header>
   <h1>GPU demos</h1>
   <p>What graphics cards shipped to show off with, rebuilt from the original files and running in this browser.</p>
@@ -83,4 +85,5 @@
   </a>
 </main>
 <footer>The demos and their art belong to NVIDIA, ATI and Animusic. The ports are unofficial. Best with sound.</footer>
+</body>
 </html>
