@@ -6,3 +6,5 @@
 /assets
 *.ati
 *.mp3
+/.wrangler
+/.vercel
