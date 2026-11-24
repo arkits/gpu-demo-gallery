@@ -29,5 +29,10 @@ J
 git check-ignore -q "$site/local/Sushi.ati" || { echo "refusing: $site is not git-ignored" >&2; exit 1; }
 [ -z "$prepare" ] || { du -sh "$site"; exit 0; }
 cd "$site"
-[ -d .vercel ] || vercel link --yes --project "$project" --scope "$scope"
+if [ ! -d .vercel ]; then
+  vercel link --yes --project "$project" --scope "$scope"
+  # Linking also connects the GitHub repository. Pushes would then deploy the
+  # repository, which has no built site, over this one.
+  vercel git disconnect --yes --scope "$scope" || true
+fi
 vercel deploy --prod --yes --scope "$scope"
