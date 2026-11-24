@@ -1,6 +1,7 @@
 # Gallery plan: more demos
 
-Status: DRAFT, awaiting decisions (last section). Nothing is built.
+Status: decided 2026-11-24 (last section). The owner chose **separate repositories**, which
+replaces the single-repository recommendation below.
 [V] checked against the files, [I] inferred, [?] unknown. Installers were unpacked, never run.
 
 ## What was downloaded
@@ -103,11 +104,12 @@ time, fades, logos, script) into data. *Check: the same frames as now, and `dev.
   name suggests a film clip [I]; Car Paint credits George Valavanis for its music and models
   a Ferrari F50 (from file names [I]). Publishing is the owner's decision per demo.
 
-## Decisions needed
+## Decisions
 
-1. One repository, renamed from `pipedream`? (recommended)
-2. Order: Car Paint, Smoke, Principles of Shading, Creature?
-3. Which demos may be public, and should `drevil.wav` be left out?
+1. One repository per demo (not a mono repo). Shared code is copied or used as a dependency.
+2. Order: Box of Smoke, Car Paint, Principles of Shading, Creature.
+3. All demos get public sites. Demo content still never goes into Git. GitHub repositories
+   start private.
 
 ## Reproducing the analysis
 `tools/iscab.py data1.hdr data1.cab [out]` reads the InstallShield cabinets (all 285 files
