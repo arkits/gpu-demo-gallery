@@ -35,7 +35,7 @@ make car-paint car-paint/target/devtest/webgpu-chapter3.png 504:620:514:72
 make pipe-dream pipedream/target/devtest/native-still.png 1024:768:0:0
 make box-of-smoke box-of-smoke/target/devtest/native-s.png 840:768:150:0
 crop=in_w:in_h
-shot toy-soldier 8 0.8 -0.3 1
+shot toy-soldier 3 2.1 0.05 1
 shot crystal-ball 5 0 0 0
 shot bugs 5 0 0 0
 shot wolfman 8 0.8 -0.3 1
