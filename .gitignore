@@ -1,0 +1,16 @@
+/target
+/dist
+/data
+/original
+.DS_Store
+/.wrangler
+# Original demo content: never commit.
+*.exe
+*.tga
+*.txt
+*.xz
+*.pack
+*.png
+*.ppm
+*.wav
+*.flac
