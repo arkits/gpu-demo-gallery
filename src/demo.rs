@@ -20,6 +20,8 @@ pub const FILES: &[&str] = &[
     "spot1.ppm",
     "envmatt.ppm",
 ];
+/// Files that are parts of a program: name, address, length.
+pub const PARTS: &[(&str, usize, usize)] = &[];
 pub const SOUNDS: &[&str] = &[];
 pub const SHADER: &str = include_str!("../shaders/demo.wgsl");
 pub const PROGRAMS: &[&str] = &["textured", "ship", "glow", "spot", "windows"];
