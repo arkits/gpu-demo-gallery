@@ -5,5 +5,5 @@ set -eu
 cd "$(dirname "$0")/.."
 cargo build --release --bin borg --target x86_64-pc-windows-gnu
 mkdir -p dist/windows
-cp target/x86_64-pc-windows-gnu/release/borg.exe dist/windows/Borg.exe
+cp target/x86_64-pc-windows-gnu/release/borg.exe "dist/windows/Borg.exe"
 ls -l dist/windows
