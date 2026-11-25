@@ -1,4 +1,4 @@
-struct Params { v: array<vec4<f32>, 8> };
+struct Params { v: array<vec4<f32>, 32> };
 @group(0) @binding(0) var<uniform> params: Params;
 @group(1) @binding(0) var t0: texture_2d<f32>;
 @group(1) @binding(1) var s0: sampler;
