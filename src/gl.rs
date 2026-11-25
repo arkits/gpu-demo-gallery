@@ -191,6 +191,9 @@ pub struct State {
     pub depth: Depth,
     pub cull: Option<wgpu::Face>,
     pub lines: bool,
+    /// Draws a mesh many times over. The vertex program gets another vertex, at locations 6
+    /// to 11, for each.
+    pub instanced: bool,
     pub write: wgpu::ColorWrites,
 }
 
@@ -203,6 +206,7 @@ impl State {
             depth: Depth::Off,
             cull: None,
             lines: false,
+            instanced: false,
             write: wgpu::ColorWrites::ALL,
         }
     }
@@ -303,6 +307,8 @@ struct Call {
     /// A mesh that stays, instead of the frame's vertices.
     mesh: Option<MeshId>,
     vertices: std::ops::Range<u32>,
+    /// Places in the frame's vertices.
+    instances: std::ops::Range<u32>,
 }
 
 struct Texture {
@@ -467,6 +473,12 @@ impl Gl {
         write(gpu, &self.textures[id].texture, 0, image);
     }
 
+    pub fn replace_cube(&mut self, gpu: &Gpu, id: TextureId, faces: &[Image; 6]) {
+        for (layer, image) in faces.iter().enumerate() {
+            write(gpu, &self.textures[id].texture, layer as u32, image);
+        }
+    }
+
     /// A picture that can be drawn to and then shown.
     pub fn target(&mut self, gpu: &Gpu, size: (u32, u32), s: Sampling) -> TextureId {
         let texture = gpu.target(size, COLOR, 1);
@@ -503,7 +515,13 @@ impl Gl {
     pub fn draw(&mut self, state: State, surface: &Surface, vertices: &[Vertex]) {
         let start = self.vertices.len() as u32;
         self.vertices.extend_from_slice(vertices);
-        self.call(state, surface, None, start..start + vertices.len() as u32);
+        self.call(
+            state,
+            surface,
+            None,
+            start..start + vertices.len() as u32,
+            0..1,
+        );
     }
 
     /// Triangles that stay from frame to frame. Places are what the vertex program makes of
@@ -518,7 +536,30 @@ impl Gl {
     }
 
     pub fn draw_mesh(&mut self, state: State, surface: &Surface, mesh: MeshId) {
-        self.call(state, surface, Some(mesh), 0..self.meshes[mesh].1);
+        self.call(state, surface, Some(mesh), 0..self.meshes[mesh].1, 0..1);
+    }
+
+    pub fn draw_instances(
+        &mut self,
+        state: State,
+        surface: &Surface,
+        mesh: MeshId,
+        instances: &[Vertex],
+    ) {
+        let start = self.vertices.len() as u32;
+        self.vertices.extend_from_slice(instances);
+        let state = State {
+            instanced: true,
+            ..state
+        };
+        let instances = start..start + instances.len() as u32;
+        self.call(
+            state,
+            surface,
+            Some(mesh),
+            0..self.meshes[mesh].1,
+            instances,
+        );
     }
 
     fn call(
@@ -527,8 +568,9 @@ impl Gl {
         surface: &Surface,
         mesh: Option<MeshId>,
         vertices: std::ops::Range<u32>,
+        instances: std::ops::Range<u32>,
     ) {
-        if vertices.is_empty() {
+        if vertices.is_empty() || instances.is_empty() {
             return;
         }
         let params = self.params.len() as u32;
@@ -543,6 +585,7 @@ impl Gl {
             params,
             mesh,
             vertices,
+            instances,
         };
         self.passes
             .last_mut()
@@ -562,6 +605,20 @@ impl Gl {
         }
         let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4,
             2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4];
+        let more = wgpu::vertex_attr_array![6 => Float32x4, 7 => Float32x4,
+            8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4];
+        let stride = size_of::<Vertex>() as u64;
+        let layout = |step_mode, attributes| {
+            Some(wgpu::VertexBufferLayout {
+                array_stride: stride,
+                step_mode,
+                attributes,
+            })
+        };
+        let mut buffers = vec![layout(wgpu::VertexStepMode::Vertex, &attributes)];
+        if state.instanced {
+            buffers.push(layout(wgpu::VertexStepMode::Instance, &more));
+        }
         let (compare, write) = match state.depth {
             Depth::Off => (wgpu::CompareFunction::Always, false),
             Depth::Always => (wgpu::CompareFunction::Always, true),
@@ -578,11 +635,7 @@ impl Gl {
                 module: &self.module,
                 entry_point: Some(state.vertex),
                 compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attributes,
-                })],
+                buffers: &buffers,
             },
             primitive: wgpu::PrimitiveState {
                 topology: match state.lines {
@@ -761,7 +814,13 @@ impl Gl {
                 pass.set_pipeline(&self.pipelines[&(c.state, format)]);
                 pass.set_bind_group(0, uniforms, &[c.params]);
                 pass.set_bind_group(1, &self.groups[&(c.textures, c.cube)], &[]);
-                pass.draw(c.vertices.clone(), 0..1);
+                let mut instances = 0..1;
+                if c.state.instanced {
+                    let first = u64::from(c.instances.start) * size_of::<Vertex>() as u64;
+                    pass.set_vertex_buffer(1, vertex_buffer.slice(first..));
+                    instances = 0..c.instances.end - c.instances.start;
+                }
+                pass.draw(c.vertices.clone(), instances);
             }
         }
     }
