@@ -29,8 +29,48 @@ pub enum Mark {
     },
 }
 
-/// Character width over height (0x404810, command 0xc).
-const CHARACTER: f32 = 0.3125;
+/// The TimesRoman atlas packs proportional ASCII glyphs into six rows.
+const FONT_ROWS: &[&[u16]] = &[
+    &[
+        0, 20, 39, 61, 90, 116, 155, 192, 207, 228, 251, 276, 306, 324, 346, 362, 382, 412, 435,
+        463, 489, 512,
+    ],
+    &[
+        0, 26, 54, 81, 107, 136, 154, 172, 201, 230, 261, 286, 327, 360, 393, 426, 461, 488,
+    ],
+    &[
+        0, 28, 63, 98, 119, 142, 177, 206, 246, 283, 317, 345, 380, 414, 442, 472, 505,
+    ],
+    &[
+        0, 34, 76, 111, 144, 177, 195, 215, 236, 261, 290, 310, 335, 362, 387, 414, 439, 460, 487,
+        512,
+    ],
+    &[
+        0, 14, 37, 65, 83, 120, 147, 173, 201, 228, 250, 271, 291, 318, 345, 380, 406, 434, 463,
+        487, 497,
+    ],
+    &[0, 25, 48],
+];
+
+fn glyph(ch: char) -> ([f32; 4], f32) {
+    let ch = if (' '..='~').contains(&ch) { ch } else { '?' };
+    let mut index = ch as usize - ' ' as usize;
+    for (row, cells) in FONT_ROWS.iter().enumerate() {
+        if let Some(pair) = cells.get(index..index + 2) {
+            let [left, right] = [f32::from(pair[0]), f32::from(pair[1])];
+            let y = (row as f32 * 256.0 / 6.0).round();
+            let uv = [
+                (left + 0.5) / 512.0,
+                (y + 0.5) / 256.0,
+                (right - 0.5) / 512.0,
+                (y + 41.5) / 256.0,
+            ];
+            return (uv, (right - left) / 43.0);
+        }
+        index -= cells.len() - 1;
+    }
+    unreachable!("printable ASCII")
+}
 
 struct Logo {
     group: wgpu::BindGroup,
@@ -43,8 +83,6 @@ struct Logo {
 pub struct Overlay {
     pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
-    /// Replaces the frame with the image, keeping as much of it as the alpha says.
-    text: wgpu::RenderPipeline,
     font: Option<wgpu::BindGroup>,
     white: wgpu::BindGroup,
     logos: Vec<Logo>,
@@ -148,16 +186,6 @@ impl Overlay {
             })
         };
         let pipeline = make(wgpu::BlendState::ALPHA_BLENDING);
-        // `gText.ssh` "NormalBG".
-        let over = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::One,
-            dst_factor: wgpu::BlendFactor::SrcAlpha,
-            operation: wgpu::BlendOperation::Add,
-        };
-        let text = make(wgpu::BlendState {
-            color: over,
-            alpha: over,
-        });
         let sampler = d.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -173,17 +201,24 @@ impl Overlay {
         Self {
             pipeline,
             sampler,
-            text,
             font: None,
             white,
             logos: Vec::new(),
         }
     }
 
-    /// `mips` has 8 columns and 16 rows of characters, upright.
+    /// Converts the atlas's inverse coverage to ordinary straight alpha.
     pub fn set_font(&mut self, gpu: &Gpu, mips: &[Level]) {
-        self.font =
-            (!mips.is_empty()).then(|| Self::group(gpu, &self.pipeline, &self.sampler, mips));
+        self.font = (!mips.is_empty()).then(|| {
+            let mut atlas = mips.to_vec();
+            for mip in &mut atlas {
+                for pixel in mip.rgba.chunks_exact_mut(4) {
+                    pixel[3] = 255 - pixel[3];
+                    pixel[..3].fill(255);
+                }
+            }
+            Self::group(gpu, &self.pipeline, &self.sampler, &atlas)
+        });
     }
 
     fn group(
@@ -284,22 +319,24 @@ impl Overlay {
                     background,
                 } => {
                     let Some(font) = &self.font else { continue };
-                    let width = size * CHARACTER * narrow;
                     for (row, line) in text.split('\n').enumerate() {
-                        let left = x - line.chars().count() as f32 * width * 0.5;
+                        let glyphs: Vec<_> = line.chars().map(glyph).collect();
+                        let screen = size / aspect;
+                        let width = glyphs.iter().map(|(_, w)| w).sum::<f32>() * screen;
+                        let mut at = x - width * 0.5;
                         let y = y - row as f32 * size;
-                        for (i, ch) in line.chars().enumerate() {
-                            let n = (ch as u32).min(127);
-                            let (col, r) = ((n % 8) as f32 / 8.0, (n / 8) as f32 / 16.0);
-                            let uv = [col + 0.025, r, col + 0.125 - 0.025, r + 1.0 / 16.0];
-                            let at = left + i as f32 * width;
-                            let q = part(at, at + width, y, y + size, *color, uv);
-                            let pipe = if *background {
-                                &self.text
-                            } else {
-                                &self.pipeline
-                            };
-                            quads.push((pipe, font, q));
+                        if *background && width > 0.0 {
+                            let bg = quad(at, at + width, y, y + size, [0.0, 0.0, 0.0, 0.35]);
+                            quads.push((&self.pipeline, &self.white, bg));
+                        }
+                        for (uv, w) in glyphs {
+                            let end = at + w * screen;
+                            quads.push((
+                                &self.pipeline,
+                                font,
+                                part(at, end, y, y + size, *color, uv),
+                            ));
+                            at = end;
                         }
                     }
                 }
