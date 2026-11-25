@@ -35,5 +35,3 @@ One page that links the ports of old graphics card demos:
 repositories: rendered, or left by their tests. `scripts/deploy-cloudflare.sh` publishes it. To add
 a demo, add a link to `web/index.html` and a picture to `scripts/build.sh`. Pictures show
 the demos' content, so they stay out of Git. Fonts come from Google Fonts.
-
-The three Ruby players open files from a local installation of the corresponding ATI demo.
