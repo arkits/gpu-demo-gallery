@@ -22,6 +22,9 @@ shot lightning 2 " "
 shot npr-hatching 1 1
 shot natural-light 1 24
 shot bear 1 5
+shot double-cross 1 9
+shot dangerous-curves 1 9
+shot the-assassin 1 3
 crop=800:768:224:0
 shot grove 3 g8
 crop=in_w:600:0:0

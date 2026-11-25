@@ -26,9 +26,14 @@ One page that links the ports of old graphics card demos:
 | Natural Light (ATI, 2002) | `natural-light` | https://natural-light-port.pages.dev |
 | Bear (ATI, 2002) | `bear` | https://bear-port.pages.dev |
 | Pipe Dream (ATI, 2003) | `pipedream` | https://pipedream-port.pages.dev |
+| Double Cross v1.4 (ATI, 2004) | `double-cross` | https://double-cross-port.pages.dev |
+| Dangerous Curves v1.3 (ATI, 2005) | `dangerous-curves` | https://dangerous-curves-port.pages.dev |
+| The Assassin v1.0 (ATI, 2005) | `the-assassin` | https://the-assassin-port.pages.dev |
 | Box of Smoke (NVIDIA, 2006) | `box-of-smoke` | https://box-of-smoke-port.pages.dev |
 
 `scripts/build.sh` assembles `dist/`, taking pictures from the sibling
 repositories: rendered, or left by their tests. `scripts/deploy-cloudflare.sh` publishes it. To add
 a demo, add a link to `web/index.html` and a picture to `scripts/build.sh`. Pictures show
 the demos' content, so they stay out of Git. Fonts come from Google Fonts.
+
+The three Ruby players open files from a local installation of the corresponding ATI demo.
