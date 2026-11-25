@@ -46,5 +46,6 @@ shot squid 5 0 0 0
 shot chameleon 8 0.8 -0.3 1
 shot tidepool 5 0 0 0
 shot zoltar 5 0 0 0
+shot dawn 28 0 0 -
 echo '<!doctype html><title>Not found</title><p>Not found.' > dist/404.html
 ls -l dist/img
