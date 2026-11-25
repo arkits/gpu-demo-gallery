@@ -31,6 +31,15 @@ One page that links the ports of old graphics card demos:
 | Dangerous Curves v1.3 (ATI, 2005) | [dangerous-curves](https://github.com/arkits/dangerous-curves) | https://dangerous-curves-port.pages.dev |
 | The Assassin v1.0 (ATI, 2005) | [the-assassin](https://github.com/arkits/the-assassin) | https://the-assassin-port.pages.dev |
 | Box of Smoke (NVIDIA, 2006) | [box-of-smoke](https://github.com/arkits/box-of-smoke) | https://box-of-smoke-port.pages.dev |
+| Surf (3dfx, 1998) | [surf](https://github.com/arkits/surf) | https://surf-port.pages.dev |
+| 60Hz / 30Hz / 15Hz (3dfx, 1998) | [sixty-hertz](https://github.com/arkits/sixty-hertz) | https://sixty-hertz-port.pages.dev |
+| Demoroom (3dfx, 1997) | [demoroom](https://github.com/arkits/demoroom) | https://demoroom-port.pages.dev |
+| ATB-TV (3dfx, 1997) | [atb-tv](https://github.com/arkits/atb-tv) | https://atb-tv-port.pages.dev |
+| Flip (3dfx, 1997) | [flip](https://github.com/arkits/flip) | https://flip-port.pages.dev |
+| Grand Bleu (3dfx, 1997) | [grand-bleu](https://github.com/arkits/grand-bleu) | https://grand-bleu-port.pages.dev |
+| Racing (3dfx, 1997) | [racing](https://github.com/arkits/racing) | https://racing-port.pages.dev |
+| Valley of Ra (3dfx, 1997) | [valley-of-ra](https://github.com/arkits/valley-of-ra) | https://valley-of-ra-port.pages.dev |
+| Wizards Tower (3dfx, 1997) | [wizards-tower](https://github.com/arkits/wizards-tower) | https://wizards-tower-port.pages.dev |
 
 The gallery itself lives at [arkits/gpu-demo-gallery](https://github.com/arkits/gpu-demo-gallery).
 

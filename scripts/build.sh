@@ -6,14 +6,30 @@ cd "$(dirname "$0")/.."
 D=${DEMOS:-$PWD/..}
 mkdir -p dist/img
 cp web/index.html dist/
-# make NAME SOURCE CROP
-make() { ffmpeg -v error -y -i "$D/$2" -vf "crop=$3,scale=1600:-2:flags=lanczos" -frames:v 1 -q:v 4 "dist/img/$1.jpg"; }
+# make NAME SOURCE CROP. Some frames are pre-rendered by another session's
+# `dev.sh compare`; when that PNG is absent, keep the image already in dist/img.
+make() {
+  if [ -f "$D/$2" ]; then
+    ffmpeg -v error -y -i "$D/$2" -vf "crop=$3,scale=1600:-2:flags=lanczos" -frames:v 1 -q:v 4 "dist/img/$1.jpg"
+  elif [ -f "dist/img/$1.jpg" ]; then
+    : # keep the previously rendered frame
+  else
+    echo "skip $1: no source $2 and no existing image" >&2
+  fi
+}
 # shot REPOSITORY ARGUMENTS... renders a moment with the demo's own script.
+# A sibling repo may be mid-edit and fail to render; in that case keep the
+# frame already in dist/img instead of aborting the whole gallery build.
 shot() {
   demo=$1; shift
   out=$(cd "$D/$demo" && pwd)/target/devtest/gallery.png
-  sh "$D/$demo/scripts/dev.sh" shot "$@" "$out" >/dev/null
-  ffmpeg -v error -y -i "$out" -vf "crop=$crop,scale=1600:-2:flags=lanczos" -frames:v 1 -q:v 4 "dist/img/$demo.jpg"
+  if sh "$D/$demo/scripts/dev.sh" shot "$@" "$out" >/dev/null 2>&1 && [ -f "$out" ]; then
+    ffmpeg -v error -y -i "$out" -vf "crop=$crop,scale=1600:-2:flags=lanczos" -frames:v 1 -q:v 4 "dist/img/$demo.jpg"
+  elif [ -f "dist/img/$demo.jpg" ]; then
+    echo "keep $demo: render failed, using existing image" >&2
+  else
+    echo "skip $demo: render failed and no existing image" >&2
+  fi
 }
 crop=in_w:in_h
 shot borg 10 68
@@ -47,5 +63,15 @@ shot chameleon 8 0.8 -0.3 1
 shot tidepool 5 0 0 0
 shot zoltar 5 0 0 0
 shot dawn 28 0 0 -
+crop=in_w:in_h
+shot surf 6 dw
+shot sixty-hertz 8 4r
+shot demoroom 5 w
+shot atb-tv 5 t
+shot flip 5 t
+shot grand-bleu 5 t
+shot racing 5 w
+shot valley-of-ra 5 w
+shot wizards-tower 5 t
 echo '<!doctype html><title>Not found</title><p>Not found.' > dist/404.html
 ls -l dist/img
