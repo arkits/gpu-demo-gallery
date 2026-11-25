@@ -1,5 +1,5 @@
 // Drives the web build in headless Chrome: webtest.mjs <url> <out dir> <command> [gpu]
-//   show   start, sound, action, drag, resize
+//   show   start, sound, the gem, speech, pause, light, drag, resize
 //   still  four moments, for comparison with native frames
 import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
@@ -57,10 +57,31 @@ const commands = {
     const f = await frames(3000);
     check(f.fps > 35, `scene: ${f.fps.toFixed(0)} fps, worst frame ${f.worst.toFixed(0)} ms`);
     const music = await page.evaluate(() => window.demo.sound());
-    check(music.looping === "background" && music.level > 0.0005, `music plays: ${JSON.stringify(music)}`);
-    await page.click('#modes [data-key="s"]');
+    check(music.playing.background_soft === 1 && music.level > 0.0005, `music plays: ${JSON.stringify(music)}`);
+    // The gem of the canvas.
+    await page.mouse.click(950, 80);
+    await page.waitForTimeout(400);
+    const gem = await page.evaluate(() => window.demo.sound());
+    check(gem.playing.oneffect > 0, `the gem sounds: ${JSON.stringify(gem)}`);
+    await page.waitForTimeout(3000);
+    const voice = await page.evaluate(() => window.demo.sound());
+    check(voice.playing.pleasure === 1 && !voice.playing.oneffect && voice.playing.background_soft === 0.5, `he speaks: ${JSON.stringify(voice)}`);
     await shot("action");
-    await shot("before");
+    await page.keyboard.press("p");
+    await page.waitForTimeout(200);
+    const held = await page.evaluate(() => window.demo.sound());
+    check(held.state === "suspended" && await page.getAttribute("#pause", "aria-pressed") === "true", `pause: ${held.state}`);
+    await page.keyboard.press("p");
+    await page.waitForTimeout(200);
+    check((await page.evaluate(() => window.demo.sound())).state === "running", "goes on");
+    await page.keyboard.press("x");
+    await page.waitForTimeout(200);
+    check(!(await page.evaluate(() => window.demo.sound())).playing.pleasure, "X stops him");
+    await page.click("#light");
+    await page.mouse.click(120, 600);
+    check(await page.getAttribute("#light", "aria-pressed") === "true", "moves the light");
+    await shot("light");
+    await page.click("#light");
     await page.mouse.move(300, 300); await page.mouse.down(); await page.mouse.move(600, 260, { steps: 20 });
     await page.mouse.up();
     await page.mouse.wheel(0, 500);
@@ -73,7 +94,7 @@ const commands = {
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "fits a phone");
   },
   async still() {
-    for (const [name, query] of [["a", "time=5"], ["b", "time=8&yaw=0.8&pitch=-0.3&action=1"], ["c", "time=3&yaw=1.57"], ["d", "time=2&yaw=4&pitch=0.7"]]) {
+    for (const [name, query] of [["a", "time=5&clip=1"], ["b", "time=3&yaw=0.8&pitch=0.3&clip=2"], ["c", "time=0"], ["d", "time=2&yaw=4&pitch=0.7&clip=11"]]) {
       await page.goto(`${url}?${query}`);
       await page.waitForFunction(() => document.documentElement.dataset.done, null, { timeout: 90000 });
       await page.waitForTimeout(150);

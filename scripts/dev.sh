@@ -82,10 +82,10 @@ smoke)
 webtest) need_data; driver; build_web; browser "show webgpu" "show webgl" ;;
 compare)
   need_data; driver; build_web
-  shot 5 0 0 0 "$OUT/native-a.png" >/dev/null
-  shot 8 0.8 -0.3 1 "$OUT/native-b.png" >/dev/null
-  shot 3 1.57 0 0 "$OUT/native-c.png" >/dev/null
-  shot 2 4 0.7 0 "$OUT/native-d.png" >/dev/null
+  shot 5 0 0 1 "$OUT/native-a.png" >/dev/null
+  shot 3 0.8 0.3 2 "$OUT/native-b.png" >/dev/null
+  shot 0 0 0 0 "$OUT/native-c.png" >/dev/null
+  shot 2 4 0.7 11 "$OUT/native-d.png" >/dev/null
   browser "still webgpu" "still webgl"
   for m in a b c d; do
     python3 tools/compare_png.py --max-mean 1.5 "$OUT/native-$m.png" "$OUT/webgpu-$m.png" "$OUT/webgl-$m.png"

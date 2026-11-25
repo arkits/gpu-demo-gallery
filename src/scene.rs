@@ -1,114 +1,51 @@
 //! GPU resources and frame submission shared by the native and browser players.
 use std::collections::HashMap;
 
-use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
-use wgpu::VertexStepMode::{Instance, Vertex};
+use wgpu::TextureViewDimension::{Cube, D2};
 
 use crate::{
     Error,
     data::Files,
-    dds,
-    demo::{self, DEMO, Demo},
-    gpu::{DEPTH, Gpu, SAMPLES},
-    model::{Kind, Model, Vertex as MeshVertex},
-    show::{Frame, Show},
+    dds, demo,
+    gpu::{COLOR, DEPTH, Gpu, SAMPLES, SLOT},
+    model::{Model, Texture},
+    pass::{CONSTANTS, Context, Pass, State, Stream, put},
+    show::{Frame, Show, gem, logo},
+    stage::Stage,
 };
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Uniform {
-    view_proj: [f32; 16],
-    inverse: [f32; 16],
-    eye: [f32; 4],
-    light: [f32; 4],
-    parameters: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Placement {
-    transform: [f32; 16],
-    diffuse: [f32; 4],
-    ambient_mode: [f32; 4],
-}
-
-const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x2];
-const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
-                             7 => Float32x4, 8 => Float32x4, 9 => Float32x4];
+/// Bytes a program can address.
+const BLOCK: u64 = CONSTANTS as u64 * 16;
 
 struct Mesh {
     vertices: wgpu::Buffer,
-    indices: wgpu::Buffer,
+    geometry: usize,
+    streams: Vec<Stream>,
+}
+
+struct GpuPass {
+    pipeline: usize,
     group: wgpu::BindGroup,
-    fur: Vec<wgpu::BindGroup>,
-    skins: Vec<wgpu::BindGroup>,
+    /// Groups with other textures in the first units, for shells and skins.
+    alternates: Vec<wgpu::BindGroup>,
+    mesh: usize,
+    blended: bool,
+}
+
+struct GpuShape {
+    passes: Vec<GpuPass>,
+    fur: Option<GpuPass>,
 }
 
 struct Actor {
     model: Model,
+    /// Index buffers by geometry.
+    indices: Vec<(wgpu::Buffer, u32)>,
     meshes: Vec<Mesh>,
-    sky: wgpu::BindGroup,
-    focus: (Vec3, f32),
-    ground: Option<Ground>,
-}
-
-struct Ground {
-    heights: Vec<f32>,
-    columns: usize,
-    rows: usize,
-    min: Vec3,
-    max: Vec3,
-}
-
-impl Ground {
-    fn new(model: &Model) -> Option<Self> {
-        let shape = model.shapes.iter().find(|s| s.geometry == "ground")?;
-        let (first, last) = (shape.vertices.first()?, shape.vertices.last()?);
-        let columns = shape
-            .vertices
-            .iter()
-            .take_while(|v| v.pos[2] == first.pos[2])
-            .count();
-        let rows = shape.vertices.len() / columns;
-        if columns < 2 || rows < 2 {
-            return None;
-        }
-        let transform = model.pose(None, 0.0)[shape.node];
-        Some(Self {
-            columns,
-            rows,
-            min: transform.transform_point3(first.pos.into()),
-            max: transform.transform_point3(last.pos.into()),
-            heights: shape
-                .vertices
-                .iter()
-                .map(|v| transform.transform_point3(v.pos.into()).y)
-                .collect(),
-        })
-    }
-
-    fn height(&self, x: f32, z: f32) -> f32 {
-        let tx = ((x - self.min.x) / (self.max.x - self.min.x)).clamp(0.0, 1.0)
-            * (self.columns - 1) as f32;
-        let tz =
-            ((z - self.min.z) / (self.max.z - self.min.z)).clamp(0.0, 1.0) * (self.rows - 1) as f32;
-        let (x, z) = (tx.floor() as usize, tz.floor() as usize);
-        let (next_x, next_z) = ((x + 1).min(self.columns - 1), (z + 1).min(self.rows - 1));
-        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
-        let a = lerp(
-            self.heights[z * self.columns + x],
-            self.heights[z * self.columns + next_x],
-            tx.fract(),
-        );
-        let b = lerp(
-            self.heights[next_z * self.columns + x],
-            self.heights[next_z * self.columns + next_x],
-            tx.fract(),
-        );
-        lerp(a, b, tz.fract())
-    }
+    shapes: Vec<GpuShape>,
+    /// Shapes in drawing order.
+    order: Vec<usize>,
 }
 
 struct Targets {
@@ -117,105 +54,32 @@ struct Targets {
     depth: wgpu::TextureView,
 }
 
-struct Morph {
-    clip: usize,
-    tracks: Vec<(String, Vec<MorphKey>)>,
-    animation: Option<crate::model::Animation>,
-}
-
-struct MorphKey {
-    ms: u32,
-    positions: Vec<f32>,
-    normals: Vec<f32>,
-}
-
-impl Morph {
-    fn new(clip: usize, bytes: &[u8], model: &Model) -> Result<Self, Error> {
-        let root = crate::tree::read_binary(bytes)?;
-        let animation = root.nodes("animations").first();
-        let mut tracks = Vec::new();
-        if let Some(node) = animation {
-            for channel in node
-                .nodes("channels")
-                .iter()
-                .filter(|c| c.kind == "MeshChannel")
-            {
-                let keys = channel
-                    .nodes("curves")
-                    .iter()
-                    .map(|key| MorphKey {
-                        ms: key.int("time"),
-                        positions: key.floats("coords").to_vec(),
-                        normals: key.floats("normals").to_vec(),
-                    })
-                    .collect();
-                tracks.push((channel.text("targetNode").to_owned(), keys));
-            }
-        }
-        let animation = animation
-            .map(|node| crate::model::Animation::new(model, crate::anim::read(node)?))
-            .transpose()?;
-        Ok(Self {
-            clip,
-            tracks,
-            animation,
-        })
-    }
-
-    fn deform(&self, target: &str, ms: u32, vertices: &mut [MeshVertex]) {
-        let Some((_, keys)) = self.tracks.iter().find(|(name, _)| name == target) else {
-            return;
-        };
-        if keys.is_empty() {
-            return;
-        }
-        let index = keys.partition_point(|k| k.ms < ms);
-        let a = &keys[index.saturating_sub(1)];
-        let b = keys.get(index).unwrap_or(a);
-        if [a, b].iter().any(|key| {
-            key.positions.len() != vertices.len() * 3 || key.normals.len() != vertices.len() * 3
-        }) {
-            return;
-        }
-        let t = (ms.saturating_sub(a.ms) as f32 / b.ms.saturating_sub(a.ms).max(1) as f32).min(1.0);
-        for (i, vertex) in vertices.iter_mut().enumerate() {
-            let v = |values: &[f32]| Vec3::from_slice(&values[i * 3..]);
-            vertex.pos = v(&a.positions).lerp(v(&b.positions), t).to_array();
-            vertex.normal = v(&a.normals)
-                .lerp(v(&b.normals), t)
-                .normalize_or_zero()
-                .to_array();
-        }
-    }
+/// Something a demo draws that is not a shape.
+struct GpuEffect {
+    pipeline: wgpu::RenderPipeline,
+    group: wgpu::BindGroup,
+    vertices: u32,
+    instances: u32,
 }
 
 pub struct Scene {
     actors: Vec<Actor>,
+    stage: Stage,
+    effects: Vec<GpuEffect>,
+    /// Textures drawn before the picture: color, depth, and what they start from.
+    offscreen: Vec<(wgpu::TextureView, Option<wgpu::TextureView>, wgpu::Color)>,
+    pipelines: Vec<wgpu::RenderPipeline>,
     uniforms: wgpu::Buffer,
-    instances: wgpu::Buffer,
+    /// Draws the buffer has room for, in bytes.
+    capacity: u64,
+    layout: wgpu::BindGroupLayout,
     constants: wgpu::BindGroup,
-    badge: wgpu::BindGroup,
-    surface: wgpu::RenderPipeline,
-    alpha: wgpu::RenderPipeline,
-    depth_vision: Option<wgpu::RenderPipeline>,
-    silt: Option<wgpu::RenderPipeline>,
-    bubbles: Option<wgpu::RenderPipeline>,
-    sky: wgpu::RenderPipeline,
-    overlay: wgpu::RenderPipeline,
+    sky: Option<(wgpu::RenderPipeline, wgpu::BindGroup)>,
+    badge: wgpu::RenderPipeline,
+    overlays: Vec<wgpu::BindGroup>,
     format: wgpu::TextureFormat,
     targets: Option<Targets>,
-    clips: Vec<Vec<u8>>,
-    morph: Option<Morph>,
-}
-
-type Images = (Option<String>, Option<String>, Option<String>);
-
-struct ImagesLoader<'a> {
-    gpu: &'a Gpu,
-    files: &'a Files,
-    layout: &'a wgpu::BindGroupLayout,
-    images: HashMap<String, wgpu::TextureView>,
-    groups: HashMap<Images, wgpu::BindGroup>,
+    scratch: Vec<u8>,
 }
 
 pub(crate) fn rgba(files: &Files, name: &str) -> Result<((u32, u32), Vec<u8>), Error> {
@@ -252,379 +116,615 @@ pub(crate) fn rgba(files: &Files, name: &str) -> Result<((u32, u32), Vec<u8>), E
     Ok(((u32::try_from(w)?, u32::try_from(h)?), pixels))
 }
 
-impl ImagesLoader<'_> {
-    fn image(&mut self, name: Option<&str>, cube: bool) -> Result<wgpu::TextureView, Error> {
-        let key = name.unwrap_or(if cube { "#blank cube" } else { "#white" });
-        if let Some(view) = self.images.get(key) {
+/// Loads textures once and makes bind groups of four.
+struct Loader<'a> {
+    gpu: &'a Gpu,
+    files: &'a Files,
+    views: HashMap<String, wgpu::TextureView>,
+    samplers: HashMap<[bool; 2], wgpu::Sampler>,
+}
+
+type Unit<'a> = (Option<&'a Texture>, bool);
+
+impl Loader<'_> {
+    fn view(&mut self, file: Option<&str>, cube: bool) -> Result<wgpu::TextureView, Error> {
+        let key = file.unwrap_or(if cube { "#cube" } else { "#plane" });
+        if let Some(view) = self.views.get(key) {
             return Ok(view.clone());
         }
-        let (size, pixels) = match (name, cube) {
-            (Some(name), true) => {
-                let decoded = self
+        let (size, pixels) = match (file, cube) {
+            (Some(file), true) => {
+                let faces = self
                     .files
-                    .faces(name)?
+                    .faces(file)?
                     .iter()
                     .map(|face| rgba(self.files, face).map_err(|e| format!("{face}: {e}")))
                     .collect::<Result<Vec<_>, _>>()?;
-                let size = decoded[0].0;
-                if decoded.iter().any(|(s, _)| *s != size) {
-                    return Err(format!("{name}: inconsistent cube face sizes").into());
+                let size = faces[0].0;
+                if faces.iter().any(|(s, _)| *s != size) {
+                    return Err(format!("{file}: inconsistent cube face sizes").into());
                 }
-                (size, decoded.into_iter().map(|(_, p)| p).collect())
+                (size, faces.into_iter().map(|(_, p)| p).collect())
             }
-            (Some(name), false) => {
-                let (size, data) = rgba(self.files, name).map_err(|e| format!("{name}: {e}"))?;
+            (Some(file), false) => {
+                let (size, data) = rgba(self.files, file).map_err(|e| format!("{file}: {e}"))?;
                 (size, vec![data])
             }
             (None, true) => ((1, 1), vec![vec![0, 0, 0, 255]; 6]),
             (None, false) => ((1, 1), vec![vec![255; 4]]),
         };
-        let texture = self.gpu.upload_rgba(size, &pixels, true);
-        let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            dimension: cube.then_some(wgpu::TextureViewDimension::Cube),
-            ..Default::default()
-        });
-        self.images.insert(key.to_owned(), view.clone());
+        let view =
+            self.gpu
+                .upload_rgba(size, &pixels, true)
+                .create_view(&wgpu::TextureViewDescriptor {
+                    dimension: cube.then_some(Cube),
+                    ..Default::default()
+                });
+        self.views.insert(key.to_owned(), view.clone());
         Ok(view)
     }
 
-    fn group(&mut self, key: Images) -> Result<wgpu::BindGroup, Error> {
-        if let Some(group) = self.groups.get(&key) {
-            return Ok(group.clone());
+    fn sampler(&mut self, repeat: [bool; 2]) -> wgpu::Sampler {
+        let mode = |r| match r {
+            true => wgpu::AddressMode::Repeat,
+            false => wgpu::AddressMode::ClampToEdge,
+        };
+        let device = &self.gpu.device;
+        self.samplers
+            .entry(repeat)
+            .or_insert_with(|| {
+                device.create_sampler(&wgpu::SamplerDescriptor {
+                    address_mode_u: mode(repeat[0]),
+                    address_mode_v: mode(repeat[1]),
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Linear,
+                    mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                    ..Default::default()
+                })
+            })
+            .clone()
+    }
+
+    fn group(
+        &mut self,
+        layout: &wgpu::BindGroupLayout,
+        units: &[Unit<'_>],
+    ) -> Result<wgpu::BindGroup, Error> {
+        let mut views = Vec::new();
+        let mut samplers = Vec::new();
+        for (texture, cube) in units {
+            views.push(self.view(texture.map(|t| t.file.as_str()), *cube)?);
+            samplers.push(self.sampler(texture.map_or([false; 2], |t| t.repeat)));
         }
-        let views = [
-            self.image(key.0.as_deref(), false)?,
-            self.image(key.1.as_deref(), false)?,
-            self.image(key.2.as_deref(), true)?,
-        ];
-        let entries = [0, 1, 2].map(|i| wgpu::BindGroupEntry {
-            binding: i,
-            resource: wgpu::BindingResource::TextureView(&views[i as usize]),
-        });
-        let group = self
+        let textures = views.iter().map(wgpu::BindingResource::TextureView);
+        let all = textures.chain(samplers.iter().map(wgpu::BindingResource::Sampler));
+        let entries: Vec<_> = (0..)
+            .zip(all)
+            .map(|(binding, resource)| wgpu::BindGroupEntry { binding, resource })
+            .collect();
+        Ok(self
             .gpu
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
-                layout: self.layout,
+                layout,
                 entries: &entries,
-            });
-        self.groups.insert(key, group.clone());
-        Ok(group)
+            }))
     }
 }
 
-fn entry(binding: u32, view_dimension: wgpu::TextureViewDimension) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension,
-            multisampled: false,
-        },
-        count: None,
+/// Textures at bindings from 0, then their samplers.
+fn texture_layout(device: &wgpu::Device, cubes: &[bool]) -> wgpu::BindGroupLayout {
+    let texture = |cube: &bool| wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        view_dimension: if *cube { Cube } else { D2 },
+        multisampled: false,
+    };
+    let sampler = wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering);
+    let types = cubes
+        .iter()
+        .map(texture)
+        .chain(cubes.iter().map(|_| sampler));
+    let entries: Vec<_> = (0..)
+        .zip(types)
+        .map(|(binding, ty)| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty,
+            count: None,
+        })
+        .collect();
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &entries,
+    })
+}
+
+fn blend_factor(n: u32) -> Result<wgpu::BlendFactor, Error> {
+    use wgpu::BlendFactor::*;
+    Ok(match n {
+        0 => Zero,
+        1 => One,
+        2 => Src,
+        3 => OneMinusSrc,
+        4 => SrcAlpha,
+        5 => OneMinusSrcAlpha,
+        6 => Dst,
+        7 => OneMinusDst,
+        8 => DstAlpha,
+        9 => OneMinusDstAlpha,
+        10 => SrcAlphaSaturated,
+        n => return Err(format!("unsupported blend factor {n}").into()),
+    })
+}
+
+fn compare(n: u32) -> Result<wgpu::CompareFunction, Error> {
+    use wgpu::CompareFunction::*;
+    Ok(match n {
+        0 => Never,
+        1 => Less,
+        2 => LessEqual,
+        3 => Greater,
+        4 => GreaterEqual,
+        5 => Equal,
+        6 => NotEqual,
+        7 => Always,
+        n => return Err(format!("unsupported comparison {n}").into()),
+    })
+}
+
+/// Builds pipelines, each once.
+struct Pipelines<'a> {
+    device: &'a wgpu::Device,
+    format: wgpu::TextureFormat,
+    constants: &'a wgpu::BindGroupLayout,
+    layouts: HashMap<[bool; 4], wgpu::BindGroupLayout>,
+    shaders: HashMap<String, wgpu::ShaderModule>,
+    known: HashMap<(String, usize, State, Option<usize>), usize>,
+    /// Whether the stage's textures have depth.
+    depths: Vec<bool>,
+    made: Vec<wgpu::RenderPipeline>,
+}
+
+impl Pipelines<'_> {
+    fn textures(&mut self, cubes: [bool; 4]) -> wgpu::BindGroupLayout {
+        let device = self.device;
+        self.layouts
+            .entry(cubes)
+            .or_insert_with(|| texture_layout(device, &cubes))
+            .clone()
     }
+
+    fn get(&mut self, pass: &Pass) -> Result<usize, Error> {
+        let key = (
+            pass.wgsl.clone(),
+            pass.streams.len(),
+            pass.state,
+            pass.offscreen,
+        );
+        if let Some(&i) = self.known.get(&key) {
+            return Ok(i);
+        }
+        let textures = self.textures(pass.units.map(|u| u == Some(true)));
+        let device = self.device;
+        let shader = self
+            .shaders
+            .entry(pass.wgsl.clone())
+            .or_insert_with(|| {
+                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: None,
+                    source: wgpu::ShaderSource::Wgsl(pass.wgsl.as_str().into()),
+                })
+            })
+            .clone();
+        let attributes: Vec<_> = (0..pass.streams.len())
+            .map(|i| wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 16 * i as u64,
+                shader_location: i as u32,
+            })
+            .collect();
+        let state = pass.state;
+        let blend = match state.blend {
+            Some((src, dst)) => {
+                let c = wgpu::BlendComponent {
+                    src_factor: blend_factor(src)?,
+                    dst_factor: blend_factor(dst)?,
+                    operation: wgpu::BlendOperation::Add,
+                };
+                Some(wgpu::BlendState { color: c, alpha: c })
+            }
+            None => None,
+        };
+        let mut mask = wgpu::ColorWrites::empty();
+        if state.color {
+            mask |= wgpu::ColorWrites::COLOR;
+        }
+        // The picture stays opaque, or a page shows through it.
+        if state.alpha && pass.offscreen.is_some() {
+            mask |= wgpu::ColorWrites::ALPHA;
+        }
+        let (depth_compare, write) = match state.depth {
+            Some((func, write)) => (compare(func)?, write),
+            None => (wgpu::CompareFunction::Always, false),
+        };
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(self.constants), Some(&textures)],
+            immediate_size: 0,
+        });
+        self.made.push(
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: 16 * pass.streams.len() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attributes,
+                    })],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: pass.offscreen.map_or(self.format, |_| COLOR),
+                        blend,
+                        write_mask: mask,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    front_face: match state.ccw_front {
+                        true => wgpu::FrontFace::Ccw,
+                        false => wgpu::FrontFace::Cw,
+                    },
+                    cull_mode: match state.cull {
+                        0 => Some(wgpu::Face::Front),
+                        1 => Some(wgpu::Face::Back),
+                        _ => None,
+                    },
+                    ..Default::default()
+                },
+                depth_stencil: pass.offscreen.is_none_or(|i| self.depths[i]).then_some(
+                    wgpu::DepthStencilState {
+                        format: DEPTH,
+                        depth_write_enabled: Some(write),
+                        depth_compare: Some(depth_compare),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    },
+                ),
+                multisample: match pass.offscreen {
+                    Some(_) => Default::default(),
+                    None => samples(),
+                },
+                multiview_mask: None,
+                cache: None,
+            }),
+        );
+        let i = self.made.len() - 1;
+        self.known.insert(key, i);
+        Ok(i)
+    }
+}
+
+fn samples() -> wgpu::MultisampleState {
+    wgpu::MultisampleState {
+        count: SAMPLES,
+        ..Default::default()
+    }
+}
+
+/// A pipeline without vertex buffers, that leaves depths alone.
+fn backdrop(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layouts: [&wgpu::BindGroupLayout; 2],
+    source: &str,
+    blend: Option<wgpu::BlendState>,
+    depth: wgpu::CompareFunction,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &layouts.map(Some),
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: Default::default(),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(depth),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: samples(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+impl Actor {
+    fn new(
+        gpu: &Gpu,
+        model: Model,
+        stage: &Stage,
+        loader: &mut Loader<'_>,
+        pipelines: &mut Pipelines<'_>,
+    ) -> Result<Self, Error> {
+        let mut meshes: Vec<Mesh> = Vec::new();
+        let mut shapes = Vec::new();
+        for (index, shape) in model.shapes.iter().enumerate() {
+            let mut make =
+                |pass: &Pass, alternates: Vec<Vec<Option<usize>>>| -> Result<GpuPass, Error> {
+                    let found = meshes
+                        .iter()
+                        .position(|m| m.geometry == shape.geometry && m.streams == pass.streams);
+                    let mesh = found.unwrap_or_else(|| {
+                        let data = model.geometries[shape.geometry].interleave(&pass.streams);
+                        let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+                        meshes.push(Mesh {
+                            vertices: gpu.buffer(bytemuck::cast_slice(&data), usage),
+                            geometry: shape.geometry,
+                            streams: pass.streams.clone(),
+                        });
+                        meshes.len() - 1
+                    });
+                    let cubes = pass.units.map(|u| u == Some(true));
+                    let layout = pipelines.textures(cubes);
+                    let mut group = |textures: &[Option<usize>]| {
+                        let units: Vec<Unit<'_>> = textures
+                            .iter()
+                            .zip(cubes)
+                            .map(|(t, cube)| (t.map(|i| &model.textures[i]), cube))
+                            .collect();
+                        loader.group(&layout, &units)
+                    };
+                    Ok(GpuPass {
+                        pipeline: pipelines.get(pass)?,
+                        group: group(&pass.textures)?,
+                        alternates: alternates
+                            .iter()
+                            .map(|t| group(t))
+                            .collect::<Result<_, _>>()?,
+                        mesh,
+                        blended: pass.state.blend.is_some(),
+                    })
+                };
+            let error = |e: Error| format!("{}: {e}", shape.name);
+            let passes = shape
+                .passes
+                .iter()
+                .enumerate()
+                .map(|(i, p)| make(p, stage.alternates(&model, index, i)).map_err(error))
+                .collect::<Result<_, _>>()?;
+            let fur = shape
+                .fur
+                .as_ref()
+                .map(|f| {
+                    let shells = f.textures.iter().map(|&t| {
+                        let mut own = f.pass.textures.to_vec();
+                        own[1] = Some(t);
+                        own
+                    });
+                    make(&f.pass, shells.collect()).map_err(error)
+                })
+                .transpose()?;
+            shapes.push(GpuShape { passes, fur });
+        }
+        let indices = model
+            .geometries
+            .iter()
+            .map(|g| {
+                let data = bytemuck::cast_slice(&g.indices);
+                (
+                    gpu.buffer(data, wgpu::BufferUsages::INDEX),
+                    g.indices.len() as u32,
+                )
+            })
+            .collect();
+        let mut order: Vec<usize> = (0..shapes.len()).collect();
+        // Blended shapes come last in their set, otherwise the file's order stays.
+        let blended = |s: &GpuShape| s.passes.first().is_some_and(|p| p.blended);
+        order.sort_by_key(|&i| (model.shapes[i].order, blended(&shapes[i])));
+        Ok(Self {
+            model,
+            indices,
+            meshes,
+            shapes,
+            order,
+        })
+    }
+}
+
+/// Appends constants and returns where they are.
+fn block(out: &mut Vec<u8>, values: &[[f32; 4]]) -> u32 {
+    let at = out.len();
+    out.extend_from_slice(bytemuck::cast_slice(values));
+    let end = out.len().max(at + 1).next_multiple_of(SLOT as usize);
+    out.resize(end, 0);
+    at as u32
+}
+
+/// One draw of a frame.
+struct Call {
+    actor: usize,
+    shape: usize,
+    /// The pass, or the fur's shell.
+    pass: Result<usize, usize>,
+    offset: u32,
+    alternate: Option<usize>,
+    layer: u32,
 }
 
 impl Scene {
     pub fn new(gpu: &Gpu, files: &Files, format: wgpu::TextureFormat) -> Result<Self, Error> {
         let device = &gpu.device;
-        use wgpu::TextureViewDimension::{Cube, D2};
-        let textures = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[entry(0, D2), entry(1, D2), entry(2, Cube)],
-        });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
+                count: None,
+            }],
         });
-        let uniforms = gpu.uniforms(1);
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            ..Default::default()
-        });
-        let constants = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-        let pipelines = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[Some(&layout), Some(&textures)],
-            immediate_size: 0,
-        });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("NVIDIA viewer"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/scene.wgsl").into()),
-        });
-        let pipeline = |vertex, fragment, buffers: &[_], blend, test, write, cull_mode| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(fragment),
-                layout: Some(&pipelines),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some(vertex),
-                    compilation_options: Default::default(),
-                    buffers,
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(fragment),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::COLOR,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    cull_mode,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH,
-                    depth_write_enabled: Some(write),
-                    depth_compare: Some(if vertex == "shadow_vs" {
-                        wgpu::CompareFunction::Less
-                    } else if test {
-                        wgpu::CompareFunction::LessEqual
-                    } else {
-                        wgpu::CompareFunction::Always
-                    }),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: SAMPLES,
-                    ..Default::default()
-                },
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let mesh_buffers = [
-            Some(wgpu::VertexBufferLayout {
-                array_stride: size_of::<MeshVertex>() as u64,
-                step_mode: Vertex,
-                attributes: &MESH_ATTRIBUTES,
-            }),
-            Some(wgpu::VertexBufferLayout {
-                array_stride: size_of::<Placement>() as u64,
-                step_mode: Instance,
-                attributes: &INSTANCE_ATTRIBUTES,
-            }),
-        ];
-
-        let mut loader = ImagesLoader {
+        let mut loader = Loader {
             gpu,
             files,
-            layout: &textures,
-            images: HashMap::new(),
-            groups: HashMap::new(),
+            views: HashMap::new(),
+            samplers: HashMap::new(),
         };
+        let mut pipelines = Pipelines {
+            device,
+            format,
+            constants: &layout,
+            layouts: HashMap::new(),
+            shaders: HashMap::new(),
+            known: HashMap::new(),
+            depths: Vec::new(),
+            made: Vec::new(),
+        };
+        let mut models = files.models()?;
+        let stage = Stage::new(files, &mut models)?;
+        // What is drawn first stands for textures of the scene.
+        let mut offscreen = Vec::new();
+        for o in stage.offscreen() {
+            let view = |format| {
+                gpu.target(o.size, o.size, format, 1)
+                    .create_view(&Default::default())
+            };
+            let color = view(COLOR);
+            loader.views.insert(o.file.to_owned(), color.clone());
+            pipelines.depths.push(o.depth);
+            offscreen.push((color, o.depth.then(|| view(DEPTH)), o.clear));
+        }
         let mut actors = Vec::new();
-        for name in demo::MODELS {
-            let model = files.model(name)?;
+        for (model, name) in models.into_iter().zip(demo::MODELS) {
             if model.shapes.is_empty() {
                 return Err(format!("{name}: no drawable shapes").into());
             }
-            let fallback = if DEMO == Demo::Tidepool {
-                Some("textures/sunol.ifl".to_owned())
-            } else {
-                None
-            };
-            let sky = loader.group((None, None, model.environment.clone().or(fallback)))?;
-            let meshes = model
-                .shapes
+            let actor = Actor::new(gpu, model, &stage, &mut loader, &mut pipelines);
+            actors.push(actor.map_err(|e| format!("{name}: {e}"))?);
+        }
+        let mut effects = Vec::new();
+        for e in stage.effects() {
+            let textures: Vec<Texture> = e
+                .textures
                 .iter()
-                .map(|shape| {
-                    let [a, b] = shape.textures.clone();
-                    let group = loader.group((a.clone(), b.clone(), shape.cube.clone()))?;
-                    let mut skins = Vec::new();
-                    if DEMO == Demo::Chameleon
-                        && let Some(path) = &a
-                        && let Some(prefix) = path.strip_suffix("_red.dds")
-                    {
-                        for color in ["green", "blue", "real", "xray"] {
-                            let alternate = format!("{prefix}_{color}.dds");
-                            let variant = files
-                                .get(&alternate)
-                                .is_ok()
-                                .then_some(alternate)
-                                .or(a.clone());
-                            skins.push(loader.group((variant, b.clone(), shape.cube.clone()))?);
-                        }
-                    }
-                    let fur = shape
-                        .fur
-                        .iter()
-                        .map(|image| loader.group((a.clone(), Some(image.clone()), None)))
-                        .collect::<Result<_, _>>()?;
-                    Ok::<_, Error>(Mesh {
-                        vertices: gpu.buffer(
-                            bytemuck::cast_slice(&shape.vertices),
-                            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                        ),
-                        indices: gpu.buffer(
-                            bytemuck::cast_slice(&shape.indices),
-                            wgpu::BufferUsages::INDEX,
-                        ),
-                        group,
-                        fur,
-                        skins,
-                    })
+                .map(|file| Texture {
+                    name: String::new(),
+                    file: (*file).to_owned(),
+                    cube: false,
+                    shadow: false,
+                    repeat: [e.repeat; 2],
                 })
-                .collect::<Result<_, _>>()?;
-            let focus = focus(&model);
-            let ground = Ground::new(&model);
-            actors.push(Actor {
-                model,
-                meshes,
-                sky,
-                focus,
-                ground,
+                .collect();
+            let units: Vec<Unit<'_>> = textures.iter().map(|t| (Some(t), false)).collect();
+            let planes = texture_layout(device, &vec![false; units.len()]);
+            effects.push(GpuEffect {
+                pipeline: backdrop(
+                    device,
+                    format,
+                    [&layout, &planes],
+                    e.source,
+                    Some(e.blend),
+                    wgpu::CompareFunction::LessEqual,
+                ),
+                group: loader.group(&planes, &units)?,
+                vertices: e.vertices,
+                instances: e.instances,
             });
         }
-        let clips = demo::CLIPS
-            .iter()
-            .map(|name| files.get(&format!("models/{name}")).map(<[u8]>::to_vec))
-            .collect::<Result<Vec<_>, _>>()?;
-        let max_instances: usize = actors
-            .iter()
-            .map(|actor| {
-                actor
-                    .model
-                    .shapes
-                    .iter()
-                    .map(|s| 1 + s.fur.len())
-                    .sum::<usize>()
-            })
-            .sum::<usize>()
-            * 65;
-        let instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (size_of::<Placement>() * max_instances) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
+        let single = [
+            texture_layout(device, &[false]),
+            texture_layout(device, &[true]),
+        ];
+        use wgpu::CompareFunction::Always;
+        let environment = actors.iter().find_map(|a| {
+            let texture = a.model.environment?;
+            Some(&a.model.textures[texture])
         });
+        let sky = match environment {
+            Some(texture) => Some((
+                backdrop(device, format, [&layout, &single[1]], SKY, None, Always),
+                loader.group(&single[1], &[(Some(texture), true)])?,
+            )),
+            None => None,
+        };
+        let badge = backdrop(
+            device,
+            format,
+            [&layout, &single[0]],
+            BADGE,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            Always,
+        );
+        let mut overlays = Vec::new();
+        for file in demo::OVERLAYS {
+            let texture = Texture {
+                name: String::new(),
+                file: file.to_owned(),
+                cube: false,
+                shadow: false,
+                repeat: [false; 2],
+            };
+            overlays.push(loader.group(&single[0], &[(Some(&texture), false)])?);
+        }
+        let (uniforms, constants) = uniforms(device, &layout, 64 * BLOCK);
+        let pipelines = pipelines.made;
         Ok(Self {
             actors,
+            stage,
+            effects,
+            offscreen,
+            pipelines,
             uniforms,
-            instances,
+            capacity: 64 * BLOCK,
+            layout,
             constants,
+            sky,
+            badge,
+            overlays,
             format,
             targets: None,
-            clips,
-            morph: None,
-            badge: loader.group((Some("userinterface/nvidialogo.dds".to_owned()), None, None))?,
-            surface: pipeline(
-                "surface_vs",
-                "surface_fs",
-                &mesh_buffers,
-                None,
-                true,
-                true,
-                None,
-            ),
-            alpha: pipeline(
-                "surface_vs",
-                "surface_fs",
-                &mesh_buffers,
-                Some(wgpu::BlendState::ALPHA_BLENDING),
-                true,
-                false,
-                None,
-            ),
-            depth_vision: (DEMO == Demo::Bugs).then(|| {
-                pipeline(
-                    "surface_vs",
-                    "overdraw_fs",
-                    &mesh_buffers,
-                    Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent::REPLACE,
-                    }),
-                    false,
-                    false,
-                    None,
-                )
-            }),
-            silt: (DEMO == Demo::Squid).then(|| {
-                pipeline(
-                    "silt_vs",
-                    "silt_fs",
-                    &[],
-                    Some(wgpu::BlendState::ALPHA_BLENDING),
-                    true,
-                    false,
-                    None,
-                )
-            }),
-            bubbles: (DEMO == Demo::Squid).then(|| {
-                pipeline(
-                    "bubble_vs",
-                    "bubble_fs",
-                    &[],
-                    Some(wgpu::BlendState::ALPHA_BLENDING),
-                    true,
-                    false,
-                    None,
-                )
-            }),
-            sky: pipeline("sky_vs", "sky_fs", &[], None, false, false, None),
-            overlay: pipeline(
-                "badge_vs",
-                "badge_fs",
-                &[],
-                Some(wgpu::BlendState::ALPHA_BLENDING),
-                false,
-                false,
-                None,
-            ),
+            scratch: Vec::new(),
         })
     }
 
     pub fn show(&self) -> Show {
-        let (center, radius) = self.actors[0].focus;
-        let center = self.actors[0].ground.as_ref().map_or(center, |g| {
-            Vec3::new(center.x, g.height(center.x, center.z) + 15.0, center.z)
-        });
-        Show::new(center, radius)
+        let models: Vec<&Model> = self.actors.iter().map(|a| &a.model).collect();
+        self.stage.show(&models)
     }
 
     pub fn draw(
@@ -635,11 +735,7 @@ impl Scene {
         window: &wgpu::TextureView,
         size: (u32, u32),
     ) {
-        if self
-            .targets
-            .as_ref()
-            .is_none_or(|target| target.size != size)
-        {
+        if self.targets.as_ref().is_none_or(|t| t.size != size) {
             let target = |format| {
                 gpu.target(size.0, size.1, format, SAMPLES)
                     .create_view(&Default::default())
@@ -650,133 +746,142 @@ impl Scene {
                 depth: target(DEPTH),
             });
         }
-        if let Some(bytes) = self.clips.get(frame.item)
-            && self.morph.as_ref().is_none_or(|m| m.clip != frame.item)
-        {
-            self.morph = Morph::new(frame.item, bytes, &self.actors[0].model).ok();
-        }
-        let target = self.targets.as_ref().unwrap();
         let aspect = size.0 as f32 / size.1 as f32;
-        let fov = 2.0 * (0.36 * (4.0 / 3.0 / aspect).max(1.0)).atan();
+        let projection = projection(frame, aspect);
         let eye = frame.view.inverse().transform_point3(Vec3::ZERO);
-        let vp =
-            glam::camera::rh::proj::directx::perspective(fov, aspect, 0.1, 16000.0) * frame.view;
-        let light = Vec3::new(0.45, 0.8, 0.5);
-        let uniform = Uniform {
-            view_proj: vp.to_cols_array(),
-            inverse: vp.inverse().to_cols_array(),
-            eye: eye.extend(1.0).to_array(),
-            light: light.extend(0.0).to_array(),
-            parameters: [
-                frame.seconds,
-                u32::from(frame.ripple) as f32,
-                aspect,
-                DEMO as u32 as f32,
-            ],
-        };
-        gpu.queue
-            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniform));
+        self.scratch.clear();
+        // The sky has the first block.
+        let turn = Mat4::from_mat3(glam::Mat3::from_mat4(frame.view));
+        let sky: Vec<_> = (0..4)
+            .map(|i| (projection * turn).inverse().row(i).to_array())
+            .collect();
+        block(&mut self.scratch, &sky);
+        // Overlays, and where they go.
+        let mut overlays = vec![(usize::from(frame.busy), gem(aspect))];
+        if frame.logo {
+            overlays.push((2, logo(aspect)));
+        }
+        let overlays: Vec<_> = overlays
+            .into_iter()
+            .map(|(i, at)| (i, block(&mut self.scratch, &[at])))
+            .collect();
 
-        let mut data = Vec::new();
-        let mut draws = Vec::new();
-        for (index, actor) in self.actors.iter().enumerate() {
-            let placements = placements(index, frame, eye, self.actors[0].ground.as_ref());
-            if placements.is_empty() {
-                continue;
-            }
-            let clock = if DEMO == Demo::Wolfman {
-                let starts = [0.0, 5.4, 10.1, 15.8, 21.5, 26.0];
-                let start = starts[frame.item.min(5)];
-                let end = starts.get(frame.item + 1).copied().unwrap_or(32.2);
-                start + frame.local.rem_euclid(end - start)
-            } else if DEMO == Demo::Zoltar {
-                frame.local
-            } else {
-                frame.seconds
-            };
-            let time = f64::from(clock) * 1000.0;
-            let clip = self
-                .morph
-                .as_ref()
-                .and_then(|m| m.animation.as_ref())
-                .or_else(|| actor.model.animations.first());
-            let mut pose = actor.model.pose(clip, time);
-            if DEMO == Demo::Bugs && index > 0 {
-                let rest = pose.clone();
-                for (j, node) in actor.model.nodes.iter().enumerate() {
-                    let name = node.name.to_ascii_lowercase();
-                    if name.contains("leg") || name.contains("hip") || name.contains("thigh") {
-                        let sign = if j % 2 == 0 { 1.0 } else { -1.0 };
-                        pose[j] = rest[j]
-                            * Mat4::from_rotation_z(
-                                sign * 0.13 * (frame.seconds * 16.0 + j as f32).sin(),
-                            );
-                    }
-                }
-            }
-            for (shape, mesh) in actor.model.shapes.iter().zip(&actor.meshes) {
-                if shape.skin.is_some() || (self.morph.is_some() && index == 0) {
-                    let mut vertices = shape.vertices.clone();
-                    if let Some(skin) = &shape.skin {
-                        skin.deform(&mut vertices, &pose);
-                    }
-                    if let Some(morph) = &self.morph {
-                        morph.deform(&shape.geometry, time as u32, &mut vertices);
-                    }
+        let mut calls = Vec::new();
+        for (index, actor) in self.actors.iter_mut().enumerate() {
+            for geometry in self.stage.update(index, &mut actor.model, frame) {
+                for m in actor.meshes.iter().filter(|m| m.geometry == geometry) {
+                    let data = actor.model.geometries[geometry].interleave(&m.streams);
                     gpu.queue
-                        .write_buffer(&mesh.vertices, 0, bytemuck::cast_slice(&vertices));
-                }
-                let start = data.len();
-                let diffuse = shape.diffuse;
-                let group = frame
-                    .item
-                    .checked_sub(1)
-                    .and_then(|i| mesh.skins.get(i))
-                    .unwrap_or(&mesh.group);
-                for world in &placements {
-                    data.push(Placement {
-                        transform: (*world * pose[shape.node]).to_cols_array(),
-                        diffuse: diffuse.to_array(),
-                        ambient_mode: shape
-                            .ambient
-                            .truncate()
-                            .extend(shape.kind as u32 as f32)
-                            .to_array(),
-                    });
-                }
-                let count = placements.len();
-                draws.push((
-                    mesh,
-                    group,
-                    shape.indices.len() as u32,
-                    start,
-                    count as u32,
-                    shape.kind == Kind::Water,
-                ));
-                let fur_count = mesh.fur.len();
-                for (layer, group) in mesh.fur.iter().take(frame.layers as usize).enumerate() {
-                    let start = data.len();
-                    let offset = shape.fur_depth * (layer + 1) as f32 / fur_count as f32;
-                    for world in &placements {
-                        data.push(Placement {
-                            transform: (*world * pose[shape.node]).to_cols_array(),
-                            diffuse: diffuse.to_array(),
-                            ambient_mode: [offset, 0.0, 0.0, Kind::Fur as u32 as f32],
-                        });
-                    }
-                    draws.push((
-                        mesh,
-                        group,
-                        shape.indices.len() as u32,
-                        start,
-                        count as u32,
-                        true,
-                    ));
+                        .write_buffer(&m.vertices, 0, bytemuck::cast_slice(&data));
                 }
             }
         }
-        gpu.queue
-            .write_buffer(&self.instances, 0, bytemuck::cast_slice(&data));
+        for index in 0..self.actors.len() {
+            let model = &self.actors[index].model;
+            let rest = model.rest();
+            let instances = self.stage.instances(index, model, frame, projection, eye);
+            for instance in &instances {
+                let context = Context {
+                    projection: instance.camera.map_or(projection, |c| c[0]),
+                    view: instance.camera.map_or(frame.view, |c| c[1]),
+                    world: &instance.world,
+                    rest: &rest,
+                    values: &instance.values,
+                };
+                let actor = &self.actors[index];
+                for &shape in &actor.order {
+                    let s = &actor.model.shapes[shape];
+                    for d in self
+                        .stage
+                        .draws(index, &actor.model, shape, frame, instance)
+                    {
+                        let context = Context {
+                            values: d.values.as_ref().unwrap_or(&instance.values),
+                            ..context
+                        };
+                        let mut blocks = Vec::new();
+                        for i in d.passes {
+                            if let Some(p) = s.passes.get(i) {
+                                blocks.push((Ok(i), p.constants(&context), d.alternate));
+                            }
+                        }
+                        if let Some(f) = &s.fur {
+                            for shell in 0..d.shells.min(f.textures.len()) {
+                                let values = self.stage.shell(f, shell, frame);
+                                let context = Context {
+                                    values: &values,
+                                    ..context
+                                };
+                                blocks.push((Err(shell), f.pass.constants(&context), Some(shell)));
+                            }
+                        }
+                        for (pass, mut values, alternate) in blocks {
+                            for (at, row) in &instance.registers {
+                                put(&mut values, *at, &[*row]);
+                            }
+                            calls.push(Call {
+                                actor: index,
+                                shape,
+                                pass,
+                                offset: block(&mut self.scratch, &values),
+                                alternate,
+                                layer: d.layer,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        let effects: Vec<_> = (0..self.effects.len())
+            .map(|i| {
+                let values = self
+                    .stage
+                    .effect_values(i, frame, projection * frame.view, eye);
+                values.map(|v| block(&mut self.scratch, &v))
+            })
+            .collect();
+        calls.sort_by_key(|c| c.layer);
+        // The last block must be whole.
+        let needed = self.scratch.len() as u64 + BLOCK;
+        if needed > self.capacity {
+            self.capacity = needed.next_power_of_two();
+            (self.uniforms, self.constants) = uniforms(&gpu.device, &self.layout, self.capacity);
+        }
+        gpu.queue.write_buffer(&self.uniforms, 0, &self.scratch);
+
+        let first = |c: &Call| match c.pass {
+            Ok(i) => self.actors[c.actor].model.shapes[c.shape].passes[i].offscreen,
+            Err(_) => None,
+        };
+        for (i, (color, depth, clear)) in self.offscreen.iter().enumerate() {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(*clear),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: depth.as_ref().map(|view| {
+                    wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Discard,
+                        }),
+                        stencil_ops: None,
+                    }
+                }),
+                ..Default::default()
+            });
+            for call in calls.iter().filter(|c| first(c) == Some(i)) {
+                self.call(&mut pass, call);
+            }
+        }
+        let target = self.targets.as_ref().expect("made above");
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -798,133 +903,87 @@ impl Scene {
             }),
             ..Default::default()
         });
-        pass.set_bind_group(0, &self.constants, &[]);
-        pass.set_bind_group(1, &self.actors[0].sky, &[]);
-        pass.set_pipeline(&self.sky);
-        if !frame.depth_vision {
+        pass.set_bind_group(0, &self.constants, &[0]);
+        if let Some((pipeline, group)) = &self.sky {
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(1, group, &[]);
             pass.draw(0..3, 0..1);
         }
-        for alpha in [false, true] {
-            let surface = if alpha { &self.alpha } else { &self.surface };
-            let chosen = self
-                .depth_vision
-                .as_ref()
-                .filter(|_| frame.depth_vision)
-                .unwrap_or(surface);
-            pass.set_pipeline(chosen);
-            for &(mesh, group, index_count, start, count, blend) in &draws {
-                if blend != alpha {
-                    continue;
-                }
-                pass.set_bind_group(1, group, &[]);
-                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                pass.set_vertex_buffer(
-                    1,
-                    self.instances
-                        .slice((start * size_of::<Placement>()) as u64..),
-                );
-                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..index_count, 0, 0..count);
+        for call in calls.iter().filter(|c| first(c).is_none()) {
+            self.call(&mut pass, call);
+        }
+        for (effect, offset) in self.effects.iter().zip(effects) {
+            if let Some(offset) = offset {
+                pass.set_pipeline(&effect.pipeline);
+                pass.set_bind_group(0, &self.constants, &[offset]);
+                pass.set_bind_group(1, &effect.group, &[]);
+                pass.draw(0..effect.vertices, 0..effect.instances);
             }
         }
-        if let Some(silt) = &self.silt {
-            pass.set_bind_group(1, &self.actors[0].sky, &[]);
-            pass.set_pipeline(silt);
-            pass.draw(0..6, 0..5120);
-        }
-        if let Some(bubbles) = &self.bubbles {
-            pass.set_pipeline(bubbles);
-            pass.draw(0..6, 0..1000);
-        }
-        if frame.logo {
-            pass.set_bind_group(1, &self.badge, &[]);
-            pass.set_pipeline(&self.overlay);
+        pass.set_pipeline(&self.badge);
+        for (i, offset) in overlays {
+            pass.set_bind_group(0, &self.constants, &[offset]);
+            pass.set_bind_group(1, &self.overlays[i], &[]);
             pass.draw(0..6, 0..1);
         }
     }
+
+    fn call(&self, pass: &mut wgpu::RenderPass<'_>, call: &Call) {
+        let actor = &self.actors[call.actor];
+        let shape = &actor.shapes[call.shape];
+        let p = match (call.pass, &shape.fur) {
+            (Ok(i), _) => &shape.passes[i],
+            (Err(_), Some(fur)) => fur,
+            (Err(_), None) => return,
+        };
+        let mesh = &actor.meshes[p.mesh];
+        let (indices, count) = &actor.indices[mesh.geometry];
+        let group = call
+            .alternate
+            .and_then(|i| p.alternates.get(i))
+            .unwrap_or(&p.group);
+        pass.set_pipeline(&self.pipelines[p.pipeline]);
+        pass.set_bind_group(0, &self.constants, &[call.offset]);
+        pass.set_bind_group(1, group, &[]);
+        pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+        pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..*count, 0, 0..1);
+    }
 }
 
-fn focus(model: &Model) -> (Vec3, f32) {
-    let pose = model.pose(None, 0.0);
-    let featured = |s: &crate::model::Shape| match DEMO {
-        Demo::Wolfman => {
-            s.name.contains("Torso") || s.name.contains("Face") || s.name.contains("Leg")
-        }
-        Demo::Chameleon => s.name.starts_with("Cham"),
-        Demo::Zoltar => s.name.starts_with("FaceGold"),
-        Demo::Squid => s.name.starts_with("Main_outer") || s.name.contains("tentacle"),
-        Demo::Tidepool => s.name.starts_with("TidePool") || s.name.starts_with("Water_grid"),
-        Demo::Bugs => false,
-    };
-    let selected = model.shapes.iter().filter(|s| featured(s)).flat_map(|s| {
-        s.vertices
-            .iter()
-            .map(|v| pose[s.node].transform_point3(v.pos.into()))
+/// OpenGL's projection, depths from -1 to 1. Wider than 4:3 shows more at the sides,
+/// narrower more above and below.
+fn projection(frame: &Frame, aspect: f32) -> Mat4 {
+    let half = (frame.fov * 0.5).tan() * (4.0 / 3.0 / aspect).max(1.0);
+    glam::camera::rh::proj::opengl::perspective(2.0 * half.atan(), aspect, frame.near, frame.far)
+}
+
+fn uniforms(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    size: u64,
+) -> (wgpu::Buffer, wgpu::BindGroup) {
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("constants"),
+        size,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
     });
-    let (mut min, mut max) = selected.fold(
-        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
-        |(min, max), p| (min.min(p), max.max(p)),
-    );
-    if !min.is_finite() {
-        (min, max) = model.bounds();
-    }
-    if DEMO == Demo::Bugs {
-        let first = &model.shapes[0];
-        let height = first
-            .vertices
-            .iter()
-            .min_by(|a, b| {
-                (a.pos[0].abs() + a.pos[2].abs()).total_cmp(&(b.pos[0].abs() + b.pos[2].abs()))
-            })
-            .map_or(0.0, |v| v.pos[1]);
-        return (Vec3::new(0.0, height + 14.0, 0.0), 53.0);
-    }
-    ((min + max) * 0.5, ((max - min).length() * 0.5).max(1.0))
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &buffer,
+                offset: 0,
+                size: wgpu::BufferSize::new(BLOCK),
+            }),
+        }],
+    });
+    (buffer, group)
 }
 
-fn placements(index: usize, frame: &Frame, eye: Vec3, ground: Option<&Ground>) -> Vec<Mat4> {
-    let time = frame.seconds;
-    match (DEMO, index) {
-        (Demo::Bugs, 0) => vec![Mat4::IDENTITY],
-        (Demo::Bugs, model) => (0..60)
-            .filter_map(|i| {
-                let turn = i as f32 * 2.399_963 + time * if frame.item == 0 { 0.18 } else { 0.62 };
-                let x = ((i % 10) as f32 - 4.5) * 46.0 + turn.cos() * 11.0;
-                let z = ((i / 10) as f32 - 2.5) * 43.0 + turn.sin() * 11.0;
-                let p = Vec3::new(x, ground.map_or(0.0, |g| g.height(x, z)), z);
-                let d = eye.distance(p);
-                let lod = 1 + [60.0, 180.0, 400.0].partition_point(|cut| d > *cut);
-                (model == lod).then(|| Mat4::from_translation(p) * Mat4::from_rotation_y(-turn))
-            })
-            .collect(),
-        (Demo::Squid, 0) => vec![Mat4::from_translation(frame.steering)],
-        (Demo::Squid, i) => {
-            let count = match i {
-                1 => 14,
-                2 => 24,
-                3 => 12,
-                _ => 0,
-            };
-            (0..count)
-                .map(|k| {
-                    let f = k as f32;
-                    let x = (f * 13.73).sin() * 88.0
-                        + if i == 2 {
-                            (time * 0.45 + f).sin() * 18.0
-                        } else {
-                            0.0
-                        };
-                    let y = if i == 1 {
-                        -23.0
-                    } else {
-                        -17.0 + (f * 4.1).sin() * 13.0
-                    };
-                    let z =
-                        (f * 7.91).cos() * 90.0 + if i == 3 { time.rem_euclid(9.0) } else { 0.0 };
-                    Mat4::from_translation(Vec3::new(x, y, z)) * Mat4::from_rotation_y(f * 1.6)
-                })
-                .collect()
-        }
-        _ => vec![Mat4::IDENTITY],
-    }
-}
+/// The viewers draw a cube around the eye whose coordinates are its corners.
+const SKY: &str = include_str!("../shaders/sky.wgsl");
+const BADGE: &str = include_str!("../shaders/badge.wgsl");

@@ -23,15 +23,17 @@
   #modes { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(14px, env(safe-area-inset-bottom)); display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; width: min(560px, calc(100vw - 32px)); }
   #modes.still { opacity: 0; }
   #modes:hover, #modes:focus-within { opacity: 1; }
-  #modes { transition: opacity .4s; bottom: auto; top: max(14px, env(safe-area-inset-top)); }
+  #modes { transition: opacity .4s; }
+  @media (max-width: 640px) { #modes { bottom: max(70px, env(safe-area-inset-bottom)); } }
   #modes button[aria-pressed=true] { border-color: #59d3a6; color: #b6f0da; }
   #modes button { background: #041510c0; padding: 6px 12px; min-height: 44px; }
 </style>
 <!-- Cloudflare Pages adds its analytics script to an explicit body. -->
 <body>
-<canvas id="view" tabindex="0" aria-label="Toy soldiers marching on a tabletop"></canvas>
+<canvas id="view" tabindex="0" aria-label="An animated fortune teller"></canvas>
 <div id="modes" hidden>
-  <button data-key="s">Get a fortune</button><button data-key="p">Pause</button><button data-key="Home">Reset view</button>
+  <button data-key=" ">Get a fortune</button><button id="light" data-key="n" aria-pressed="false">Move light</button>
+  <button id="pause" data-key="p" aria-pressed="false">Pause</button><button data-key="Home">Reset view</button>
   <button id="mute" aria-pressed="false">Mute</button>
 </div>
 <main id="start">
@@ -39,8 +41,8 @@
   <button id="play" class="primary" hidden>Start</button>
   <label id="choose">Choose demo folder <input id="folder" type="file" webkitdirectory></label>
   <p id="need">Needs the unpacked files of NVIDIA's demo. They stay on this computer.</p>
-  <p>An animated fortune teller with speech synchronized to the original face meshes.</p>
-  <p>Drag to orbit and scroll or pinch to zoom. <kbd>S</kbd> get a fortune · <kbd>P</kbd> pause · <kbd>M</kbd> mute · <kbd>Enter</kbd> full screen</p>
+  <p>An animated fortune teller. Press the Gem o’ Truth for advice, and don’t dawdle: Zoltar is quickly bored.</p>
+  <p>Drag to turn him and scroll or pinch to zoom. <kbd>Space</kbd> or <kbd>1</kbd>–<kbd>7</kbd> fortune · <kbd>G</kbd> greeting · <kbd>I</kbd> idle · <kbd>X</kbd> stop · <kbd>N</kbd> drag the light · <kbd>L</kbd> reset it · <kbd>Home</kbd> reset the view · <kbd>V</kbd> logo · <kbd>P</kbd> pause · <kbd>M</kbd> mute · <kbd>Enter</kbd> full screen</p>
   <p>NVIDIA's “Zoltar” demo, 2001.</p>
   <progress id="progress" hidden></progress>
   <p id="status" role="status"></p>
@@ -57,19 +59,19 @@
     const s = window.devicePixelRatio || 1;
     return [Math.round(canvas.clientWidth * s), Math.round(canvas.clientHeight * s)];
   };
-  // ?time=&yaw=&pitch=&action=1 shows one still, for checking frames.
+  // ?time=&yaw=&pitch=&clip= shows one still, for checking frames. Clips count from one.
   const params = new URLSearchParams(location.search);
   const still = params.has("time");
   let files = null, player = null;
 
   const sound = {
-    sources: {}, buffers: {}, muted: false, loop: null, effect: null,
+    sources: {}, buffers: {}, playing: {}, muted: false,
     open() {
       this.context = new AudioContext();
       this.volume = this.context.createGain();
       this.meter = this.context.createAnalyser();
       this.volume.connect(this.meter).connect(this.context.destination);
-      for (const n of ["background", "greetings", "pleasure", "bigman", "getahead", "inferior", "benice", "dontpick", "psst", "approach", "yawn"]) this.get(n);
+      for (const n of ["background_soft", "oneffect", "greetings", "pleasure", "bigman", "getahead", "inferior", "benice", "dontpick", "psst", "approach", "yawn"]) this.get(n);
     },
     get(name) {
       return this.buffers[name] ??= (async () => {
@@ -81,14 +83,25 @@
       })();
     },
     async cue(text) {
-      const loop = text.endsWith("*"), name = text.replace("*", ""), kind = loop ? "loop" : "effect";
-      this[kind]?.node?.stop();
-      const entry = this[kind] = { name };
+      const [action, value, name] = text.split(" ");
+      const gain = Number(value);
+      if (action === "pause") return gain ? this.context.suspend() : this.context.resume();
+      if (action === "volume") {
+        const p = this.playing[name];
+        if (p) p.volume.gain.value = p.gain = gain;
+        return;
+      }
+      this.playing[name]?.node?.stop();
+      delete this.playing[name];
+      if (action === "stop") return;
+      const volume = new GainNode(this.context, { gain });
+      const entry = this.playing[name] = { volume, gain, repeat: action === "repeat" };
       const buffer = await this.get(name);
       // Another cue may have come while this one was loading.
-      if (!buffer || this[kind] !== entry) return;
-      entry.node = new AudioBufferSourceNode(this.context, { buffer, loop });
-      entry.node.connect(this.volume);
+      if (!buffer || this.playing[name] !== entry) return;
+      entry.node = new AudioBufferSourceNode(this.context, { buffer, loop: entry.repeat });
+      entry.node.connect(volume).connect(this.volume);
+      entry.node.onended = () => { if (this.playing[name] === entry) delete this.playing[name]; };
       entry.node.start();
     },
     mute() {
@@ -99,7 +112,8 @@
     state() {
       const d = new Float32Array(this.meter.fftSize);
       this.meter.getFloatTimeDomainData(d);
-      return { looping: this.loop?.node && this.loop.name, level: Math.max(...d.map(Math.abs)) };
+      const playing = Object.entries(this.playing).filter(([, p]) => p.node).map(([name, p]) => [name, p.gain]);
+      return { playing: Object.fromEntries(playing), level: Math.max(...d.map(Math.abs)), state: this.context.state };
     },
   };
 
@@ -136,7 +150,7 @@
   function run() {
     let last = size().join(), n = 0;
     const number = (k) => Number(params.get(k) ?? 0);
-    if (still) player.freeze(number("time"), number("yaw"), number("pitch"), number("action") === 1);
+    if (still) player.freeze(number("time"), number("yaw"), number("pitch"), number("clip"));
     const tick = (now) => {
       const [w, h] = size();
       if (`${w},${h}` !== last) {
@@ -163,19 +177,26 @@
     };
     for (const t of ["pointermove", "pointerdown", "keydown"]) addEventListener(t, wake);
     wake();
-    document.addEventListener("visibilitychange", () => document.hidden ? sound.context?.suspend() : sound.context?.resume());
+    document.addEventListener("visibilitychange", () => document.hidden ? sound.context?.suspend() : player.paused() || sound.context?.resume());
 
+    const show = () => {
+      $("pause").setAttribute("aria-pressed", player.paused());
+      $("light").setAttribute("aria-pressed", player.moving_light());
+    };
     addEventListener("keydown", (e) => {
+      if (e.repeat) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "Enter" && e.target.tagName !== "BUTTON") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
       else if (e.key === " " && e.target.tagName === "BUTTON") return;
       else if (e.key === "m" || e.key === "M") sound.mute();
       else if (!player.key(e.key)) return;
+      show();
       e.preventDefault();
     });
     for (const b of $("modes").children) b.addEventListener("click", () => {
       if (b.id === "mute") sound.mute();
       else player.key(b.dataset.key);
+      show();
       canvas.focus();
     });
 
@@ -217,7 +238,7 @@
   async function take(list) {
     const found = new WebFiles();
     for (const f of list) {
-      if (/\.(nmb|dds|tga|ifl|png)$/i.test(f.name)) found.insert(f.webkitRelativePath.split("/").slice(1).join("/"), new Uint8Array(await f.arrayBuffer()));
+      if (/\.(nmb|dds|tga|ifl|png|vxp)$/i.test(f.name)) found.insert(f.webkitRelativePath.split("/").slice(1).join("/"), new Uint8Array(await f.arrayBuffer()));
       else if (/\.wav$/i.test(f.name)) sound.sources[f.name.toLowerCase().replace(".wav", "")] = f;
     }
     try {
@@ -240,15 +261,15 @@
   // Content served with the page: scripts/serve.py locally, or a bundled deployment.
   const mb = (n) => (n / 1e6).toFixed(1);
   try {
-    const manifest = await fetch("./local/assets.json").catch(() => null);
+    const manifest = await fetch("./local/assets.json", { cache: "no-store" }).catch(() => null);
     if (manifest?.ok && manifest.headers.get("content-type")?.includes("json")) {
-      const { files: names, size: total } = await manifest.json();
+      const { files: names, size: total, version } = await manifest.json();
       for (const id of ["choose", "need"]) $(id).hidden = true;
       $("progress").hidden = false;
       const parts = [];
       let done = 0;
       for (const name of names) {
-        const r = await fetch(`./local/${encodeURIComponent(name)}`);
+        const r = await fetch(`./local/${encodeURIComponent(name)}?v=${version}`);
         if (!r.ok || !r.body) throw new Error(`Asset download failed (${r.status})`);
         for (const reader = r.body.getReader(); ; ) {
           const { done: end, value } = await reader.read();

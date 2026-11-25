@@ -49,7 +49,7 @@ impl Gpu {
     ) -> wgpu::Texture {
         let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
         if samples == 1 {
-            usage |= wgpu::TextureUsages::COPY_SRC;
+            usage |= wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING;
         }
         self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,

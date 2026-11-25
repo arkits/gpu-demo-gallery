@@ -1,12 +1,13 @@
-//! Renders one frame: `shot DATA SECONDS YAW PITCH ACTION OUT.png`.
+//! Renders one frame: `shot DATA SECONDS YAW PITCH CLIP OUT.png`. Clips count from one,
+//! zero is at rest.
 use zoltar::{data::Files, gpu, scene::Scene};
 
 const SIZE: (u32, u32) = (1024, 768);
 
 fn main() -> Result<(), zoltar::Error> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [data, seconds, yaw, pitch, action, out] = args.as_slice() else {
-        return Err("usage: shot DATA SECONDS YAW PITCH ACTION OUT.png".into());
+    let [data, seconds, yaw, pitch, clip, out] = args.as_slice() else {
+        return Err("usage: shot DATA SECONDS YAW PITCH CLIP OUT.png".into());
     };
     let data = std::path::Path::new(data);
     let files = match data.is_dir() {
@@ -20,7 +21,7 @@ fn main() -> Result<(), zoltar::Error> {
         seconds.parse()?,
         yaw.parse()?,
         pitch.parse()?,
-        action == "1",
+        clip.parse()?,
     );
     let target = g.target(SIZE.0, SIZE.1, gpu::COLOR, 1);
     let mut enc = g.device.create_command_encoder(&Default::default());

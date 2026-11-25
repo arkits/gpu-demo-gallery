@@ -3,6 +3,7 @@ use web_sys::HtmlCanvasElement;
 
 use crate::Player;
 use crate::data::Files;
+use crate::show::Action;
 
 #[wasm_bindgen(start)]
 fn init() {
@@ -66,24 +67,34 @@ impl WebPlayer {
     pub fn key(&mut self, key: &str) -> bool {
         self.0.show.key(key)
     }
-    /// Sounds to start: a file name without extension, with "*" if it repeats.
+    /// Whether drags move the light.
+    pub fn moving_light(&self) -> bool {
+        self.0.show.moving_light
+    }
+    pub fn paused(&self) -> bool {
+        self.0.show.paused
+    }
+    /// What sounds do: a word, a number, and a file name without extension.
     pub fn cues(&mut self) -> Vec<String> {
         self.0
             .show
             .take_cues()
             .into_iter()
             .map(|cue| {
-                if cue.repeat {
-                    format!("{}*", cue.name)
-                } else {
-                    cue.name.to_owned()
-                }
+                let (action, value) = match cue.action {
+                    Action::Repeat(gain) => ("repeat", gain),
+                    Action::Once(gain) => ("once", gain),
+                    Action::Volume(gain) => ("volume", gain),
+                    Action::Stop => ("stop", 0.0),
+                    Action::Pause(on) => ("pause", f32::from(u8::from(on))),
+                };
+                format!("{action} {value} {}", cue.name)
             })
             .collect()
     }
     /// Shows one moment, for checking frames.
-    pub fn freeze(&mut self, seconds: f64, yaw: f64, pitch: f64, action: bool) {
-        self.0.show.freeze(seconds, yaw, pitch, action);
+    pub fn freeze(&mut self, seconds: f64, yaw: f64, pitch: f64, clip: usize) {
+        self.0.show.freeze(seconds, yaw, pitch, clip);
     }
     /// Positions are fractions of the canvas, from its top left.
     pub fn press(&mut self, x: f64, y: f64) {

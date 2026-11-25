@@ -5,7 +5,8 @@ WASM builds, verify asset parsing, render in a hidden native window and run Chro
 tests for WebGPU and WebGL2. The comparison checks four frozen frames from each browser
 backend against native frames.
 
-`?time=5&yaw=0.8&pitch=0.2&action=1` shows a frozen moment. Use the same values with
+`?time=5&yaw=0.8&pitch=0.2&clip=1` shows a frozen moment, so many seconds into a clip.
+Clips count from one, as in `src/demo.rs`; 0 is at rest. Use the same values with
 `scripts/dev.sh shot` to save a native frame.
 
 `scripts/deploy-cloudflare.sh --prepare` stages the web build and lossless assets in

@@ -94,6 +94,7 @@ impl Player {
     /// Advances to wall-clock `now` seconds and draws. Returns false if the
     /// surface was unavailable.
     pub fn frame(&mut self, now: f64) -> bool {
+        self.show.aspect = self.config.width as f32 / self.config.height as f32;
         self.show.advance(now);
         let frame = match self.surface.get_current_texture() {
             Acquired::Success(t) | Acquired::Suboptimal(t) => t,
