@@ -113,7 +113,14 @@ fn read_mesh(r: &mut Reader) -> Result<Mesh> {
         let values = if u32_at(raw, 0) & 0x80_0000 != 0 {
             let recs = r.records(n, 0x85)?;
             recs.into_iter()
-                .map(|e| Edited::read_keys(r, e))
+                // They are set by the parameter's name; some have none of their own.
+                .map(|e| {
+                    let e = Edited::read_keys(r, e)?;
+                    Ok(Edited {
+                        name: cstr(rec),
+                        ..e
+                    })
+                })
                 .collect::<Result<_>>()?
         } else {
             let of = |v: &&[u8]| Edited::fixed(cstr(rec), [0, 4, 8, 12].map(|o| f32_at(v, o)));

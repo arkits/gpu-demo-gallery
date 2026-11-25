@@ -59,6 +59,13 @@ pub struct Shader {
     pub passes: Vec<Pass>,
 }
 
+impl ShaderFile {
+    /// Whether some shader has the property.
+    pub fn any(&self, property: &str) -> bool {
+        self.shaders.iter().any(|s| s.has(property))
+    }
+}
+
 impl Shader {
     pub fn has(&self, property: &str) -> bool {
         self.properties
