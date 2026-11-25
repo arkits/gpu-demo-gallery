@@ -13,6 +13,14 @@ One page that links the ports of old graphics card demos:
 | Creature (NVIDIA, 2000) | `creature` | https://creature-port.pages.dev |
 | Grass (NVIDIA, 2000) | `grass` | https://grass-port.pages.dev |
 | Small Pond (NVIDIA, 2000) | `pond` | https://pond-port.pages.dev |
+| Toy Soldier (NVIDIA, 2000) | `toy-soldier` | https://toy-soldier-port.pages.dev |
+| Crystal Ball (NVIDIA, 2000) | `crystal-ball` | https://crystal-ball-port.pages.dev |
+| Chameleon (NVIDIA, 2001) | `chameleon` | https://chameleon-port.pages.dev |
+| Zoltar (NVIDIA, 2001) | `zoltar` | https://zoltar-port.pages.dev |
+| Wolfman (NVIDIA, 2002) | `wolfman` | https://wolfman-port.pages.dev |
+| Squid (NVIDIA, 2002) | `squid` | https://squid-port.pages.dev |
+| Bugs (NVIDIA, 2002) | `bugs` | https://bugs-port.pages.dev |
+| Tidepool (NVIDIA, 2002) | `tidepool` | https://tidepool-port.pages.dev |
 | Car Paint (ATI, 2002) | `car-paint` | https://car-paint-port.pages.dev |
 | NPR Hatching (ATI, 2002) | `npr-hatching` | https://npr-hatching-port.pages.dev |
 | Natural Light (ATI, 2002) | `natural-light` | https://natural-light-port.pages.dev |
