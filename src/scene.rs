@@ -11,7 +11,7 @@ use crate::{
     dds, demo,
     gpu::{DEPTH, Gpu, SAMPLES},
     model::{Kind, Model, Vertex as MeshVertex},
-    show::{Frame, Show},
+    show::{Frame, Show, smooth},
 };
 
 #[repr(C)]
@@ -41,10 +41,8 @@ struct Mesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     group: wgpu::BindGroup,
-    inside_group: Option<wgpu::BindGroup>,
     count: u32,
     node: usize,
-    kind: Kind,
     diffuse: [f32; 4],
     ambient_mode: [f32; 4],
 }
@@ -53,8 +51,6 @@ struct Actor {
     model: Model,
     meshes: Vec<Mesh>,
     sky: wgpu::BindGroup,
-    center: Vec3,
-    radius: f32,
 }
 
 struct Targets {
@@ -70,13 +66,32 @@ pub struct Scene {
     constants: wgpu::BindGroup,
     badge: wgpu::BindGroup,
     surface: wgpu::RenderPipeline,
-    glass: wgpu::RenderPipeline,
+    table: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
-    shadow: Option<wgpu::RenderPipeline>,
-    snow: Option<wgpu::RenderPipeline>,
+    shadow: wgpu::RenderPipeline,
     overlay: wgpu::RenderPipeline,
     format: wgpu::TextureFormat,
     targets: Option<Targets>,
+}
+
+struct ActorPose {
+    world: Mat4,
+    joints: Vec<Mat4>,
+    opacity: f32,
+}
+
+fn stencil(compare: wgpu::CompareFunction, pass_op: wgpu::StencilOperation) -> wgpu::StencilState {
+    let face = wgpu::StencilFaceState {
+        compare,
+        pass_op,
+        ..Default::default()
+    };
+    wgpu::StencilState {
+        front: face,
+        back: face,
+        read_mask: 1,
+        write_mask: 1,
+    }
 }
 
 type Images = (Option<String>, Option<String>, Option<String>);
@@ -259,7 +274,7 @@ impl Scene {
             label: Some("NVIDIA viewer"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/scene.wgsl").into()),
         });
-        let pipeline = |vertex, fragment, buffers: &[_], blend, test, write, cull_mode| {
+        let pipeline = |vertex, fragment, buffers: &[_], blend, test, write, stencil| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(fragment),
                 layout: Some(&pipelines),
@@ -279,21 +294,16 @@ impl Scene {
                         write_mask: wgpu::ColorWrites::COLOR,
                     })],
                 }),
-                primitive: wgpu::PrimitiveState {
-                    cull_mode,
-                    ..Default::default()
-                },
+                primitive: Default::default(),
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH,
                     depth_write_enabled: Some(write),
-                    depth_compare: Some(if vertex == "shadow_vs" {
-                        wgpu::CompareFunction::Less
-                    } else if test {
+                    depth_compare: Some(if test {
                         wgpu::CompareFunction::LessEqual
                     } else {
                         wgpu::CompareFunction::Always
                     }),
-                    stencil: Default::default(),
+                    stencil,
                     bias: Default::default(),
                 }),
                 multisample: wgpu::MultisampleState {
@@ -327,7 +337,6 @@ impl Scene {
         let mut actors = Vec::new();
         for name in demo::MODELS {
             let model = files.model(name)?;
-            let (min, max) = model.bounds();
             let sky = loader.group((
                 None,
                 None,
@@ -343,11 +352,6 @@ impl Scene {
                     let [a, b] = shape.textures.clone();
                     let key = (a, b, shape.cube.clone());
                     let group = loader.group(key.clone())?;
-                    let inside_group = (shape.kind == Kind::Refract)
-                        .then(|| {
-                            loader.group((key.0, key.1, Some("textures_ball/lava.ifl".to_owned())))
-                        })
-                        .transpose()?;
                     let mode = match shape.kind {
                         Kind::Lit => 0.0,
                         Kind::Textured => 1.0,
@@ -370,22 +374,14 @@ impl Scene {
                             wgpu::BufferUsages::INDEX,
                         ),
                         group,
-                        inside_group,
                         node: shape.node,
-                        kind: shape.kind,
                         count: shape.indices.len() as u32,
                         diffuse: shape.diffuse.to_array(),
                         ambient_mode,
                     })
                 })
                 .collect::<Result<_, _>>()?;
-            actors.push(Actor {
-                model,
-                meshes,
-                sky,
-                center: (min + max) * 0.5,
-                radius: (max - min).length() * 0.5,
-            });
+            actors.push(Actor { model, meshes, sky });
         }
         let capacity = if demo::CRYSTAL {
             actors.iter().map(|a| a.meshes.len()).max().unwrap_or(0)
@@ -404,6 +400,13 @@ impl Scene {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Mark the table, then let the first shadow fragment consume the mark.
+        let marking = stencil(
+            wgpu::CompareFunction::Always,
+            wgpu::StencilOperation::Replace,
+        );
+        let shadowing = stencil(wgpu::CompareFunction::Equal, wgpu::StencilOperation::Zero);
+        let default_stencil = wgpu::StencilState::default();
         Ok(Self {
             actors,
             uniforms,
@@ -419,40 +422,35 @@ impl Scene {
                 None,
                 true,
                 true,
-                None,
+                default_stencil.clone(),
             ),
-            glass: pipeline(
+            table: pipeline(
                 "surface_vs",
                 "surface_fs",
+                &mesh_buffers,
+                None,
+                true,
+                true,
+                marking,
+            ),
+            shadow: pipeline(
+                "shadow_vs",
+                "shadow_fs",
                 &mesh_buffers,
                 Some(wgpu::BlendState::ALPHA_BLENDING),
                 true,
                 false,
-                Some(wgpu::Face::Back),
+                shadowing,
             ),
-            shadow: (!demo::CRYSTAL).then(|| {
-                pipeline(
-                    "shadow_vs",
-                    "shadow_fs",
-                    &mesh_buffers,
-                    Some(wgpu::BlendState::ALPHA_BLENDING),
-                    true,
-                    true,
-                    None,
-                )
-            }),
-            snow: demo::CRYSTAL.then(|| {
-                pipeline(
-                    "snow_vs",
-                    "snow_fs",
-                    &[],
-                    Some(wgpu::BlendState::ALPHA_BLENDING),
-                    true,
-                    false,
-                    None,
-                )
-            }),
-            sky: pipeline("sky_vs", "sky_fs", &[], None, false, false, None),
+            sky: pipeline(
+                "sky_vs",
+                "sky_fs",
+                &[],
+                None,
+                false,
+                false,
+                default_stencil.clone(),
+            ),
             overlay: pipeline(
                 "badge_vs",
                 "badge_fs",
@@ -460,18 +458,13 @@ impl Scene {
                 Some(wgpu::BlendState::ALPHA_BLENDING),
                 false,
                 false,
-                None,
+                default_stencil,
             ),
         })
     }
 
     pub fn show(&self) -> Show {
-        let ball = &self.actors[0];
-        if demo::CRYSTAL {
-            Show::new(ball.center, ball.radius)
-        } else {
-            Show::new(Vec3::new(0.0, 10.0, 0.0), 45.0)
-        }
+        Show::new(Vec3::new(0.0, 10.0, 0.0))
     }
 
     pub fn draw(
@@ -500,115 +493,102 @@ impl Scene {
         let target = self.targets.as_ref().unwrap();
         let aspect = size.0 as f32 / size.1 as f32;
         let fov = 2.0 * (0.36 * (4.0 / 3.0 / aspect).max(1.0)).atan();
-        let which = if demo::CRYSTAL && frame.inside {
-            frame.castle + 1
-        } else {
-            0
-        };
-        let actor = &self.actors[which];
-        let view = if which > 0 {
-            let offset = frame.view.inverse().transform_vector3(Vec3::Z);
-            glam::camera::rh::view::look_at_mat4(
-                actor.center + offset * actor.radius * 1.95,
-                actor.center,
-                Vec3::Y,
-            )
-        } else {
-            frame.view
-        };
+        let actor = &self.actors[0];
+        let view = frame.view;
         let eye = view.inverse().transform_point3(Vec3::ZERO);
         let proj = glam::camera::rh::proj::directx::perspective(fov, aspect, 0.15, 2500.0);
         let vp = proj * view;
-        let light = if demo::CRYSTAL && frame.castle == 1 {
-            Vec3::new(0.38, 0.9, -0.2)
-        } else {
-            Vec3::new(0.4, 0.85, 0.53)
-        };
+        let light = Vec3::new(0.4, 0.85, 0.53);
         let uniform = Uniform {
             view_proj: vp.to_cols_array(),
             inverse: vp.inverse().to_cols_array(),
             eye: eye.extend(1.0).to_array(),
             light: light.extend(0.0).to_array(),
-            parameters: [
-                frame.exposure,
-                if demo::CRYSTAL && !frame.inside {
-                    0.8
-                } else {
-                    1.0
-                },
-                aspect,
-                frame.snow_time,
-            ],
+            parameters: [1.0, 1.0, aspect, 0.0],
         };
         gpu.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniform));
 
         let mut data = Vec::new();
         let mut draws = Vec::new();
-        let mut add =
-            |actor_index: usize, placements: &[(Mat4, Option<usize>, f64)]| {
-                let actor = &self.actors[actor_index];
-                if placements.is_empty() {
-                    return;
-                }
-                let poses: Vec<_> = placements
-                    .iter()
-                    .map(|(_, clip, time)| {
-                        actor
-                            .model
-                            .pose(clip.and_then(|i| actor.model.animations.get(i)), *time)
-                    })
-                    .collect();
-                for mesh in &actor.meshes {
-                    let start = data.len();
-                    data.extend(placements.iter().zip(&poses).map(|((world, _, _), pose)| {
-                        Placement {
-                            transform: (*world * pose[mesh.node]).to_cols_array(),
-                            diffuse: mesh.diffuse,
-                            ambient_mode: mesh.ambient_mode,
-                        }
-                    }));
-                    draws.push((mesh, start, placements.len() as u32));
-                }
-            };
-        add(which, &[(Mat4::IDENTITY, None, 0.0)]);
-        if !demo::CRYSTAL {
-            let panic = frame.action.is_some();
-            let time = frame.action.unwrap_or(frame.seconds);
-            let mut lod: [Vec<_>; 5] = Default::default();
-            for row in 0..6 {
-                for col in 0..9 {
-                    let phase = ((row * 11 + col * 7) % 9) as f32 * 0.018;
-                    let mut place =
-                        Vec3::new((row as f32 - 2.5) * 20.0, 0.0, (col as f32 - 4.0) * 22.2);
-                    place.z = (place.z + 112.0 + frame.seconds * 6.0).rem_euclid(220.0) - 112.0;
-                    let mut turn = 0.0;
-                    if let Some(action) = frame.action {
-                        turn = if row >= 3 { 1.15 } else { -1.15 };
-                        place += Vec3::new(turn * action * 4.0, 0.0, action * 4.0);
-                    }
-                    let distance = eye.distance(place + Vec3::Y * 6.0);
-                    let bucket = [5.0, 20.0, 60.0, 140.0].partition_point(|d| distance > *d);
-                    lod[bucket].push((
-                        Mat4::from_translation(place) * Mat4::from_rotation_y(turn),
-                        Some(usize::from(panic)),
-                        f64::from((time + phase) * 1000.0),
-                    ));
-                }
+        let mut add = |actor_index: usize, poses: Vec<ActorPose>| {
+            let actor = &self.actors[actor_index];
+            if poses.is_empty() {
+                return;
             }
-            for (i, positions) in lod.iter().enumerate() {
-                add(i + 1, positions);
+            for mesh in &actor.meshes {
+                let start = data.len();
+                data.extend(poses.iter().map(|p| Placement {
+                    transform: (p.world * p.joints[mesh.node]).to_cols_array(),
+                    diffuse: [mesh.diffuse[0], mesh.diffuse[1], mesh.diffuse[2], p.opacity],
+                    ambient_mode: mesh.ambient_mode,
+                }));
+                draws.push((mesh, start, poses.len() as u32));
             }
-            if let Some(seconds) = frame.action {
-                let position = Vec3::new(0.0, 0.0, 75.0 - (seconds * 12.0).min(105.0));
+        };
+        add(
+            0,
+            vec![ActorPose {
+                world: Mat4::IDENTITY,
+                joints: actor.model.pose(None, 0.0),
+                opacity: 1.0,
+            }],
+        );
+        let mut lod: [Vec<_>; 5] = Default::default();
+        for row in 0..6 {
+            for col in 0..9 {
+                let phase = f64::from((row * 11 + col * 7) % 9) * 18.0;
+                let lane = (row as f32 - 2.5) * 20.0;
+                let start = (col as f32 - 4.0) * 22.2;
+                // Forward travel is the average speed removed from the march root curve.
+                let z = (start + 100.0 + frame.march * 6.898).rem_euclid(200.0) - 100.0;
+                let visible = smooth((100.0 - z.abs()) / 8.0);
+                if visible == 0.0 {
+                    continue;
+                }
+                let mut position = Vec3::new(lane, 0.0, z);
+                let mut turn = 0.0;
+                if let Some(scatter) = frame.scatter {
+                    let side = lane.signum();
+                    let step = 14.0 + col as f32 * 1.3;
+                    position.x += side * step * scatter.travel;
+                    position.z += 9.0 * scatter.travel;
+                    turn = side * 1.22 * scatter.blend;
+                }
+                let distance = eye.distance(position + Vec3::Y * 6.0);
+                let bucket = [5.0, 20.0, 60.0, 140.0].partition_point(|d| distance > *d);
+                let model = &self.actors[bucket + 1].model;
+                let (blend, panic_ms) = frame
+                    .scatter
+                    .map_or((0.0, 0.0), |s| (s.blend, f64::from(s.elapsed) * 1000.0));
+                lod[bucket].push(ActorPose {
+                    world: Mat4::from_translation(position) * Mat4::from_rotation_y(turn),
+                    joints: model.blended_pose(
+                        f64::from(frame.march) * 1000.0 + phase,
+                        panic_ms + phase,
+                        blend,
+                    ),
+                    opacity: visible,
+                });
+            }
+        }
+        for (i, positions) in lod.into_iter().enumerate() {
+            add(i + 1, positions);
+        }
+        if let Some(scatter) = frame.scatter {
+            let seconds = scatter.elapsed;
+            let robot = &self.actors[6].model;
+            let opacity = smooth(seconds / 0.55) * (1.0 - smooth((seconds - 5.0) / 1.2));
+            if opacity > 0.0 {
+                let position = Vec3::new(0.0, 0.0, 74.0 - seconds * 7.5);
                 add(
                     6,
-                    &[(
-                        Mat4::from_translation(position)
+                    vec![ActorPose {
+                        world: Mat4::from_translation(position)
                             * Mat4::from_rotation_y(std::f32::consts::PI),
-                        Some(0),
-                        f64::from(seconds * 1000.0),
-                    )],
+                        joints: robot.pose(robot.animations.first(), f64::from(seconds) * 1000.0),
+                        opacity,
+                    }],
                 );
             }
         }
@@ -631,7 +611,10 @@ impl Scene {
                     load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Discard,
                 }),
-                stencil_ops: None,
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Discard,
+                }),
             }),
             ..Default::default()
         });
@@ -640,15 +623,7 @@ impl Scene {
         pass.set_pipeline(&self.sky);
         pass.draw(0..3, 0..1);
         let render = |pass: &mut wgpu::RenderPass<'_>, mesh: &Mesh, start: usize, count: u32| {
-            pass.set_bind_group(
-                1,
-                if frame.castle != 0 {
-                    mesh.inside_group.as_ref().unwrap_or(&mesh.group)
-                } else {
-                    &mesh.group
-                },
-                &[],
-            );
+            pass.set_bind_group(1, &mesh.group, &[]);
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_vertex_buffer(
                 1,
@@ -658,36 +633,17 @@ impl Scene {
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.count, 0, 0..count);
         };
-        if let Some(shadow) = &self.shadow {
-            pass.set_pipeline(&self.surface);
-            for &(mesh, start, count) in &draws[..actor.meshes.len()] {
+        let (table, actors) = draws.split_at(actor.meshes.len());
+        pass.set_stencil_reference(1);
+        for (pipeline, batch) in [
+            (&self.table, table),
+            (&self.shadow, actors),
+            (&self.surface, actors),
+        ] {
+            pass.set_pipeline(pipeline);
+            for &(mesh, start, count) in batch {
                 render(&mut pass, mesh, start, count);
             }
-            pass.set_pipeline(shadow);
-            for &(mesh, start, count) in &draws[actor.meshes.len()..] {
-                render(&mut pass, mesh, start, count);
-            }
-        }
-        for glass in [false, true] {
-            pass.set_pipeline(if glass { &self.glass } else { &self.surface });
-            let first = if self.shadow.is_some() {
-                actor.meshes.len()
-            } else {
-                0
-            };
-            for &(mesh, start, count) in &draws[first..] {
-                if (mesh.kind == Kind::Glass) == glass {
-                    render(&mut pass, mesh, start, count);
-                }
-            }
-        }
-        if let Some(snow) = &self.snow
-            && !frame.inside
-            && frame.snow_time < 24.0
-        {
-            pass.set_bind_group(1, &actor.sky, &[]);
-            pass.set_pipeline(snow);
-            pass.draw(0..6, 0..2000);
         }
         if frame.logo {
             pass.set_bind_group(1, &self.badge, &[]);

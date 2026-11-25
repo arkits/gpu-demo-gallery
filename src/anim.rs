@@ -20,6 +20,7 @@ pub struct Curve {
     after: u32,
     method: u32,
     keys: Vec<Key>,
+    remove_drift: bool,
 }
 
 pub struct Channel {
@@ -54,11 +55,16 @@ impl Curve {
             after: n.int("postStop"),
             method: n.int("interpMethod"),
             keys,
+            remove_drift: false,
         };
         if c.stop < c.start || c.before > 1 || c.after > 1 || c.method > 2 {
             return Err("unsupported curve".into());
         }
         Ok(c)
+    }
+
+    pub(crate) fn remove_drift(&mut self) {
+        self.remove_drift = true;
     }
 
     /// `None` where the curve says nothing (0x46a8f0).
@@ -83,7 +89,14 @@ impl Curve {
         } else {
             return None;
         };
-        Some(self.value((local / 1000.0) as f32))
+        let value = self.value((local / 1000.0) as f32);
+        let drift = if self.remove_drift {
+            let end = self.keys.last().unwrap().value;
+            (end - self.keys[0].value) * (local / length) as f32
+        } else {
+            0.0
+        };
+        Some(value - drift)
     }
 
     fn value(&self, t: f32) -> f32 {
@@ -193,6 +206,7 @@ mod tests {
             after: 1,
             method,
             keys: vec![key(0.0, 1.0, 0.0), key(1.0, 3.0, 0.0)],
+            remove_drift: false,
         }
     }
 

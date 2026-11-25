@@ -301,8 +301,7 @@ impl Model {
         self.nodes.iter().position(|n| n.name == name)
     }
 
-    /// World transforms of all nodes at a time.
-    pub fn pose(&self, anim: Option<&Animation>, ms: f64) -> Vec<Mat4> {
+    fn sample(&self, anim: Option<&Animation>, ms: f64) -> Vec<Fields> {
         let mut fields: Vec<Fields> = self.nodes.iter().map(|n| n.rest).collect();
         for (node, channel) in anim.iter().flat_map(|a| &a.0) {
             let f = &mut fields[*node];
@@ -317,6 +316,31 @@ impl Model {
                 }
             }
         }
+        fields
+    }
+
+    /// World transforms of all nodes at a time.
+    pub fn pose(&self, anim: Option<&Animation>, ms: f64) -> Vec<Mat4> {
+        self.compose(self.sample(anim, ms))
+    }
+
+    pub(crate) fn blended_pose(&self, march_ms: f64, panic_ms: f64, panic: f32) -> Vec<Mat4> {
+        let mut fields = self.sample(self.animations.first(), march_ms);
+        if panic > 0.0 {
+            let turned = self.sample(self.animations.get(1), panic_ms);
+            for (a, b) in fields.iter_mut().zip(turned) {
+                a.scale = a.scale.lerp(b.scale, panic);
+                a.translation = a.translation.lerp(b.translation, panic);
+                let delta = (b.rotation - a.rotation + Vec3::splat(std::f32::consts::PI))
+                    .rem_euclid(Vec3::splat(std::f32::consts::TAU))
+                    - Vec3::splat(std::f32::consts::PI);
+                a.rotation += delta * panic;
+            }
+        }
+        self.compose(fields)
+    }
+
+    fn compose(&self, fields: Vec<Fields>) -> Vec<Mat4> {
         let mut out: Vec<Mat4> = Vec::with_capacity(fields.len());
         // Parents come before their children.
         for (n, f) in self.nodes.iter().zip(fields) {
@@ -345,13 +369,20 @@ pub struct Animation(Vec<(usize, Channel)>);
 
 impl Animation {
     pub fn new(model: &Model, channels: Vec<Channel>) -> Result<Self, Error> {
-        let bind = |c: Channel| -> Result<_, Error> {
+        let bind = |mut c: Channel| -> Result<_, Error> {
             if !["rotation", "scale", "translation"].contains(&c.field.as_str()) {
                 return Err(format!("unsupported channel {}", c.field).into());
             }
             let node = model
                 .find(&c.node)
                 .ok_or_else(|| format!("no node {}", c.node))?;
+            // The viewer extracts travel from these root tracks (0x4053c0).
+            if c.field == "translation"
+                && matches!(c.node.as_str(), "R_T_nofeet" | "grandRobot")
+                && let Some(curve) = &mut c.curves[2]
+            {
+                curve.remove_drift();
+            }
             Ok((node, c))
         };
         Ok(Self(

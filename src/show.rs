@@ -1,7 +1,10 @@
-//! Playback time, orbit controls, and the demo-specific cues.
+//! Playback clock, panic and recovery, and the orbit camera.
 use glam::{Mat4, Vec3};
 
 use crate::demo;
+
+const PANIC_LENGTH: f64 = 6.0;
+const RECOVERY_LENGTH: f64 = 3.0;
 
 #[derive(Clone, Copy)]
 pub struct Cue {
@@ -9,75 +12,81 @@ pub struct Cue {
     pub repeat: bool,
 }
 
+struct Panic {
+    started: f64,
+    recovery: Option<f64>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Scatter {
+    pub elapsed: f32,
+    pub travel: f32,
+    pub blend: f32,
+}
+
 pub struct Show {
     time: f64,
+    march: f64,
     last_wall: Option<f64>,
     yaw: f32,
     pitch: f32,
     distance: f32,
-    radius: f32,
     center: Vec3,
     drag: Option<(f64, f64)>,
     cues: Vec<Cue>,
-    action_time: Option<f64>,
-    castle: usize,
-    transition: Option<Transition>,
-    snow_started: f64,
-    inside: bool,
-    show_camera: bool,
+    panic: Option<Panic>,
+    orbit_origin: Option<f64>,
     pub paused: bool,
     pub logo: bool,
 }
 
-struct Transition {
-    started: f64,
-    inside: bool,
-    castle: usize,
-}
-
 pub struct Frame {
-    pub seconds: f32,
     pub view: Mat4,
-    pub action: Option<f32>,
-    pub castle: usize,
-    pub inside: bool,
-    pub exposure: f32,
-    pub snow_time: f32,
+    pub(crate) march: f32,
+    pub(crate) scatter: Option<Scatter>,
     pub logo: bool,
 }
 
+pub(crate) fn smooth(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 impl Show {
-    pub fn new(center: Vec3, radius: f32) -> Self {
-        let (yaw, pitch, distance) = Self::home(radius);
-        Self {
+    pub fn new(center: Vec3) -> Self {
+        let mut show = Self {
             time: 0.0,
+            march: 0.0,
             last_wall: None,
-            yaw,
-            pitch,
-            distance,
+            yaw: 0.0,
+            pitch: 0.0,
+            distance: 0.0,
             center,
-            radius,
             drag: None,
             cues: vec![Cue {
                 name: demo::INITIAL_MUSIC,
                 repeat: true,
             }],
-            action_time: None,
-            castle: 0,
-            transition: None,
-            snow_started: 0.0,
-            inside: false,
-            show_camera: !demo::CRYSTAL,
+            panic: None,
+            orbit_origin: None,
             paused: false,
             logo: true,
-        }
+        };
+        show.home();
+        show
     }
 
-    fn home(radius: f32) -> (f32, f32, f32) {
-        if demo::CRYSTAL {
-            (0.35, 0.10, radius * 2.9)
-        } else {
-            (0.26, 0.23, 96.0)
+    fn home(&mut self) {
+        (self.yaw, self.pitch, self.distance) = (0.26, 0.23, 96.0);
+        self.orbit_origin = Some(self.time);
+    }
+
+    fn recover(&mut self) {
+        if let Some(panic) = &mut self.panic
+            && panic.recovery.is_none()
+        {
+            panic.recovery = Some(self.time);
+            self.cue("march", true);
         }
     }
 
@@ -90,62 +99,58 @@ impl Show {
             return;
         }
         self.time += dt;
-        if let Some(transition) = &self.transition {
-            let elapsed = self.time - transition.started;
-            if elapsed >= 1.0
-                && (self.inside, self.castle) != (transition.inside, transition.castle)
-            {
-                self.inside = transition.inside;
-                self.castle = transition.castle;
-                self.cue(self.music(), true);
+        if let Some(panic) = &self.panic {
+            if let Some(start) = panic.recovery {
+                if self.time >= start + RECOVERY_LENGTH {
+                    self.panic = None;
+                }
+            } else if self.time - panic.started >= PANIC_LENGTH {
+                self.recover();
             }
-            if elapsed >= 2.0 {
-                self.transition = None;
-            }
-        }
-        if !demo::CRYSTAL
-            && self
-                .action_time
-                .is_some_and(|start| self.time - start > 14.0)
-        {
-            self.action_time = None;
-            self.cue("march", true);
+        } else {
+            self.march += dt;
         }
     }
 
+    fn camera(&self) -> (f32, f32, f32) {
+        let t = self
+            .orbit_origin
+            .map_or(0.0, |start| (self.time - start) as f32);
+        (
+            self.yaw + t * 0.075,
+            self.pitch + (t * 0.28).sin() * 0.085,
+            self.distance * (0.90 + 0.10 * (t * 0.18).cos()),
+        )
+    }
+
+    fn take_camera(&mut self) {
+        (self.yaw, self.pitch, self.distance) = self.camera();
+        self.orbit_origin = None;
+    }
+
     pub fn frame(&self) -> Frame {
-        let action = self
-            .action_time
-            .map(|start| (self.time - start).max(0.0) as f32);
-        let (mut yaw, mut pitch, mut distance) = (self.yaw, self.pitch, self.distance);
-        if self.show_camera {
-            yaw += self.time as f32 * 0.085;
-            pitch += (self.time as f32 * 0.28).sin() * 0.11;
-            distance *= 0.88 + 0.12 * (self.time as f32 * 0.18).cos();
-        }
-        let orbit = Vec3::new(
+        let (yaw, pitch, distance) = self.camera();
+        let direction = Vec3::new(
             yaw.sin() * pitch.cos(),
             pitch.sin(),
             yaw.cos() * pitch.cos(),
         );
-        let eye = self.center + distance * orbit;
-        let exposure = if demo::CRYSTAL {
-            self.transition.as_ref().map_or(1.0, |transition| {
-                ((self.time - transition.started) as f32 - 1.0)
-                    .abs()
-                    .clamp(0.06, 1.0)
-            })
-        } else {
-            1.0
-        };
+        let eye = self.center + distance * direction;
         Frame {
-            seconds: self.time as f32,
             view: glam::camera::rh::view::look_at_mat4(eye, self.center, Vec3::Y),
-            action,
-            castle: self.castle,
-            inside: self.inside,
-            exposure,
-            snow_time: (self.time - self.snow_started).max(0.0) as f32,
+            march: self.march as f32,
+            scatter: self.panic.as_ref().map(|panic| {
+                let elapsed = (self.time - panic.started).max(0.0) as f32;
+                let run = (panic.recovery.unwrap_or(self.time) - panic.started).max(0.0) as f32;
+                let recovery = panic
+                    .recovery
+                    .map_or(0.0, |t| smooth(((self.time - t) / RECOVERY_LENGTH) as f32));
+                Scatter {
+                    elapsed,
+                    travel: smooth((run - 0.12) / 2.8) * (1.0 - recovery),
+                    blend: smooth(run / 0.28) * (1.0 - recovery),
+                }
+            }),
             logo: self.logo,
         }
     }
@@ -162,76 +167,45 @@ impl Show {
         match key {
             "p" | "P" => self.paused = !self.paused,
             "l" | "L" => self.logo = !self.logo,
-            "Home" => (self.yaw, self.pitch, self.distance) = Self::home(self.radius),
-            " " if demo::CRYSTAL => self.change(!self.inside, self.castle),
-            "s" | "S" if demo::CRYSTAL => self.change(self.inside, self.castle ^ 1),
-            "r" | "R" if demo::CRYSTAL => self.snow_started = self.time,
-            " " => {
-                self.action_time = Some(self.time);
+            "Home" => self.home(),
+            " " if self.panic.is_none() => {
+                self.panic = Some(Panic {
+                    started: self.time,
+                    recovery: None,
+                });
                 self.cue("panic", true);
                 self.cue("scary", false);
             }
-            "s" | "S" => {
-                self.action_time = None;
-                self.cue("march", true);
-            }
+            " " => (),
+            "s" | "S" => self.recover(),
             _ => return false,
         }
         true
     }
 
-    fn change(&mut self, inside: bool, castle: usize) {
-        self.transition = Some(Transition {
-            started: self.time,
-            inside,
-            castle,
-        });
-        self.cue(
-            if castle == 1 && self.castle != castle {
-                "thunder"
-            } else {
-                "transition"
-            },
-            false,
-        );
-    }
-
-    fn music(&self) -> &'static str {
-        if !self.inside {
-            "crystal_ball"
-        } else if self.castle == 0 {
-            "light_castle"
-        } else {
-            "dark_castle"
-        }
-    }
-
-    /// Set the camera and time exactly for the native and web frame checks.
+    /// Set the camera and time for native and web frame checks.
     pub fn freeze(&mut self, seconds: f64, yaw: f64, pitch: f64, action: bool) {
-        self.time = seconds;
+        self.time = seconds.max(0.0);
+        self.march = if action { 0.0 } else { self.time };
         self.yaw += yaw as f32;
-        self.pitch += pitch as f32;
-        self.show_camera = false;
+        self.pitch = (self.pitch + pitch as f32).clamp(0.04, 1.48);
+        self.orbit_origin = None;
         self.paused = true;
-        if action {
-            if demo::CRYSTAL {
-                self.inside = true;
-            } else {
-                self.action_time = Some(0.0);
-            }
-        }
+        self.panic = action.then_some(Panic {
+            started: 0.0,
+            recovery: (self.time >= PANIC_LENGTH).then_some(PANIC_LENGTH),
+        });
     }
 
     pub fn press(&mut self, x: f64, y: f64) {
+        self.take_camera();
         self.drag = Some((x, y));
-        self.show_camera = false;
     }
 
     pub fn motion(&mut self, x: f64, y: f64) {
-        if let Some((previous_x, previous_y)) = self.drag {
-            self.yaw += (x - previous_x) as f32 * std::f32::consts::TAU;
-            self.pitch =
-                (self.pitch + (y - previous_y) as f32 * std::f32::consts::PI).clamp(-0.04, 1.48);
+        if let Some((px, py)) = self.drag {
+            self.yaw += (x - px) as f32 * std::f32::consts::TAU;
+            self.pitch = (self.pitch + (y - py) as f32 * std::f32::consts::PI).clamp(0.04, 1.48);
             self.drag = Some((x, y));
         }
     }
@@ -241,8 +215,43 @@ impl Show {
     }
 
     pub fn zoom(&mut self, amount: f32) {
-        self.distance =
-            (self.distance * (-amount).exp()).clamp(self.radius * 0.11, self.radius * 9.0);
-        self.show_camera = false;
+        self.take_camera();
+        self.distance = (self.distance * (-amount).exp()).clamp(22.0, 260.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camera_does_not_snap_when_the_user_grabs_it() {
+        let mut show = Show::new(Vec3::ZERO);
+        show.time = 13.0;
+        let before = show.frame().view;
+        show.press(0.5, 0.5);
+        assert_eq!(before, show.frame().view);
+    }
+
+    #[test]
+    fn panic_starts_from_the_march_and_recovery_starts_from_the_scatter() {
+        let mut show = Show::new(Vec3::ZERO);
+        show.march = 6.0;
+        assert!(show.key(" "));
+        let start = show.frame();
+        assert_eq!(start.march, 6.0);
+        assert_eq!(start.scatter.unwrap().blend, 0.0);
+        show.time = 1.1;
+        let before = show.frame().scatter.unwrap();
+        assert!(show.key("s"));
+        let after = show.frame().scatter.unwrap();
+        assert_eq!(before.travel, after.travel);
+        assert_eq!(before.blend, after.blend);
+        show.advance(0.0);
+        for i in 1..=64 {
+            show.advance(f64::from(i) * 0.05);
+        }
+        assert!(show.frame().scatter.is_none());
+        assert!(show.frame().march > 6.0);
     }
 }

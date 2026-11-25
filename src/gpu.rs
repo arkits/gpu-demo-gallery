@@ -7,7 +7,7 @@ use crate::dds::{self, Image};
 /// The original works in gamma space, so nothing is an sRGB format.
 pub const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const SAMPLES: u32 = 4;
-pub const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
+pub const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 /// Spacing of uniform slots; every backend accepts 256.
 pub const SLOT: u64 = 256;
 

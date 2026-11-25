@@ -83,7 +83,7 @@ webtest) need_data; driver; build_web; browser "show webgpu" "show webgl" ;;
 compare)
   need_data; driver; build_web
   shot 5 0 0 0 "$OUT/native-a.png" >/dev/null
-  shot 8 0.8 -0.3 1 "$OUT/native-b.png" >/dev/null
+  shot 3 2.1 0.05 1 "$OUT/native-b.png" >/dev/null
   shot 3 1.57 0 0 "$OUT/native-c.png" >/dev/null
   shot 2 4 0.7 0 "$OUT/native-d.png" >/dev/null
   browser "still webgpu" "still webgl"

@@ -78,6 +78,7 @@ fn cube_sample(direction: vec3<f32>) -> vec4<f32> {
         case 7u: { rgb = map0.rgb * (0.56 + map1.rgb * 0.44); }
         default: {}
     }
+    if !covered(s.position.xy, s.diffuse.a) { discard; }
     return vec4(rgb * frame.parameters.x, alpha);
 }
 
@@ -108,38 +109,27 @@ struct Quad {
     return textureSample(base, wrap, s.xy);
 }
 
-@vertex fn shadow_vs(v: Vertex) -> @builtin(position) vec4<f32> {
+fn covered(position: vec2<f32>, opacity: f32) -> bool {
+    // Ordered coverage at the edges keeps the end of a marching lane from popping.
+    let pattern = array(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0,
+        3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+    let xy = vec2<u32>(position) % 4u;
+    let threshold = (pattern[xy.y * 4u + xy.x] + 0.5) / 16.0;
+    return opacity >= threshold;
+}
+
+struct Shadow {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) opacity: f32,
+};
+
+@vertex fn shadow_vs(v: Vertex) -> Shadow {
     let p = mat4x4(v.x, v.y, v.z, v.origin) * vec4(v.position, 1.0);
     let shift = frame.light.xz / frame.light.y * p.y;
-    return frame.view_proj * vec4(p.x - shift.x, 0.025, p.z - shift.y, 1.0);
+    return Shadow(frame.view_proj * vec4(p.x - shift.x, 0.025, p.z - shift.y, 1.0), v.diffuse.a);
 }
 
-@fragment fn shadow_fs() -> @location(0) vec4<f32> {
+@fragment fn shadow_fs(s: Shadow) -> @location(0) vec4<f32> {
+    if !covered(s.position.xy, s.opacity) { discard; }
     return vec4(0.07, 0.05, 0.08, 0.34);
-}
-
-fn random(seed: u32) -> f32 {
-    var x = seed * 747796405u + 2891336453u;
-    x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
-    return f32((x >> 22u) ^ x) * (1.0 / 4294967296.0);
-}
-
-@vertex fn snow_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) flake: u32) -> Quad {
-    let i = flake * 7u;
-    let age = frame.parameters.w;
-    let azimuth = random(i + 1u) * 6.2831853 + age * mix(0.1, 0.5, random(i + 2u));
-    let polar = random(i + 3u) * 3.1415927 + age * mix(0.1, 0.3, random(i + 4u));
-    let radius = mix(2.0, 9.8, random(i));
-    let local = array(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0),
-        vec2(-1.0, 1.0), vec2(1.0, -1.0), vec2(1.0, 1.0))[vertex];
-    let p = radius * vec3(sin(polar) * cos(azimuth), cos(polar), sin(polar) * sin(azimuth));
-    let clip = frame.view_proj * vec4(p, 1.0);
-    let scale = select(0.0, 0.15 + 0.06 * sin(age * (0.1 + random(i + 5u) * 9.9)),
-        polar < 3.1415927);
-    // The glass is a separate pass. A small depth offset keeps flakes inside it visible.
-    return Quad(vec4(clip.xy + local * scale, clip.z - 0.25 * clip.w, clip.w), local);
-}
-
-@fragment fn snow_fs(s: Quad) -> @location(0) vec4<f32> {
-    return vec4(0.93, 0.96, 1.0, (1.0 - smoothstep(0.25, 1.0, length(s.xy))) * 0.86 * frame.parameters.x);
 }

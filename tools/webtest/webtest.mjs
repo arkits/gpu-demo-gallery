@@ -78,7 +78,7 @@ const commands = {
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "fits a phone");
   },
   async still() {
-    for (const [name, query] of [["a", "time=5"], ["b", "time=8&yaw=0.8&pitch=-0.3&action=1"], ["c", "time=3&yaw=1.57"], ["d", "time=2&yaw=4&pitch=0.7"]]) {
+    for (const [name, query] of [["a", "time=5"], ["b", "time=3&yaw=2.1&pitch=0.05&action=1"], ["c", "time=3&yaw=1.57"], ["d", "time=2&yaw=4&pitch=0.7"]]) {
       await page.goto(`${url}?${query}`);
       await page.waitForFunction(() => document.documentElement.dataset.done, null, { timeout: 90000 });
       await page.waitForTimeout(150);
