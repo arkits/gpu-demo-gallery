@@ -473,6 +473,12 @@ impl Gl {
         write(gpu, &self.textures[id].texture, 0, image);
     }
 
+    pub fn replace_cube(&mut self, gpu: &Gpu, id: TextureId, faces: &[Image; 6]) {
+        for (layer, image) in faces.iter().enumerate() {
+            write(gpu, &self.textures[id].texture, layer as u32, image);
+        }
+    }
+
     /// A picture that can be drawn to and then shown.
     pub fn target(&mut self, gpu: &Gpu, size: (u32, u32), s: Sampling) -> TextureId {
         let texture = gpu.target(size, COLOR, 1);
