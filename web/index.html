@@ -60,6 +60,8 @@
   const frozen = params.has("t") ? Number(params.get("t")) : null;
   const data = { archive: null, loop: null, logo: null };
   let player = null;
+  // The bundled files, while they come; Start can be pressed before they are here.
+  let loading = null;
   const wasmReady = init();
 
   function offer() {
@@ -70,10 +72,12 @@
     if (frozen !== null) start();
   }
 
-  async function score() {
-    if (!data.loop || frozen !== null) return null;
-    const context = new AudioContext();
-    void context.resume();
+  async function score(context) {
+    if (!context) return null;
+    if (!data.loop) {
+      await context.close();
+      return null;
+    }
     try {
       const buffer = await context.decodeAudioData(data.loop.buffer);
       const gain = context.createGain();
@@ -98,11 +102,23 @@
   }
 
   async function start() {
-    if (player) return;
+    if (player || $("play").disabled) return;
     $("play").disabled = true;
-    status("Loading…");
     // Open the audio context while the click is still active.
-    const sound = score().catch((error) => { console.warn("playing without music", error); return null; });
+    const context = frozen === null ? new AudioContext() : null;
+    void context?.resume();
+    try {
+      if (loading) $("play").textContent = "Starting when loaded";
+      await loading;
+    } catch {
+      // Reported where it began.
+      await context?.close();
+      return;
+    } finally {
+      $("play").textContent = "Start";
+    }
+    status("Loading…");
+    const sound = score(context).catch((error) => { console.warn("playing without music", error); return null; });
     try {
       await new Promise((r) => setTimeout(r));
       await wasmReady;
@@ -226,8 +242,8 @@
     status(`Could not load the player: ${e.message ?? e}`, true);
   });
   // Content served with the page: scripts/serve.py locally, or a bundled deployment.
-  async function get(url, onBytes) {
-    const r = await fetch(url);
+  async function get(url, onBytes, signal) {
+    const r = await fetch(url, { signal });
     if (!r.ok || !r.body) throw new Error(`${url}: ${r.status}`);
     const chunks = [];
     for (const reader = r.body.getReader(); ; ) {
@@ -247,25 +263,33 @@
       const { files: names, size: total } = await manifest.json();
       for (const id of ["choose", "need"]) $(id).hidden = true;
       $("progress").hidden = false;
-      const extras = [extra("./local/Audio/SceneIntro.flac"), extra("./local/Logo2.tga")];
-      const parts = [];
-      let done = 0;
-      for (const name of names) {
-        parts.push(await get(`./local/${encodeURIComponent(name)}`, (n) => {
+      $("play").hidden = false;
+      $("play").focus();
+      const stop = new AbortController();
+      loading = (async () => {
+        const extras = [extra("./local/Audio/SceneIntro.flac"), extra("./local/Logo2.tga")];
+        let done = 0;
+        const parts = await Promise.all(names.map((name) => get(`./local/${encodeURIComponent(name)}`, (n) => {
+          if (stop.signal.aborted) return;
           done += n;
           [$("progress").max, $("progress").value] = [total, Math.min(done, total)];
           status(`Downloading ${mb(done)} of ${mb(total)} MB…`);
-        }));
-      }
-      if (done !== total) throw new Error("incomplete download");
-      const archive = await bytes(new Blob(parts));
-      [data.loop, data.logo] = await Promise.all(extras);
-      data.archive = archive;
+        }, stop.signal)));
+        if (done !== total) throw new Error("incomplete download");
+        const archive = await bytes(new Blob(parts));
+        [data.loop, data.logo] = await Promise.all(extras);
+        data.archive = archive;
+      })();
+      loading.catch(() => stop.abort());
+      await loading;
       offer();
     }
   } catch (e) {
     console.error(e);
     for (const id of ["choose", "need"]) $(id).hidden = false;
+    $("play").hidden = true;
+    $("play").disabled = false;
+    loading = null;
     status(`Download failed: ${e.message ?? e}`, true);
   }
   $("progress").hidden = true;

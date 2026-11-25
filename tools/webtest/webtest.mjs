@@ -35,7 +35,8 @@ page.on("response", (r) => {
   if (path.startsWith("/local/")) bundled.push(`${r.status()} ${path.slice(7)}`);
 });
 const shot = (name) => page.screenshot({ path: `${out}/${name}.png` });
-const started = () => page.waitForFunction(() => window.demo, null, { timeout: 90000 });
+// Includes the download.
+const started = () => page.waitForFunction(() => window.demo, null, { timeout: 240000 });
 const state = () => page.evaluate(() => ({
   time: demo.player.time(), chapter: demo.player.chapter(), paused: demo.player.paused(),
   audio: demo.audio?.context.currentTime, sound: demo.audio?.context.state,
@@ -44,11 +45,11 @@ const state = () => page.evaluate(() => ({
 async function start() {
   await page.goto(url);
   await page.waitForSelector("#play:not([hidden])", { timeout: 30000 });
-  const has = (end) => bundled.some((b) => b.startsWith("200") && b.endsWith(end));
-  check(has("assets.json") && has("-00.part") && has("Logo2.tga") && bundled.some((b) => b.startsWith("200 Audio/")), `bundled files: ${bundled.join(", ")}`);
   const begin = Date.now();
   await page.click("#play");
   await started();
+  const has = (end) => bundled.some((b) => b.startsWith("200") && b.endsWith(end));
+  check(has("assets.json") && has("-00.part") && has("Logo2.tga") && bundled.some((b) => b.startsWith("200 Audio/")), `bundled files: ${bundled.join(", ")}`);
   const used = await uses();
   check(used === gpu, `canvas uses ${used}`);
   console.log("    ", `[${gpu}] ready ${Date.now() - begin} ms after Start`);

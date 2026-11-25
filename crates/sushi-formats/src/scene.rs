@@ -215,10 +215,13 @@ fn read_chunk(r: &mut Reader) -> Result<Chunk> {
 pub struct Edited {
     pub raw: Vec<u8>,
     pub name: String,
-    /// 1 integer, 2 number, 3 vector; 5 to 7 are the same over time.
+    /// 0 not edited, 1 integer, 2 number, 3 vector; 5 to 7 are the same over time.
     pub kind: i32,
     pub values: Vec<f32>,
-    pub times: Vec<f32>,
+    /// Seconds from each value to the next; the last one means nothing.
+    pub gaps: Vec<f32>,
+    /// Seconds after which the values repeat.
+    pub duration: f32,
 }
 
 impl Edited {
@@ -228,17 +231,19 @@ impl Edited {
             name,
             kind: 3,
             values: v.to_vec(),
-            times: Vec::new(),
+            gaps: Vec::new(),
+            duration: 0.0,
         }
     }
     pub fn read_keys(r: &mut Reader, raw: &[u8]) -> Result<Self> {
         let kind = (u32_at(raw, 1) as i32).abs();
-        let (mut values, mut times) = (Vec::new(), Vec::new());
+        let (mut values, mut gaps, mut duration) = (Vec::new(), Vec::new(), 0.0);
         if (5..=7).contains(&kind) {
             let n = count_at(raw, 0x45);
             let width = if kind == 7 { 4 } else { 1 };
             values = r.f32s(n * width)?;
-            times = r.f32s(n)?;
+            gaps = r.f32s(n)?;
+            duration = f32_at(raw, 0x4d);
         } else {
             values.extend([0x45, 0x49, 0x4d, 0x51].map(|o| f32_at(raw, o)));
             if kind == 1 {
@@ -250,8 +255,73 @@ impl Edited {
             name: cstr(&raw[5..0x45]),
             kind,
             values,
-            times,
+            gaps,
+            duration,
         })
+    }
+
+    /// The value at a time (0x455a60), or nothing if the shader's own applies.
+    pub fn at(&self, time: f32) -> Option<[f32; 4]> {
+        let width = match self.kind {
+            0 => return None,
+            3 | 7 => 4,
+            _ => 1,
+        };
+        let key = |i: usize| -> Option<[f32; 4]> {
+            let v = self.values.get(i * width..(i + 1) * width)?;
+            Some(std::array::from_fn(|j| v[j % width]))
+        };
+        let last = self.gaps.len().saturating_sub(1);
+        if last == 0 || self.duration <= 1e-6 {
+            return key(0);
+        }
+        let time = time.rem_euclid(self.duration) + f32::EPSILON;
+        let (mut i, mut start) = (0, 0.0);
+        while i + 1 < last && start + self.gaps[i] <= time {
+            start += self.gaps[i];
+            i += 1;
+        }
+        let f = ((time - start) / self.gaps[i]).clamp(0.0, 1.0);
+        let (a, b) = (key(i)?, key(i + 1)?);
+        Some(match self.kind {
+            // Integers do not blend.
+            5 => a,
+            _ => std::array::from_fn(|j| a[j] * (1.0 - f) + b[j] * f),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn number(kind: i32, values: &[f32], gaps: &[f32], duration: f32) -> Edited {
+        Edited {
+            raw: Vec::new(),
+            name: "x".into(),
+            kind,
+            values: values.to_vec(),
+            gaps: gaps.to_vec(),
+            duration,
+        }
+    }
+
+    #[test]
+    fn what_was_not_edited_has_no_value() {
+        assert_eq!(number(0, &[0.0; 4], &[], 0.0).at(1.0), None);
+        assert_eq!(number(6, &[], &[], 0.0).at(1.0), None);
+    }
+
+    #[test]
+    fn values_blend_over_time_and_repeat() {
+        let e = number(6, &[0.0, 10.0, 30.0], &[1.0, 1.0, -1.0], 2.0);
+        for (time, value) in [(0.0, 0.0), (0.5, 5.0), (1.5, 20.0), (2.5, 5.0)] {
+            assert!((e.at(time).unwrap()[0] - value).abs() < 1e-3, "{time}");
+        }
+        assert_eq!(
+            number(3, &[1.0, 2.0, 3.0, 4.0], &[], 0.0).at(9.0),
+            Some([1.0, 2.0, 3.0, 4.0])
+        );
     }
 }
 
