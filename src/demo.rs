@@ -20,6 +20,8 @@ pub const FILES: &[&str] = &[
     "walls.png",
     "walls_bump.png",
 ];
+/// Files that are parts of a program: name, address, length.
+pub const PARTS: &[(&str, usize, usize)] = &[];
 pub const SOUNDS: &[&str] = &[
     "background.wav",
     "bounce.wav",
@@ -52,7 +54,7 @@ const HEAT: usize = 32;
 /// Half the size of each room, how often the picture repeats from the middle to the side.
 const ROOMS: [(f32, f32); 2] = [(6.0, 1.0), (10.0, 2.0)];
 /// Parts of the bolt.
-const PARTS: usize = 128;
+const PIECES: usize = 128;
 /// Points of the bolt that shine (0x401fa0).
 const SHINING: [usize; 3] = [64, 32, 96];
 const G: f32 = -10.0;
@@ -236,13 +238,13 @@ impl Bolt {
 
     /// 0x4017f0.
     fn update(&mut self, random: &mut Random, to: Vec3) {
-        let moved = self.points[0] != TOP || self.points[PARTS] != to;
+        let moved = self.points[0] != TOP || self.points[PIECES] != to;
         let anew = random.next() > 0.9 || moved;
         if anew {
             self.points[0] = TOP;
-            self.points[PARTS] = to;
+            self.points[PIECES] = to;
         }
-        self.split(random, 0, PARTS, anew);
+        self.split(random, 0, PIECES, anew);
         self.stray = (self.stray + 0.01).min(0.3);
     }
 }
@@ -417,7 +419,7 @@ impl Demo {
             mesh,
             random: Random(1),
             bolt: Bolt {
-                points: vec![Vec3::ZERO; PARTS + 1],
+                points: vec![Vec3::ZERO; PIECES + 1],
                 stray: 0.0,
             },
             heat: vec![0.0; HEAT * HEAT],
@@ -982,12 +984,12 @@ mod tests {
     fn bolts_reach_their_ends() {
         let mut random = Random(1);
         let mut bolt = Bolt {
-            points: vec![Vec3::ZERO; PARTS + 1],
+            points: vec![Vec3::ZERO; PIECES + 1],
             stray: 0.0,
         };
         let to = Vec3::new(1.0, -2.0, 0.0);
         (0..100).for_each(|_| bolt.update(&mut random, to));
-        assert_eq!((bolt.points[0], bolt.points[PARTS]), (TOP, to));
+        assert_eq!((bolt.points[0], bolt.points[PIECES]), (TOP, to));
         let longest = bolt
             .points
             .windows(2)

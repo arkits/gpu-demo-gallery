@@ -62,6 +62,8 @@ pub fn read(name: &str, d: &[u8]) -> Result<Image, Error> {
         png(d)
     } else if d.starts_with(b"P6") {
         ppm(d)
+    } else if d.starts_with(b"DDS ") {
+        dds(d)
     } else if name.ends_with(".tga") || name.ends_with(".dat") {
         tga(d)
     } else {
@@ -130,6 +132,82 @@ fn ppm(d: &[u8]) -> Result<Image, Error> {
     })
 }
 
+/// The largest picture of a DXT1 or DXT5 file.
+fn dds(d: &[u8]) -> Result<Image, Error> {
+    let h = d.get(..128).ok_or("cut short")?;
+    let step = match &h[84..88] {
+        b"DXT1" => 8,
+        b"DXT5" => 16,
+        kind => return Err(format!("kind {kind:?}").into()),
+    };
+    let int = |o: usize| u32::from_le_bytes([h[o], h[o + 1], h[o + 2], h[o + 3]]);
+    let (height, width) = (int(12), int(16));
+    if ![width, height]
+        .iter()
+        .all(|s| (4..=4096).contains(s) && s.is_multiple_of(4))
+    {
+        return Err(format!("size {width} {height}").into());
+    }
+    let size = (width * height) as usize;
+    let blocks = d.get(128..128 + size / 16 * step).ok_or("cut short")?;
+    let mut rgba = vec![0; size * 4];
+    for (i, b) in blocks.chunks_exact(step).enumerate() {
+        let across = width as usize / 4;
+        let (x, y) = (i % across * 4, i / across * 4);
+        for (row, p) in pixels(b).as_chunks::<4>().0.iter().enumerate() {
+            let at = ((y + row) * width as usize + x) * 4;
+            rgba[at..at + 16].copy_from_slice(p.as_flattened());
+        }
+    }
+    Ok(Image {
+        width,
+        height,
+        rgba,
+    })
+}
+
+/// Sixteen pixels: two colors and 2 bits each; with DXT5 before them two alphas and 3 bits
+/// each.
+fn pixels(b: &[u8]) -> [[u8; 4]; 16] {
+    let (alphas, b) = b.split_at(b.len() - 8);
+    let ends = [0, 2].map(|o| u32::from(u16::from_le_bytes([b[o], b[o + 1]])));
+    let colors = ends.map(|c| {
+        [
+            (c >> 11) * 255 / 31,
+            (c >> 5 & 63) * 255 / 63,
+            (c & 31) * 255 / 31,
+        ]
+    });
+    let number = |b: &[u8]| b.iter().rev().fold(0u64, |n, &v| n << 8 | u64::from(v));
+    let codes = number(&b[4..]);
+    let three = alphas.is_empty() && ends[0] <= ends[1];
+    std::array::from_fn(|i| {
+        let code = (codes >> (2 * i) & 3) as usize;
+        // Of the second color, and of how many.
+        let (part, all) = match three {
+            true => ([0, 2, 1, 0][code], 2),
+            false => ([0, 3, 1, 2][code], 3),
+        };
+        let mix = |c: usize| ((colors[0][c] * (all - part) + colors[1][c] * part) / all) as u8;
+        let mut alpha = 255;
+        if let [a0, a1, bits @ ..] = alphas {
+            let (a0, a1) = (u32::from(*a0), u32::from(*a1));
+            alpha = match ((number(bits) >> (3 * i) & 7) as u32, a0 > a1) {
+                (0, _) => a0,
+                (1, _) => a1,
+                (k, true) => ((8 - k) * a0 + (k - 1) * a1) / 7,
+                (6, false) => 0,
+                (7, false) => 255,
+                (k, false) => ((6 - k) * a0 + (k - 1) * a1) / 5,
+            };
+        }
+        match three && code == 3 {
+            true => [0; 4],
+            false => [mix(0), mix(1), mix(2), alpha as u8],
+        }
+    })
+}
+
 /// Rows stay in the order of the file, which is usually from the bottom.
 fn tga(d: &[u8]) -> Result<Image, Error> {
     let h = d.get(..18).ok_or("cut short")?;
@@ -186,5 +264,16 @@ mod tests {
         assert_eq!(i.clone().flipped().rgba, b"fed\xffcba\xff");
         assert_eq!(i.half().rgba, [100, 99, 98, 255].map(|v: u8| v.max(1)));
         assert!(read("a.tga", &t[..20]).is_err());
+        // Red to blue, and alpha 7 to 0: the pixels of a row take each in turn.
+        let mut d = b"DDS ".to_vec();
+        d.resize(128, 0);
+        (d[12], d[16]) = (4, 4);
+        d[84..88].copy_from_slice(b"DXT5");
+        d.extend([7, 0, 0b1000_1000, 0b0000_0110, 0, 0, 0, 0]);
+        d.extend([0x00, 0xf8, 0x1f, 0x00, 0b1110_0100, 0, 0, 0]);
+        let i = read("a.dds", &d).unwrap();
+        let row = [255, 0, 0, 7, 0, 0, 255, 0, 170, 0, 85, 6, 85, 0, 170, 5];
+        assert_eq!(i.rgba[..16], row);
+        assert!(read("a.dds", &d[..140]).is_err());
     }
 }

@@ -12,7 +12,7 @@ fn files() -> Files {
 fn every_picture_reads() {
     let f = files();
     for n in FILES.iter().filter(|n| {
-        [".png", ".tga", ".ppm", ".dat"]
+        [".png", ".tga", ".ppm", ".dat", ".dds"]
             .iter()
             .any(|e| n.ends_with(e))
     }) {
