@@ -1,0 +1,18 @@
+[package]
+name = "sushi-engine"
+description = "Simulation and wgpu renderer for the Pipe Dream port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = "0.34.3"
+sushi-formats = { path = "../sushi-formats" }
+sushi-shader = { version = "0.1.0", path = "../sushi-shader" }
+wgpu = "30.0.2"
+
+[dev-dependencies]
+png = "0.18.1"
+pollster = "1.0.3"
