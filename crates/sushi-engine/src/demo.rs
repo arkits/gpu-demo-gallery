@@ -1824,6 +1824,7 @@ struct Drawing {
     /// `Clear` keeps to the last viewport set, even after the target changes, when
     /// drawing has the whole target again (0x42f2e0, 0x42ec80).
     cleared: [f32; 4],
+    back_scissor: [f32; 4],
     clear_color: [f32; 4],
     clear_depth: f32,
     clear_stencil: u32,
@@ -2077,6 +2078,12 @@ fn builtin(name: &str, args: &[String], ctx: &Context) -> Option<Vec<[f32; 4]>> 
                 projection(fov.to_degrees(), 0.1, distance + radius + 1.0) * view,
             ))
         }
+        _ if idx("solmorphweightsadb").is_some() => {
+            let group = idx("solmorphweightsadb")?;
+            vec![std::array::from_fn(|i| {
+                ctx.weights.get(group * 4 + i).map_or(0.0, |w| w.1)
+            })]
+        }
         _ if idx("morphweight").is_some() => {
             let n = idx("morphweight").unwrap();
             vec![[ctx.weights.get(n).map_or(0.0, |w| w.1); 4]]
@@ -2101,7 +2108,7 @@ impl Drawing {
             .map(|light| light.at(time))
             .find(|light| light.name.to_ascii_lowercase().contains("key"))
             .map(|l| l.position);
-        let toward = ["girl", "kingpin"]
+        let toward = ["agenthead", "kinghead"]
             .map(|name| {
                 demo.sets[part.set]
                     .instances
@@ -2155,6 +2162,7 @@ impl Drawing {
                 scissor: FULL,
             },
             cleared: FULL,
+            back_scissor: FULL,
             clear_color: [0.0, 0.0, 0.0, 1.0],
             clear_depth: 1.0,
             clear_stencil: 128,
@@ -2178,7 +2186,11 @@ impl Drawing {
         self.eye.formats = demo.formats(&to);
         self.eye.depth_only = depth_only;
         self.area.viewport = FULL;
-        self.area.scissor = FULL;
+        self.area.scissor = if to.colors[0] == Some(None) {
+            self.back_scissor
+        } else {
+            FULL
+        };
     }
 
     fn append(&mut self, start: usize) {
@@ -2207,7 +2219,10 @@ impl Drawing {
         let depth = (mask & Z != 0 && self.eye.to.depth.is_some()).then_some(self.clear_depth);
         let stencil =
             (mask & STENCIL != 0 && self.eye.to.depth.is_some()).then_some(self.clear_stencil);
-        if self.cleared == FULL {
+        let [a, b, c, e] = self.cleared;
+        let [x, y, r, t] = self.area.scissor;
+        let clear_rect = [a.max(x), b.max(y), c.min(r), e.min(t)];
+        if clear_rect == FULL {
             let c = color.map(|[r, g, b, a]| wgpu::Color {
                 r: r.into(),
                 g: g.into(),
@@ -2236,8 +2251,8 @@ impl Drawing {
             );
             let old = self.area;
             self.area = Area {
-                viewport: self.cleared,
-                scissor: self.cleared,
+                viewport: clear_rect,
+                scissor: clear_rect,
             };
             self.append(start);
             self.area = old;
@@ -2560,7 +2575,12 @@ impl lua::Host for Frame<'_> {
                 d.area.viewport = r;
                 d.cleared = r;
             }
-            "SetScissor" => d.area.scissor = rect(0),
+            "SetScissor" => {
+                d.area.scissor = rect(0);
+                if d.eye.to.colors[0] == Some(None) {
+                    d.back_scissor = d.area.scissor;
+                }
+            }
             "SetClearColor" => d.clear_color = rect(0),
             "SetClearZ" => d.clear_depth = f(0).clamp(0.0, 1.0),
             "SetClearStencil" => d.clear_stencil = n(0) as u32,
