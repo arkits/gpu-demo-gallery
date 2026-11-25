@@ -60,6 +60,7 @@
   const frozen = params.has("t") ? Number(params.get("t")) : null;
   const data = { archive: null, loop: null, logo: null };
   let player = null;
+  const wasmReady = init();
 
   function offer() {
     if (!data.archive) return;
@@ -104,6 +105,7 @@
     const sound = score().catch((error) => { console.warn("playing without music", error); return null; });
     try {
       await new Promise((r) => setTimeout(r));
+      await wasmReady;
       [canvas.width, canvas.height] = size();
       player = await WebPlayer.create(canvas, data.archive, data.logo ?? new Uint8Array());
     } catch (e) {
@@ -215,16 +217,14 @@
     take(files);
   }
 
-  try {
-    await init();
-  } catch (e) {
-    console.error(e);
-    status(`Could not load the player: ${e.message ?? e}`, true);
-  }
   $("play").addEventListener("click", start);
   for (const id of ["folder", "files"]) $(id).addEventListener("change", (e) => take(e.target.files));
   addEventListener("dragover", (e) => e.preventDefault());
   addEventListener("drop", dropped);
+  wasmReady.catch((e) => {
+    console.error(e);
+    status(`Could not load the player: ${e.message ?? e}`, true);
+  });
   // Content served with the page: scripts/serve.py locally, or a bundled deployment.
   async function get(url, onProgress) {
     const r = await fetch(url).catch(() => null);
