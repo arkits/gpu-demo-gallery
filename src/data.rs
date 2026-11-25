@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::io::Read;
 
 use crate::Error;
-use crate::demo::{FILES, SOUNDS};
+use crate::demo::{FILES, PARTS, SOUNDS};
 use crate::image::{self, Image};
 
 const MAGIC: &[u8; 8] = b"DEMOPAK1";
@@ -19,7 +19,9 @@ impl Files {
         let name = name.rsplit(['\\', '/']).next().unwrap_or("");
         let name = name.to_ascii_lowercase();
         if name.ends_with(".exe") {
-            for (name, data) in resources(&data).unwrap_or_default() {
+            let parts = parts(&data).unwrap_or_default();
+            let resources = resources(&data).unwrap_or_default();
+            for (name, data) in parts.into_iter().chain(resources) {
                 self.insert(&name, data);
             }
         } else if FILES.iter().chain(SOUNDS).any(|f| *f == name) {
@@ -130,24 +132,47 @@ impl Files {
     }
 }
 
+fn u16_at(d: &[u8], o: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(d.get(o..o + 2)?.try_into().ok()?))
+}
+
+fn int(d: &[u8], o: usize) -> Option<usize> {
+    Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?) as usize)
+}
+
+/// Where the headers of a Windows program begin.
+fn header(d: &[u8]) -> Option<usize> {
+    let pe = int(d, 0x3c)?;
+    (d.get(pe..pe + 4)? == b"PE\0\0" && u16_at(d, pe + 24)? == 0x10b).then_some(pe)
+}
+
+/// Where in the file of a program something is, by its address from the program's base.
+fn place(d: &[u8], address: usize) -> Option<usize> {
+    let pe = header(d)?;
+    let sections = pe + 24 + usize::from(u16_at(d, pe + 20)?);
+    (0..usize::from(u16_at(d, pe + 6)?)).find_map(|i| {
+        let s = sections + 40 * i;
+        let (size, start) = (int(d, s + 8)?.max(int(d, s + 16)?), int(d, s + 12)?);
+        (start..start + size)
+            .contains(&address)
+            .then_some(address - start + int(d, s + 20)?)
+    })
+}
+
+fn parts(d: &[u8]) -> Option<Vec<(String, Vec<u8>)>> {
+    let base = int(d, header(d)? + 24 + 28)?;
+    let part = |&(name, address, length): &(&str, usize, usize)| {
+        let at = place(d, address.checked_sub(base)?)?;
+        Some((name.to_string(), d.get(at..at + length)?.to_vec()))
+    };
+    PARTS.iter().map(part).collect()
+}
+
 /// Pictures and sounds of a Windows program, named `back.png` or `spark.wav`.
 fn resources(d: &[u8]) -> Option<Vec<(String, Vec<u8>)>> {
-    let u16_at = |o: usize| Some(u16::from_le_bytes(d.get(o..o + 2)?.try_into().ok()?));
-    let int = |o: usize| Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?) as usize);
-    let pe = int(0x3c)?;
-    if d.get(pe..pe + 4)? != b"PE\0\0" || u16_at(pe + 24)? != 0x10b {
-        return None;
-    }
-    let sections = pe + 24 + usize::from(u16_at(pe + 20)?);
-    let place = |rva: usize| -> Option<usize> {
-        (0..usize::from(u16_at(pe + 6)?)).find_map(|i| {
-            let s = sections + 40 * i;
-            let (size, start) = (int(s + 8)?.max(int(s + 16)?), int(s + 12)?);
-            (start..start + size)
-                .contains(&rva)
-                .then_some(rva - start + int(s + 20)?)
-        })
-    };
+    let pe = header(d)?;
+    let (u16_at, int) = (|o| u16_at(d, o), |o| int(d, o));
+    let place = |address| place(d, address);
     let root = place(int(pe + 24 + 96 + 16)?)?;
     // Entries of a directory: name if it has one, whether a directory, offset.
     let list = |at: usize| -> Option<Vec<(String, bool, usize)>> {

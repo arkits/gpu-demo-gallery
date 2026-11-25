@@ -19,6 +19,8 @@ pub const FILES: &[&str] = &[
     "front.png",
     "back.png",
 ];
+/// Files that are parts of a program: name, address, length.
+pub const PARTS: &[(&str, usize, usize)] = &[];
 pub const SOUNDS: &[&str] = &[];
 pub const SHADER: &str = include_str!("../shaders/demo.wgsl");
 pub const PROGRAMS: &[&str] = &["plain", "textured", "cubed"];

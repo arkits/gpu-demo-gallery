@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec4};
+use glam::{Mat3, Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
 use crate::Error;
@@ -13,9 +13,9 @@ use crate::image::Image;
 pub const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 pub const SAMPLES: u32 = 4;
-/// Vectors a fragment program gets with each draw.
-pub const PARAMS: usize = 8;
-const SLOT: u64 = 256;
+/// Vectors the programs get with each draw.
+pub const PARAMS: usize = 32;
+const SLOT: u64 = 512;
 
 pub struct Gpu {
     pub device: wgpu::Device,
@@ -134,10 +134,18 @@ pub fn perspective(degrees: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
     ])
 }
 
+/// `gluLookAt`.
+pub fn look_at(eye: Vec3, at: Vec3, up: Vec3) -> Mat4 {
+    let back = (eye - at).normalize();
+    let right = up.cross(back).normalize();
+    let turn = Mat3::from_cols(right, back.cross(right), back).transpose();
+    Mat4::from_mat3(turn) * Mat4::from_translation(-eye)
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct Vertex {
-    /// Clip space.
+    /// Clip space, unless the vertex program says otherwise.
     pub position: [f32; 4],
     pub color: [f32; 4],
     pub uv: [[f32; 4]; 4],
@@ -164,6 +172,8 @@ impl Vertex {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Depth {
     Off,
+    /// Writes whatever is there.
+    Always,
     /// Compares, and writes if asked.
     Less(bool),
     LessEqual(bool),
@@ -173,25 +183,36 @@ pub enum Depth {
 /// How triangles are drawn. Equal states share a pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct State {
+    /// Name of the vertex program.
+    pub vertex: &'static str,
     /// Index into the fragment programs.
     pub program: usize,
     pub blend: Option<(wgpu::BlendFactor, wgpu::BlendFactor)>,
     pub depth: Depth,
     pub cull: Option<wgpu::Face>,
     pub lines: bool,
+    /// Draws a mesh many times over. The vertex program gets another vertex, at locations 6
+    /// to 11, for each.
+    pub instanced: bool,
     pub write: wgpu::ColorWrites,
 }
 
 impl State {
     pub const fn new(program: usize) -> Self {
         Self {
+            vertex: "vs",
             program,
             blend: None,
             depth: Depth::Off,
             cull: None,
             lines: false,
+            instanced: false,
             write: wgpu::ColorWrites::ALL,
         }
+    }
+    pub const fn vertex(mut self, name: &'static str) -> Self {
+        self.vertex = name;
+        self
     }
     pub const fn blend(mut self, src: wgpu::BlendFactor, dst: wgpu::BlendFactor) -> Self {
         self.blend = Some((src, dst));
@@ -212,6 +233,7 @@ impl State {
 }
 
 pub type TextureId = usize;
+pub type MeshId = usize;
 /// Stands in for textures a program does not use.
 pub const WHITE: TextureId = 0;
 const WHITE_CUBE: TextureId = 1;
@@ -282,7 +304,11 @@ struct Call {
     textures: [TextureId; 4],
     cube: TextureId,
     params: u32,
+    /// A mesh that stays, instead of the frame's vertices.
+    mesh: Option<MeshId>,
     vertices: std::ops::Range<u32>,
+    /// Places in the frame's vertices.
+    instances: std::ops::Range<u32>,
 }
 
 struct Texture {
@@ -303,6 +329,7 @@ pub struct Gl {
     texture_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
     textures: Vec<Texture>,
+    meshes: Vec<(wgpu::Buffer, u32)>,
     groups: HashMap<([TextureId; 4], TextureId), wgpu::BindGroup>,
     vertices: Vec<Vertex>,
     params: Vec<u8>,
@@ -336,14 +363,16 @@ impl Gl {
         };
         let uniform_layout = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            entries: &[fragment(
-                0,
-                wgpu::BindingType::Buffer {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: true,
                     min_binding_size: wgpu::BufferSize::new(PARAMS as u64 * 16),
                 },
-            )],
+                count: None,
+            }],
         });
         let mut entries = Vec::new();
         for i in 0..5 {
@@ -378,6 +407,7 @@ impl Gl {
             texture_layout,
             pipelines: HashMap::new(),
             textures: Vec::new(),
+            meshes: Vec::new(),
             groups: HashMap::new(),
             vertices: Vec::new(),
             params: Vec::new(),
@@ -443,6 +473,12 @@ impl Gl {
         write(gpu, &self.textures[id].texture, 0, image);
     }
 
+    pub fn replace_cube(&mut self, gpu: &Gpu, id: TextureId, faces: &[Image; 6]) {
+        for (layer, image) in faces.iter().enumerate() {
+            write(gpu, &self.textures[id].texture, layer as u32, image);
+        }
+    }
+
     /// A picture that can be drawn to and then shown.
     pub fn target(&mut self, gpu: &Gpu, size: (u32, u32), s: Sampling) -> TextureId {
         let texture = gpu.target(size, COLOR, 1);
@@ -477,7 +513,64 @@ impl Gl {
     }
 
     pub fn draw(&mut self, state: State, surface: &Surface, vertices: &[Vertex]) {
-        if vertices.is_empty() {
+        let start = self.vertices.len() as u32;
+        self.vertices.extend_from_slice(vertices);
+        self.call(
+            state,
+            surface,
+            None,
+            start..start + vertices.len() as u32,
+            0..1,
+        );
+    }
+
+    /// Triangles that stay from frame to frame. Places are what the vertex program makes of
+    /// them.
+    pub fn mesh(&mut self, gpu: &Gpu, vertices: &[Vertex]) -> MeshId {
+        self.meshes.push(mesh(gpu, vertices));
+        self.meshes.len() - 1
+    }
+
+    pub fn replace_mesh(&mut self, gpu: &Gpu, id: MeshId, vertices: &[Vertex]) {
+        self.meshes[id] = mesh(gpu, vertices);
+    }
+
+    pub fn draw_mesh(&mut self, state: State, surface: &Surface, mesh: MeshId) {
+        self.call(state, surface, Some(mesh), 0..self.meshes[mesh].1, 0..1);
+    }
+
+    pub fn draw_instances(
+        &mut self,
+        state: State,
+        surface: &Surface,
+        mesh: MeshId,
+        instances: &[Vertex],
+    ) {
+        let start = self.vertices.len() as u32;
+        self.vertices.extend_from_slice(instances);
+        let state = State {
+            instanced: true,
+            ..state
+        };
+        let instances = start..start + instances.len() as u32;
+        self.call(
+            state,
+            surface,
+            Some(mesh),
+            0..self.meshes[mesh].1,
+            instances,
+        );
+    }
+
+    fn call(
+        &mut self,
+        state: State,
+        surface: &Surface,
+        mesh: Option<MeshId>,
+        vertices: std::ops::Range<u32>,
+        instances: std::ops::Range<u32>,
+    ) {
+        if vertices.is_empty() || instances.is_empty() {
             return;
         }
         let params = self.params.len() as u32;
@@ -485,14 +578,14 @@ impl Gl {
             .extend_from_slice(bytemuck::cast_slice(&surface.params));
         self.params
             .resize(self.params.len().next_multiple_of(SLOT as usize), 0);
-        let start = self.vertices.len() as u32;
-        self.vertices.extend_from_slice(vertices);
         let call = Call {
             state,
             textures: surface.textures,
             cube: surface.cube,
             params,
-            vertices: start..start + vertices.len() as u32,
+            mesh,
+            vertices,
+            instances,
         };
         self.passes
             .last_mut()
@@ -512,8 +605,23 @@ impl Gl {
         }
         let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4,
             2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4];
+        let more = wgpu::vertex_attr_array![6 => Float32x4, 7 => Float32x4,
+            8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4];
+        let stride = size_of::<Vertex>() as u64;
+        let layout = |step_mode, attributes| {
+            Some(wgpu::VertexBufferLayout {
+                array_stride: stride,
+                step_mode,
+                attributes,
+            })
+        };
+        let mut buffers = vec![layout(wgpu::VertexStepMode::Vertex, &attributes)];
+        if state.instanced {
+            buffers.push(layout(wgpu::VertexStepMode::Instance, &more));
+        }
         let (compare, write) = match state.depth {
             Depth::Off => (wgpu::CompareFunction::Always, false),
+            Depth::Always => (wgpu::CompareFunction::Always, true),
             Depth::Less(w) => (wgpu::CompareFunction::Less, w),
             Depth::LessEqual(w) => (wgpu::CompareFunction::LessEqual, w),
             Depth::Equal => (wgpu::CompareFunction::Equal, false),
@@ -525,13 +633,9 @@ impl Gl {
             layout: Some(&self.layout),
             vertex: wgpu::VertexState {
                 module: &self.module,
-                entry_point: Some("vs"),
+                entry_point: Some(state.vertex),
                 compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attributes,
-                })],
+                buffers: &buffers,
             },
             primitive: wgpu::PrimitiveState {
                 topology: match state.lines {
@@ -704,15 +808,36 @@ impl Gl {
                 }),
                 ..Default::default()
             });
-            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             for c in &p.calls {
+                let vertices = c.mesh.map_or(vertex_buffer, |m| &self.meshes[m].0);
+                pass.set_vertex_buffer(0, vertices.slice(..));
                 pass.set_pipeline(&self.pipelines[&(c.state, format)]);
                 pass.set_bind_group(0, uniforms, &[c.params]);
                 pass.set_bind_group(1, &self.groups[&(c.textures, c.cube)], &[]);
-                pass.draw(c.vertices.clone(), 0..1);
+                let mut instances = 0..1;
+                if c.state.instanced {
+                    let first = u64::from(c.instances.start) * size_of::<Vertex>() as u64;
+                    pass.set_vertex_buffer(1, vertex_buffer.slice(first..));
+                    instances = 0..c.instances.end - c.instances.start;
+                }
+                pass.draw(c.vertices.clone(), instances);
             }
         }
     }
+}
+
+fn mesh(gpu: &Gpu, vertices: &[Vertex]) -> (wgpu::Buffer, u32) {
+    let buffer = gpu
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mesh"),
+            contents: match vertices {
+                [] => &[0; 16],
+                v => bytemuck::cast_slice(v),
+            },
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+    (buffer, vertices.len() as u32)
 }
 
 fn sampler(gpu: &Gpu, s: Sampling) -> wgpu::Sampler {
