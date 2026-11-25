@@ -696,7 +696,7 @@ impl Demo {
         &self.chapters
     }
 
-    /// The font: 8 columns and 16 rows of characters.
+    /// The original TimesRoman atlas, stored upright.
     pub fn font(&self) -> &[sushi_formats::texture::Level] {
         &self.font
     }
