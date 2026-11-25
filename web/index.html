@@ -3,50 +3,82 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GPU demos, 1998 to 2006</title>
-<meta name="description" content="Twenty-three graphics card demos by 3dfx, NVIDIA and ATI from 1998 to 2006, running in the browser.">
+<meta name="description" content="Graphics card demos by 3dfx, NVIDIA and ATI from 1998 to 2006, running in the browser.">
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;800&family=Martian+Mono:wght@300;500&display=swap">
 <style>
-  :root { color-scheme: dark; --ink: #f1ede2; --dim: #b9b4a6; --black: #0b0a09; }
+  :root { color-scheme: dark; --ink: #f1ede2; --dim: #b9b4a6; --black: #0b0a09; --panel: #171510; --line: #51493b; --signal: #e5c78a; scroll-padding-top: 60px; }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; min-height: 100svh; background: var(--black); color: var(--ink); font: 300 13px/1.6 "Martian Mono", ui-monospace, monospace; display: flex; flex-direction: column; }
   header { display: flex; justify-content: space-between; align-items: end; gap: 12px 40px; flex-wrap: wrap; padding: 22px 28px 18px; }
   h1 { margin: 0; font: 800 clamp(34px, 5vw, 64px)/.9 "Big Shoulders Display", Impact, sans-serif; text-transform: uppercase; }
   header p { margin: 0; max-width: 56ch; color: var(--dim); }
+  .toolbar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 6px 20px; flex-wrap: wrap; padding: 8px 28px; background: var(--panel); border-block: 1px solid var(--line); box-shadow: 0 4px 16px #0007; font-size: 11px; }
+  .filters { display: flex; gap: 8px; }
+  .filter { display: flex; align-items: center; gap: 8px; padding: 0 9px; border: 1px solid var(--line); background: var(--black); }
+  .filter span { color: var(--signal); text-transform: uppercase; letter-spacing: .08em; }
+  .filter select { min-width: 0; min-height: 34px; border: 0; background: transparent; color: var(--ink); font: inherit; cursor: pointer; }
+  .filter:focus-within { border-color: var(--signal); }
+  .results { display: flex; align-items: center; gap: 12px; color: var(--dim); white-space: nowrap; }
+  .clear { background: transparent; border: 0; color: var(--signal); font: inherit; cursor: pointer; min-height: 32px; padding: 0 3px; text-decoration: underline; text-underline-offset: 3px; }
+  .gallery-source { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; min-height: 32px; color: var(--ink); text-decoration: none; white-space: nowrap; }
+  .gallery-source:hover { color: var(--signal); }
+  :where(select, button, a):focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
   main { display: grid; gap: 2px; }
-  .row { display: flex; height: clamp(400px, 62svh, 640px); }
-  a.demo { --c: #fff; container-type: inline-size; position: relative; flex: 1 1 0; min-width: 0; overflow: hidden; color: inherit; text-decoration: none; border-top: 3px solid var(--c); transition: flex-grow .6s cubic-bezier(.2, .8, .2, 1); animation: rise .9s cubic-bezier(.2, .8, .2, 1) both; }
-  a.demo + a.demo { margin-left: 2px; }
-  .demo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: var(--at, 50% 50%); filter: saturate(.85) brightness(.85); transition: filter .5s; }
-  .demo::after { content: ""; position: absolute; inset: 40% 0 0; background: linear-gradient(#0b0a0900, #0b0a09d0 55%, #0b0a09f5); }
-  .text { position: absolute; z-index: 1; left: clamp(12px, 7cqi, 22px); right: 12px; bottom: 22px; }
-  .year { font: 800 clamp(44px, 38cqi, 108px)/.8 "Big Shoulders Display", Impact, sans-serif; color: var(--c); }
-  h2 { margin: 12px 0 4px; font: 500 clamp(19px, 11cqi, 32px)/1 "Big Shoulders Display", Impact, sans-serif; white-space: nowrap; }
-  .by { color: var(--dim); white-space: nowrap; font-size: clamp(11px, 5cqi, 13px); }
+  .empty { margin: 0; padding: 48px 28px; color: var(--dim); grid-column: 1 / -1; }
+  .row { display: flex; gap: 2px; height: clamp(400px, 62svh, 640px); }
+  .card { --c: #fff; container-type: inline-size; isolation: isolate; position: relative; display: flex; align-items: end; flex: 1 1 0; min-width: 0; overflow: hidden; border-top: 3px solid var(--c); transition: flex-grow .6s cubic-bezier(.2, .8, .2, 1); animation: rise .9s cubic-bezier(.2, .8, .2, 1) both; }
+  .card img { position: absolute; z-index: -2; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: var(--at, 50% 50%); filter: saturate(.85) brightness(.85); transition: filter .5s; }
+  .card::before { content: ""; position: absolute; z-index: -1; inset: 40% 0 0; background: linear-gradient(#0b0a0900, #0b0a09d0 55%, #0b0a09f5); }
+  .text { width: 100%; min-width: 0; padding: 0 12px 22px clamp(12px, 7cqi, 22px); }
+  h2 { margin: 0 0 8px; font: 800 clamp(23px, 17cqi, 88px)/.94 "Big Shoulders Display", Impact, sans-serif; color: var(--c); text-wrap: balance; overflow-wrap: anywhere; }
+  .by { color: var(--dim); font-size: clamp(11px, 5cqi, 13px); }
+  .year { color: var(--ink); font-weight: 500; }
   .more { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows .6s cubic-bezier(.2, .8, .2, 1), opacity .4s; }
   .more > div { overflow: hidden; }
   .more p { margin: 14px 0 0; width: min(46ch, 70vw); }
-  .go { display: inline-block; margin-top: 16px; padding: 9px 16px; background: var(--c); color: #0b0a09; font-weight: 500; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .actions a { display: inline-flex; align-items: center; gap: 5px; min-height: 40px; padding: 0 12px; font-weight: 500; text-decoration: none; }
+  .demo { background: var(--c); color: var(--black); }
+  .demo::after { content: ""; position: absolute; inset: 0; }
+  .demo:focus-visible::after { outline: 3px solid var(--c); outline-offset: -3px; }
+  .source { position: relative; z-index: 1; border: 1px solid #f1ede261; background: #0b0a09e8; color: var(--ink); }
+  .source:hover, .source:focus-visible { border-color: var(--c); color: var(--c); }
+  .actions a:focus-visible { outline-offset: -3px; }
+  .demo:focus-visible { outline-color: var(--black); }
   @media (min-width: 821px) {
-    .row:hover a, .row:focus-within a { flex-grow: .75; }
-    .row a.demo:hover, .row a.demo:focus-visible { flex-grow: 3; }
-    /* Only one opens: the one under the pointer. */
-    .row:hover a.demo:focus-visible:not(:hover) { flex-grow: .75; }
-    .demo:hover img, .demo:focus-visible img { filter: none; }
-    .demo:hover .more, .demo:focus-visible .more { grid-template-rows: 1fr; opacity: 1; }
-    .row:hover .demo:focus-visible:not(:hover) .more { grid-template-rows: 0fr; opacity: 0; }
+    .row:hover .card, .row:focus-within .card { flex-grow: .75; }
+    .row .card:hover, .row .card:focus-within { flex-grow: 3; }
+    .card:hover img, .card:focus-within img { filter: none; }
+    .card:hover .more, .card:focus-within .more { grid-template-rows: 1fr; opacity: 1; }
+    main[data-filtered] { grid-template-columns: repeat(auto-fit, minmax(max(230px, calc((100% - 6px) / 4)), 1fr)); }
+    main[data-filtered] .card { height: clamp(340px, 53svh, 540px); }
+    main[data-filtered] .more p { width: auto; }
   }
-  .demo:focus-visible { outline: 3px solid var(--c); outline-offset: -3px; }
+  main[data-filtered] .row { display: contents; }
+  main[data-filtered] .card { animation: none; }
+  @media (max-width: 960px) { :root { scroll-padding-top: 110px; } }
   @media (max-width: 820px) {
     header { padding: 20px 16px 16px; }
-    .row { flex-direction: column; gap: 2px; height: auto; }
-    a.demo { flex: none; height: 72svh; min-height: 400px; }
-    a.demo + a.demo { margin-left: 0; }
-    .demo img { filter: none; }
-    .text { left: 16px; right: 16px; bottom: 18px; }
+    .toolbar { padding-inline: 16px; }
+    .row { flex-direction: column; height: auto; }
+    .card { flex: none; height: 72svh; min-height: 400px; }
+    .card img { filter: none; }
+    .text { padding: 0 16px 18px; }
     .more { grid-template-rows: 1fr; opacity: 1; }
     .more p { width: auto; }
+    .actions a { min-height: 44px; }
+  }
+  @media (max-width: 540px) {
+    :root { scroll-padding-top: 120px; }
+    .toolbar { column-gap: 8px; }
+    .filters { flex: 1 0 100%; min-width: 0; }
+    .filter { flex: 1; min-width: 0; flex-direction: column; align-items: stretch; gap: 0; padding-top: 5px; }
+    .filter select { min-height: 35px; }
+    .results { gap: 7px; }
+    main[data-filtered] .card { height: 56svh; min-height: 330px; }
   }
   footer { padding: 16px 28px 20px; color: var(--dim); }
   @keyframes rise { from { opacity: 0; transform: translateY(40px); } }
@@ -58,150 +90,469 @@
   <h1>GPU demos</h1>
   <p>What graphics cards shipped to show off with, rebuilt from the original files and running in this browser.</p>
 </header>
+<section class="toolbar" aria-label="Gallery controls">
+  <div class="filters" hidden>
+    <label class="filter"><span>Vendor</span><select id="vendor"><option value="">All</option></select></label>
+    <label class="filter"><span>Year</span><select id="year"><option value="">All</option></select></label>
+    <label class="filter"><span>Sort</span><select id="sort" aria-label="Sort by release year"><option value="oldest">Oldest</option><option value="newest">Newest</option></select></label>
+  </div>
+  <div class="results" hidden>
+    <output id="count" for="vendor year" aria-live="polite"></output>
+    <button class="clear" type="button" aria-label="Clear filters" hidden>Clear</button>
+  </div>
+  <a class="gallery-source" href="https://github.com/arkits/gpu-demo-gallery">Gallery GitHub <span aria-hidden="true">↗</span></a>
+</section>
 <main>
 <div class="row">
-  <a class="demo" style="--c:#6fd08c;--at:52% 50%" href="https://borg-port.pages.dev/">
+  <article class="card" style="--c:#6fd08c;--at:52% 50%">
     <img src="img/borg.jpg" alt="">
-    <div class="text"><div class="year">1998</div><h2>Borg</h2><div class="by">3dfx, Voodoo2</div>
-      <div class="more"><div><p>A cube with nine textures in five passes, as the first card with two texture units drew it.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#e39a5b;--at:50% 50%;animation-delay:0.08s" href="https://donut-port.pages.dev/">
+    <div class="text">
+      <h2>Borg</h2>
+      <div class="by"><span class="year">1998</span> · <span class="vendor">3dfx</span>, Voodoo2</div>
+      <div class="more"><div>
+        <p>A cube with nine textures in five passes, as the first card with two texture units drew it.</p>
+        <div class="actions">
+          <a class="demo" href="https://borg-port.pages.dev/" aria-label="Play Borg">Play</a>
+          <a class="source" href="https://github.com/arkits/borg" aria-label="Borg on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#e39a5b;--at:50% 50%;animation-delay:0.08s">
     <img src="img/donut.jpg" alt="">
-    <div class="text"><div class="year">1998</div><h2>Donut</h2><div class="by">3dfx, Voodoo2</div>
-      <div class="more"><div><p>A torus with embossed bumps and a reflection, in two passes.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#7fb4ee;--at:47% 50%;animation-delay:0.16s" href="https://bubble-port.pages.dev/">
+    <div class="text">
+      <h2>Donut</h2>
+      <div class="by"><span class="year">1998</span> · <span class="vendor">3dfx</span>, Voodoo2</div>
+      <div class="more"><div>
+        <p>A torus with embossed bumps and a reflection, in two passes.</p>
+        <div class="actions">
+          <a class="demo" href="https://donut-port.pages.dev/" aria-label="Play Donut">Play</a>
+          <a class="source" href="https://github.com/arkits/donut" aria-label="Donut on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#7fb4ee;--at:47% 50%;animation-delay:0.16s">
     <img src="img/bubble.jpg" alt="">
-    <div class="text"><div class="year">1999</div><h2>Bubble</h2><div class="by">NVIDIA, GeForce 256</div>
-      <div class="more"><div><p>A bubble of springs that mirrors its surroundings. Poke it.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#9a8cf5;--at:52% 50%;animation-delay:0.24s" href="https://lightning-port.pages.dev/">
+    <div class="text">
+      <h2>Bubble</h2>
+      <div class="by"><span class="year">1999</span> · <span class="vendor">NVIDIA</span>, GeForce 256</div>
+      <div class="more"><div>
+        <p>A bubble of springs that mirrors its surroundings. Poke it.</p>
+        <div class="actions">
+          <a class="demo" href="https://bubble-port.pages.dev/" aria-label="Play Bubble">Play</a>
+          <a class="source" href="https://github.com/arkits/bubble" aria-label="Bubble on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#9a8cf5;--at:52% 50%;animation-delay:0.24s">
     <img src="img/lightning.jpg" alt="">
-    <div class="text"><div class="year">2000</div><h2>Lightning</h2><div class="by">NVIDIA, GeForce 256</div>
-      <div class="more"><div><p>Hold the steel plate to strike it: the bolt lights bumps, heats the metal and throws sparks.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#d9b74f;--at:50% 50%;animation-delay:0.32s" href="https://grove-port.pages.dev/">
+    <div class="text">
+      <h2>Lightning</h2>
+      <div class="by"><span class="year">2000</span> · <span class="vendor">NVIDIA</span>, GeForce 256</div>
+      <div class="more"><div>
+        <p>Hold the steel plate to strike it: the bolt lights bumps, heats the metal and throws sparks.</p>
+        <div class="actions">
+          <a class="demo" href="https://lightning-port.pages.dev/" aria-label="Play Lightning">Play</a>
+          <a class="source" href="https://github.com/arkits/lightning" aria-label="Lightning on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#d9b74f;--at:50% 50%;animation-delay:0.32s">
     <img src="img/grove.jpg" alt="">
-    <div class="text"><div class="year">2000</div><h2>Grove</h2><div class="by">NVIDIA, GeForce 256</div>
-      <div class="more"><div><p>Trees grown from a few numbers, lit by fireflies.</p><span class="go">Play</span></div></div></div>
-  </a>
+    <div class="text">
+      <h2>Grove</h2>
+      <div class="by"><span class="year">2000</span> · <span class="vendor">NVIDIA</span>, GeForce 256</div>
+      <div class="more"><div>
+        <p>Trees grown from a few numbers, lit by fireflies.</p>
+        <div class="actions">
+          <a class="demo" href="https://grove-port.pages.dev/" aria-label="Play Grove">Play</a>
+          <a class="source" href="https://github.com/arkits/grove" aria-label="Grove on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
 </div>
 <div class="row">
-  <a class="demo" style="--c:#8fe04a;--at:38% 40%" href="https://principles-of-shading-port.pages.dev/">
+  <article class="card" style="--c:#8fe04a;--at:38% 40%">
     <img src="img/principles-of-shading.jpg" alt="">
-    <div class="text"><div class="year">2000</div><h2>Principles of Shading</h2><div class="by">NVIDIA, GeForce2</div>
-      <div class="more"><div><p>A logo taken apart and shaded again in six steps, from points to bump maps and reflections.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#4fd6a4;--at:49% 30%;animation-delay:0.08s" href="https://creature-port.pages.dev/">
+    <div class="text">
+      <h2>Principles of Shading</h2>
+      <div class="by"><span class="year">2000</span> · <span class="vendor">NVIDIA</span>, GeForce2</div>
+      <div class="more"><div>
+        <p>A logo taken apart and shaded again in six steps, from points to bump maps and reflections.</p>
+        <div class="actions">
+          <a class="demo" href="https://principles-of-shading-port.pages.dev/" aria-label="Play Principles of Shading">Play</a>
+          <a class="source" href="https://github.com/arkits/principles-of-shading" aria-label="Principles of Shading on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#4fd6a4;--at:49% 30%;animation-delay:0.08s">
     <img src="img/creature.jpg" alt="">
-    <div class="text"><div class="year">2000</div><h2>Creature</h2><div class="by">NVIDIA, GeForce2</div>
-      <div class="more"><div><p>A sea monster under caustic light, 500 fish that avoid it, and a laser.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#a8c957;--at:18% 50%;animation-delay:0.16s" href="https://grass-port.pages.dev/">
+    <div class="text">
+      <h2>Creature</h2>
+      <div class="by"><span class="year">2000</span> · <span class="vendor">NVIDIA</span>, GeForce2</div>
+      <div class="more"><div>
+        <p>A sea monster under caustic light, 500 fish that avoid it, and a laser.</p>
+        <div class="actions">
+          <a class="demo" href="https://creature-port.pages.dev/" aria-label="Play Creature">Play</a>
+          <a class="source" href="https://github.com/arkits/creature" aria-label="Creature on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#a8c957;--at:18% 50%;animation-delay:0.16s">
     <img src="img/grass.jpg" alt="">
-    <div class="text"><div class="year">2000</div><h2>Grass</h2><div class="by">NVIDIA, GeForce 256</div>
-      <div class="more"><div><p>A meadow without an end: ten thousand blades bend in the wind and shine like hair.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#7cc4b0;--at:42% 0%;animation-delay:0.24s" href="https://pond-port.pages.dev/">
+    <div class="text">
+      <h2>Grass</h2>
+      <div class="by"><span class="year">2000</span> · <span class="vendor">NVIDIA</span>, GeForce 256</div>
+      <div class="more"><div>
+        <p>A meadow without an end: ten thousand blades bend in the wind and shine like hair.</p>
+        <div class="actions">
+          <a class="demo" href="https://grass-port.pages.dev/" aria-label="Play Grass">Play</a>
+          <a class="source" href="https://github.com/arkits/grass" aria-label="Grass on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#7cc4b0;--at:42% 0%;animation-delay:0.24s">
     <img src="img/pond.jpg" alt="">
-    <div class="text"><div class="year">2000</div><h2>Small Pond</h2><div class="by">NVIDIA, GeForce2</div>
-      <div class="more"><div><p>Ripples in a wooden pool mirror photographs of a whole day around it. Click the water.</p><span class="go">Play</span></div></div></div>
-  </a>
+    <div class="text">
+      <h2>Small Pond</h2>
+      <div class="by"><span class="year">2000</span> · <span class="vendor">NVIDIA</span>, GeForce2</div>
+      <div class="more"><div>
+        <p>Ripples in a wooden pool mirror photographs of a whole day around it. Click the water.</p>
+        <div class="actions">
+          <a class="demo" href="https://pond-port.pages.dev/" aria-label="Play Small Pond">Play</a>
+          <a class="source" href="https://github.com/arkits/pond" aria-label="Small Pond on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
 </div>
 <div class="row">
-  <a class="demo" style="--c:#dca46f;--at:50% 59%" href="https://toy-soldier-port.pages.dev/">
+  <article class="card" style="--c:#dca46f;--at:50% 59%">
     <img src="img/toy-soldier.jpg" alt="">
-    <div class="text"><div class="year">2000</div><h2>Toy Soldier</h2><div class="by">NVIDIA, GeForce2</div>
-      <div class="more"><div><p>A tabletop regiment marches in formation until a wind-up robot scatters the soldiers.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#e5c78a;--at:51% 41%;animation-delay:0.08s" href="https://crystal-ball-port.pages.dev/">
+    <div class="text">
+      <h2>Toy Soldier</h2>
+      <div class="by"><span class="year">2000</span> · <span class="vendor">NVIDIA</span>, GeForce2</div>
+      <div class="more"><div>
+        <p>A tabletop regiment marches in formation until a wind-up robot scatters the soldiers.</p>
+        <div class="actions">
+          <a class="demo" href="https://toy-soldier-port.pages.dev/" aria-label="Play Toy Soldier">Play</a>
+          <a class="source" href="https://github.com/arkits/toy-soldier" aria-label="Toy Soldier on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#e5c78a;--at:51% 41%;animation-delay:0.08s">
     <img src="img/crystal-ball.jpg" alt="">
-    <div class="text"><div class="year">2000</div><h2>Crystal Ball</h2><div class="by">NVIDIA, GeForce 256</div>
-      <div class="more"><div><p>A refracting globe with two castles to explore.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#8dac4f;--at:50% 47%" href="https://chameleon-port.pages.dev/">
+    <div class="text">
+      <h2>Crystal Ball</h2>
+      <div class="by"><span class="year">2000</span> · <span class="vendor">NVIDIA</span>, GeForce 256</div>
+      <div class="more"><div>
+        <p>A refracting globe with two castles to explore.</p>
+        <div class="actions">
+          <a class="demo" href="https://crystal-ball-port.pages.dev/" aria-label="Play Crystal Ball">Play</a>
+          <a class="source" href="https://github.com/arkits/crystal-ball" aria-label="Crystal Ball on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#8dac4f;--at:50% 47%">
     <img src="img/chameleon.jpg" alt="">
-    <div class="text"><div class="year">2001</div><h2>Chameleon</h2><div class="by">NVIDIA, GeForce3</div>
-      <div class="more"><div><p>An animated chameleon climbs through vines and changes its skin.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#c39072;--at:51% 30%" href="https://zoltar-port.pages.dev/">
+    <div class="text">
+      <h2>Chameleon</h2>
+      <div class="by"><span class="year">2001</span> · <span class="vendor">NVIDIA</span>, GeForce3</div>
+      <div class="more"><div>
+        <p>An animated chameleon climbs through vines and changes its skin.</p>
+        <div class="actions">
+          <a class="demo" href="https://chameleon-port.pages.dev/" aria-label="Play Chameleon">Play</a>
+          <a class="source" href="https://github.com/arkits/chameleon" aria-label="Chameleon on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#c39072;--at:51% 30%">
     <img src="img/zoltar.jpg" alt="">
-    <div class="text"><div class="year">2001</div><h2>Zoltar</h2><div class="by">NVIDIA, GeForce3</div>
-      <div class="more"><div><p>A fortune teller speaks using the original animated face and voice recordings.</p><span class="go">Play</span></div></div></div>
-  </a>
+    <div class="text">
+      <h2>Zoltar</h2>
+      <div class="by"><span class="year">2001</span> · <span class="vendor">NVIDIA</span>, GeForce3</div>
+      <div class="more"><div>
+        <p>A fortune teller speaks using the original animated face and voice recordings.</p>
+        <div class="actions">
+          <a class="demo" href="https://zoltar-port.pages.dev/" aria-label="Play Zoltar">Play</a>
+          <a class="source" href="https://github.com/arkits/zoltar" aria-label="Zoltar on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
 </div>
 <div class="row">
-  <a class="demo" style="--c:#e9825b;--at:51% 66%" href="https://bugs-port.pages.dev/">
+  <article class="card" style="--c:#e9825b;--at:51% 66%">
     <img src="img/bugs.jpg" alt="">
-    <div class="text"><div class="year">2002</div><h2>Bugs</h2><div class="by">NVIDIA, GeForce4 Ti</div>
-      <div class="more"><div><p>Sixty alien insects swarm across a junkyard. Toggle Depth Vision to see overdraw.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#c7ab92;--at:51% 44%" href="https://wolfman-port.pages.dev/">
+    <div class="text">
+      <h2>Bugs</h2>
+      <div class="by"><span class="year">2002</span> · <span class="vendor">NVIDIA</span>, GeForce4 Ti</div>
+      <div class="more"><div>
+        <p>Sixty alien insects swarm across a junkyard. Toggle Depth Vision to see overdraw.</p>
+        <div class="actions">
+          <a class="demo" href="https://bugs-port.pages.dev/" aria-label="Play Bugs">Play</a>
+          <a class="source" href="https://github.com/arkits/bugs" aria-label="Bugs on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#c7ab92;--at:51% 44%">
     <img src="img/wolfman.jpg" alt="">
-    <div class="text"><div class="year">2002</div><h2>Wolfman</h2><div class="by">NVIDIA, GeForce4 Ti</div>
-      <div class="more"><div><p>A werewolf with eight layers of fur. Switch animation and change the number of layers.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#75c4bb;--at:52% 51%" href="https://squid-port.pages.dev/">
+    <div class="text">
+      <h2>Wolfman</h2>
+      <div class="by"><span class="year">2002</span> · <span class="vendor">NVIDIA</span>, GeForce4 Ti</div>
+      <div class="more"><div>
+        <p>A werewolf with eight layers of fur. Switch animation and change the number of layers.</p>
+        <div class="actions">
+          <a class="demo" href="https://wolfman-port.pages.dev/" aria-label="Play Wolfman">Play</a>
+          <a class="source" href="https://github.com/arkits/wolfman" aria-label="Wolfman on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#75c4bb;--at:52% 51%">
     <img src="img/squid.jpg" alt="">
-    <div class="text"><div class="year">2002</div><h2>Squid</h2><div class="by">NVIDIA, GeForce4 Ti</div>
-      <div class="more"><div><p>Pilot a mechanical squid among kelp, fish, bubbles and silt.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#a3c984;--at:50% 58%" href="https://tidepool-port.pages.dev/">
+    <div class="text">
+      <h2>Squid</h2>
+      <div class="by"><span class="year">2002</span> · <span class="vendor">NVIDIA</span>, GeForce4 Ti</div>
+      <div class="more"><div>
+        <p>Pilot a mechanical squid among kelp, fish, bubbles and silt.</p>
+        <div class="actions">
+          <a class="demo" href="https://squid-port.pages.dev/" aria-label="Play Squid">Play</a>
+          <a class="source" href="https://github.com/arkits/squid" aria-label="Squid on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#a3c984;--at:50% 58%">
     <img src="img/tidepool.jpg" alt="">
-    <div class="text"><div class="year">2002</div><h2>Tidepool</h2><div class="by">NVIDIA, GeForce4 Ti</div>
-      <div class="more"><div><p>Light and reflections ripple across a rocky pool.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#ff7a2e;--at:20% 30%;animation-delay:0.32s" href="https://car-paint-port.pages.dev/">
+    <div class="text">
+      <h2>Tidepool</h2>
+      <div class="by"><span class="year">2002</span> · <span class="vendor">NVIDIA</span>, GeForce4 Ti</div>
+      <div class="more"><div>
+        <p>Light and reflections ripple across a rocky pool.</p>
+        <div class="actions">
+          <a class="demo" href="https://tidepool-port.pages.dev/" aria-label="Play Tidepool">Play</a>
+          <a class="source" href="https://github.com/arkits/tidepool" aria-label="Tidepool on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#ff7a2e;--at:20% 30%;animation-delay:0.32s">
     <img src="img/car-paint.jpg" alt="">
-    <div class="text"><div class="year">2002</div><h2>Car Paint</h2><div class="by">ATI, Radeon 9700</div>
-      <div class="more"><div><p>Two-tone paint with metal flakes and clear coat, and how it is built up layer by layer.</p><span class="go">Play</span></div></div></div>
-  </a>
+    <div class="text">
+      <h2>Car Paint</h2>
+      <div class="by"><span class="year">2002</span> · <span class="vendor">ATI</span>, Radeon 9700</div>
+      <div class="more"><div>
+        <p>Two-tone paint with metal flakes and clear coat, and how it is built up layer by layer.</p>
+        <div class="actions">
+          <a class="demo" href="https://car-paint-port.pages.dev/" aria-label="Play Car Paint">Play</a>
+          <a class="source" href="https://github.com/arkits/car-paint" aria-label="Car Paint on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
 </div>
 <div class="row">
-  <a class="demo" style="--c:#8fa4e8;--at:52% 40%" href="https://npr-hatching-port.pages.dev/">
+  <article class="card" style="--c:#8fa4e8;--at:52% 40%">
     <img src="img/npr-hatching.jpg" alt="">
-    <div class="text"><div class="year">2002</div><h2>NPR Hatching</h2><div class="by">ATI, Radeon 9700</div>
-      <div class="more"><div><p>A still life in pencil: hatching by tone, ink outlines, shadows in strokes.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#f0c27a;--at:62% 40%;animation-delay:0.08s" href="https://natural-light-port.pages.dev/">
+    <div class="text">
+      <h2>NPR Hatching</h2>
+      <div class="by"><span class="year">2002</span> · <span class="vendor">ATI</span>, Radeon 9700</div>
+      <div class="more"><div>
+        <p>A still life in pencil: hatching by tone, ink outlines, shadows in strokes.</p>
+        <div class="actions">
+          <a class="demo" href="https://npr-hatching-port.pages.dev/" aria-label="Play NPR Hatching">Play</a>
+          <a class="source" href="https://github.com/arkits/npr-hatching" aria-label="NPR Hatching on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#f0c27a;--at:62% 40%;animation-delay:0.08s">
     <img src="img/natural-light.jpg" alt="">
-    <div class="text"><div class="year">2002</div><h2>Natural Light</h2><div class="by">ATI, Radeon 9700</div>
-      <div class="more"><div><p>Paul Debevec’s balls of glass and gold, lit by a forest in high dynamic range.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#d98f52;--at:40% 40%;animation-delay:0.16s" href="https://bear-port.pages.dev/">
+    <div class="text">
+      <h2>Natural Light</h2>
+      <div class="by"><span class="year">2002</span> · <span class="vendor">ATI</span>, Radeon 9700</div>
+      <div class="more"><div>
+        <p>Paul Debevec’s balls of glass and gold, lit by a forest in high dynamic range.</p>
+        <div class="actions">
+          <a class="demo" href="https://natural-light-port.pages.dev/" aria-label="Play Natural Light">Play</a>
+          <a class="source" href="https://github.com/arkits/natural-light" aria-label="Natural Light on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#d98f52;--at:40% 40%;animation-delay:0.16s">
     <img src="img/bear.jpg" alt="">
-    <div class="text"><div class="year">2002</div><h2>Bear</h2><div class="by">ATI, Radeon 9700</div>
-      <div class="more"><div><p>Fur of shells and fins, lit along each hair, and a roar.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#e8c34a;--at:52% 50%;animation-delay:0.24s" href="https://pipedream-port.pages.dev/">
+    <div class="text">
+      <h2>Bear</h2>
+      <div class="by"><span class="year">2002</span> · <span class="vendor">ATI</span>, Radeon 9700</div>
+      <div class="more"><div>
+        <p>Fur of shells and fins, lit along each hair, and a roar.</p>
+        <div class="actions">
+          <a class="demo" href="https://bear-port.pages.dev/" aria-label="Play Bear">Play</a>
+          <a class="source" href="https://github.com/arkits/bear" aria-label="Bear on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#e8c34a;--at:52% 50%;animation-delay:0.24s">
     <img src="img/pipe-dream.jpg" alt="">
-    <div class="text"><div class="year">2003</div><h2>Pipe Dream</h2><div class="by">ATI, Radeon 9700</div>
-      <div class="more"><div><p>Animusic's machine plays itself: every note is a ball that has to land on time.</p><span class="go">Play</span></div></div></div>
-  </a>
+    <div class="text">
+      <h2>Pipe Dream</h2>
+      <div class="by"><span class="year">2003</span> · <span class="vendor">ATI</span>, Radeon 9700</div>
+      <div class="more"><div>
+        <p>Animusic's machine plays itself: every note is a ball that has to land on time.</p>
+        <div class="actions">
+          <a class="demo" href="https://pipedream-port.pages.dev/" aria-label="Play Pipe Dream">Play</a>
+          <a class="source" href="https://github.com/arkits/pipedream" aria-label="Pipe Dream on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
 </div>
 <div class="row">
-  <a class="demo" style="--c:#e38e7c;--at:54% 48%" href="https://double-cross-port.pages.dev/">
+  <article class="card" style="--c:#e38e7c;--at:54% 48%">
     <img src="img/double-cross.jpg" alt="">
-    <div class="text"><div class="year">2004</div><h2>Double Cross</h2><div class="by">ATI, Radeon X800</div>
-      <div class="more"><div><p>Ruby's first mission showcases layered hair, reflections, and cinematic depth of field.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#dfb480;--at:68% 55%;animation-delay:0.08s" href="https://dangerous-curves-port.pages.dev/">
+    <div class="text">
+      <h2>Double Cross</h2>
+      <div class="by"><span class="year">2004</span> · <span class="vendor">ATI</span>, Radeon X800</div>
+      <div class="more"><div>
+        <p>Ruby's first mission showcases layered hair, reflections, and cinematic depth of field.</p>
+        <div class="actions">
+          <a class="demo" href="https://double-cross-port.pages.dev/" aria-label="Play Double Cross">Play</a>
+          <a class="source" href="https://github.com/arkits/double-cross" aria-label="Double Cross on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#dfb480;--at:68% 55%;animation-delay:0.08s">
     <img src="img/dangerous-curves.jpg" alt="">
-    <div class="text"><div class="year">2005</div><h2>Dangerous Curves</h2><div class="by">ATI, Radeon X800</div>
-      <div class="more"><div><p>A motorcycle chase through tunnels with motion blur and global illumination comparison modes.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#9eb9db;--at:62% 44%;animation-delay:0.16s" href="https://the-assassin-port.pages.dev/">
+    <div class="text">
+      <h2>Dangerous Curves</h2>
+      <div class="by"><span class="year">2005</span> · <span class="vendor">ATI</span>, Radeon X800</div>
+      <div class="more"><div>
+        <p>A motorcycle chase through tunnels with motion blur and global illumination comparison modes.</p>
+        <div class="actions">
+          <a class="demo" href="https://dangerous-curves-port.pages.dev/" aria-label="Play Dangerous Curves">Play</a>
+          <a class="source" href="https://github.com/arkits/dangerous-curves" aria-label="Dangerous Curves on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#9eb9db;--at:62% 44%;animation-delay:0.16s">
     <img src="img/the-assassin.jpg" alt="">
-    <div class="text"><div class="year">2005</div><h2>The Assassin</h2><div class="by">ATI, Radeon X1800</div>
-      <div class="more"><div><p>A high-rise confrontation with shadow maps, glowing plasma, and a ten-bit frame buffer.</p><span class="go">Play</span></div></div></div>
-  </a>
-  <a class="demo" style="--c:#c7b1e6;--at:54% 50%;animation-delay:0.32s" href="https://box-of-smoke-port.pages.dev/">
+    <div class="text">
+      <h2>The Assassin</h2>
+      <div class="by"><span class="year">2005</span> · <span class="vendor">ATI</span>, Radeon X1800</div>
+      <div class="more"><div>
+        <p>A high-rise confrontation with shadow maps, glowing plasma, and a ten-bit frame buffer.</p>
+        <div class="actions">
+          <a class="demo" href="https://the-assassin-port.pages.dev/" aria-label="Play The Assassin">Play</a>
+          <a class="source" href="https://github.com/arkits/the-assassin" aria-label="The Assassin on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
+  <article class="card" style="--c:#c7b1e6;--at:54% 50%;animation-delay:0.32s">
     <img src="img/box-of-smoke.jpg" alt="">
-    <div class="text"><div class="year">2006</div><h2>Box of Smoke</h2><div class="by">NVIDIA, GeForce 8</div>
-      <div class="more"><div><p>Smoke and water simulated on the card itself. Stir it with the pointer.</p><span class="go">Play</span></div></div></div>
-  </a>
+    <div class="text">
+      <h2>Box of Smoke</h2>
+      <div class="by"><span class="year">2006</span> · <span class="vendor">NVIDIA</span>, GeForce 8</div>
+      <div class="more"><div>
+        <p>Smoke and water simulated on the card itself. Stir it with the pointer.</p>
+        <div class="actions">
+          <a class="demo" href="https://box-of-smoke-port.pages.dev/" aria-label="Play Box of Smoke">Play</a>
+          <a class="source" href="https://github.com/arkits/box-of-smoke" aria-label="Box of Smoke on GitHub">GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div></div>
+    </div>
+  </article>
 </div>
+  <p class="empty" hidden>No demos match this vendor and year.</p>
 </main>
 <footer>The demos and their art belong to 3dfx, NVIDIA, ATI and Animusic. The ports are unofficial. Best with sound.</footer>
+<script>
+  const toolbar = document.querySelector('.toolbar');
+  const gallery = document.querySelector('main');
+  const vendor = document.querySelector('#vendor');
+  const year = document.querySelector('#year');
+  const sort = document.querySelector('#sort');
+  const count = document.querySelector('#count');
+  const clear = toolbar.querySelector('.clear');
+  const empty = gallery.querySelector('.empty');
+  const rows = Array.from(gallery.querySelectorAll('.row'), element => ({
+    element,
+    size: element.children.length,
+  }));
+  const cards = Array.from(gallery.querySelectorAll('.card'), element => ({
+    element,
+    vendor: element.querySelector('.vendor').textContent,
+    year: element.querySelector('.year').textContent,
+  }));
+
+  for (const select of [vendor, year]) {
+    const options = [...new Set(cards.map(card => card[select.id]))].sort();
+    for (const option of options) select.add(new Option(option));
+  }
+
+  function updateGallery() {
+    const galleryOffset = gallery.getBoundingClientRect().top - toolbar.getBoundingClientRect().bottom;
+    const filtered = Boolean(vendor.value || year.value);
+    let visible = 0;
+
+    for (const card of cards) {
+      const matches = (!vendor.value || card.vendor === vendor.value) &&
+        (!year.value || card.year === year.value);
+      card.element.hidden = !matches;
+      if (matches) visible++;
+    }
+
+    for (const { element } of rows) element.hidden = !element.querySelector('.card:not([hidden])');
+    gallery.toggleAttribute('data-filtered', filtered);
+    empty.hidden = visible !== 0;
+    clear.hidden = !filtered;
+    count.value = filtered ? `${visible} of ${cards.length} demos` : `${cards.length} demos`;
+
+    if (galleryOffset < 0) scrollBy(0, gallery.getBoundingClientRect().top - toolbar.getBoundingClientRect().bottom);
+  }
+
+  function sortGallery() {
+    const direction = sort.value === 'newest' ? -1 : 1;
+    const ordered = [...cards].sort((a, b) => direction * (a.year - b.year));
+    let start = 0;
+
+    for (const { element, size } of rows) {
+      element.append(...ordered.slice(start, start + size).map(card => card.element));
+      start += size;
+    }
+
+    updateGallery();
+  }
+
+  vendor.addEventListener('change', updateGallery);
+  year.addEventListener('change', updateGallery);
+  sort.addEventListener('change', sortGallery);
+  clear.addEventListener('click', () => {
+    vendor.value = '';
+    year.value = '';
+    vendor.focus({ preventScroll: true });
+    updateGallery();
+  });
+
+  sortGallery();
+  toolbar.querySelector('.filters').hidden = false;
+  toolbar.querySelector('.results').hidden = false;
+</script>
 </body>
 </html>
