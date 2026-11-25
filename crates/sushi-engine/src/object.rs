@@ -105,6 +105,17 @@ pub struct Clip {
     visibility: Option<ParamTrack>,
     bounds: Vec<[f32; 10]>,
     bound_times: Times,
+    bounds_end: f32,
+}
+
+/// Time of something that repeats after so many seconds.
+fn wrap(time: f32, end: f32) -> f32 {
+    time.max(0.0).rem_euclid(end.max(1e-3))
+}
+
+/// Tracks have a length of their own: that of the bones is 0 for what stands still.
+fn track_time(p: &ParamTrack, time: f32) -> f32 {
+    wrap(time, f32_at(&p.raw, 0x4c))
 }
 
 impl Clip {
@@ -122,11 +133,12 @@ impl Clip {
             visibility: visibility.into_iter().next(),
             bounds: a.bounds.iter().map(bounds).collect(),
             bound_times: Times::new(&a.bound_gaps),
+            bounds_end: a.max_time,
         }
     }
 
     pub fn wrap(&self, time: f32) -> f32 {
-        time.max(0.0).rem_euclid(self.duration.max(1e-3))
+        wrap(time, self.duration)
     }
 
     /// 0x431d50: the covering key's integer value; invisible when zero.
@@ -134,7 +146,11 @@ impl Clip {
         let Some(v) = self.visibility.as_ref().filter(|v| v.keys.len() > 2) else {
             return true;
         };
-        let (i, _) = locate(v.keys.iter().map(|k| k[0]), v.keys.len(), self.wrap(time));
+        let (i, _) = locate(
+            v.keys.iter().map(|k| k[0]),
+            v.keys.len(),
+            track_time(v, time),
+        );
         v.keys[i][1].to_bits() != 0
     }
 
@@ -155,14 +171,13 @@ impl Clip {
 
     /// Animated shader parameters by name (0x43db70).
     pub fn params(&self, time: f32) -> BTreeMap<String, [f32; 4]> {
-        let t = self.wrap(time);
         let mut out = BTreeMap::new();
         for p in &self.params {
             let n = p.keys.len();
             if n == 0 {
                 continue;
             }
-            let (i, f) = locate(p.keys.iter().map(|k| k[0]), n, t);
+            let (i, f) = locate(p.keys.iter().map(|k| k[0]), n, track_time(p, time));
             let (a, b) = (&p.keys[i], &p.keys[(i + 1).min(n - 1)]);
             // Kind at +0x50: 1 int, 2 float, 3 vector.
             let v = match u32_at(&p.raw, 0x50) {
@@ -178,7 +193,7 @@ impl Clip {
     /// max, center, radius.
     pub fn bounds(&self, time: f32) -> Option<(Vec3, Vec3, Vec3, f32)> {
         let last = self.bounds.len().checked_sub(1)?;
-        let (i, f) = self.bound_times.locate(self.wrap(time));
+        let (i, f) = self.bound_times.locate(wrap(time, self.bounds_end));
         let (a, b) = (&self.bounds[i.min(last)], &self.bounds[(i + 1).min(last)]);
         let v = |o: usize| {
             Vec3::new(a[o], a[o + 1], a[o + 2]).lerp(Vec3::new(b[o], b[o + 1], b[o + 2]), f)
@@ -190,6 +205,31 @@ impl Clip {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tracks_go_on_where_bones_stand_still() {
+        let key = |gap: f32, shown: u32| [gap, f32::from_bits(shown), 0.0, 0.0, 0.0];
+        let mut raw = vec![0; 0x5c];
+        raw[0x4c..0x50].copy_from_slice(&10.0f32.to_le_bytes());
+        let track = ParamTrack {
+            raw,
+            name: "SOLVisibility".into(),
+            keys: vec![key(4.0, 0), key(6.0, 1), key(-1.0, 1)],
+        };
+        let clip = Clip {
+            duration: 0.0,
+            bones: Vec::new(),
+            params: Vec::new(),
+            visibility: Some(track),
+            bounds: Vec::new(),
+            bound_times: Times::new(&[]),
+            bounds_end: 0.0,
+        };
+        assert_eq!(
+            [1.0, 5.0, 11.0].map(|t| clip.visible(t)),
+            [false, true, false]
+        );
+    }
 
     #[test]
     fn locate_walks_gaps_and_clamps() {

@@ -11,7 +11,7 @@ use sushi_formats::shader_header::ShaderHeader;
 use sushi_formats::transfer::{self as blocks, Transfer, Weights};
 use sushi_formats::{anim, mesh, object, particles};
 use sushi_shader::wgsl::{self, ElementType, Uniform};
-use sushi_shader::{Pass, ShaderFile, VarKind};
+use sushi_shader::{Pass, ShaderFile, Var, VarKind};
 
 use crate::camera::{self, Camera, Lens};
 use crate::gpu::{COLOR_FORMAT, DEEP_FORMAT, Gpu, SHADOW_FORMAT, TEN_FORMAT};
@@ -38,6 +38,10 @@ const HIDDEN: u32 = 0x10;
 /// Seconds between a frame and the one before it, for motion blur. The original used its
 /// own frame time; a fixed step keeps the look frame-rate independent.
 const BEFORE: f32 = 1.0 / 60.0;
+/// Bones that a draw can use; `SiSkinning.shl` declares this many.
+const MOST_BONES: usize = 100;
+/// Lights that shaders know by number (0x419130).
+const MOST_LIGHTS: usize = 5;
 /// Script numbers of buffers start here; 0 is the back buffer.
 const FIRST_COLOR: usize = 100;
 const FIRST_DEPTH: usize = 200;
@@ -70,6 +74,21 @@ struct Mesh {
     transfer: Option<(Transfer, Harmonics, usize)>,
 }
 
+impl Mesh {
+    /// Whether the words of a script's `DrawObjects` mean it.
+    fn drawn(&self, flags: u32) -> bool {
+        if flags & STENCIL != 0 {
+            return self.flags & CASTS != 0;
+        }
+        let is = |flag: u32, yes: u32, no: u32| {
+            flags & (yes | no) == 0 || flags & if self.flags & flag != 0 { yes } else { no } != 0
+        };
+        is(TRANSPARENT, TRANS, OPAQUE)
+            && is(RECEIVES, RECEIVE, NOT_RECEIVE)
+            && self.flags & HIDDEN == 0
+    }
+}
+
 /// Shapes that are added by weights.
 struct Weighted {
     weights: Weights,
@@ -93,6 +112,15 @@ impl Weighted {
         all.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
         all.truncate(w.most);
         all
+    }
+}
+
+/// Which shape fills the f-th place: first the mesh itself, then what the chosen shapes
+/// add to it, which are stored after it.
+fn weighted_shape(f: usize, chosen: &[(usize, f32)]) -> usize {
+    match f.checked_sub(1) {
+        None => 0,
+        Some(k) => chosen.get(k).map_or(0, |c| c.0 + 1),
     }
 }
 
@@ -279,6 +307,8 @@ struct Context<'a> {
     /// Seconds of the object's own time.
     time: f32,
     lights: &'a [&'a Light],
+    /// How many of them, from the first, reach the object.
+    reached: usize,
     bones: &'a [BonePlace],
     /// A frame earlier.
     bones_before: &'a [BonePlace],
@@ -305,6 +335,7 @@ impl<'a> Context<'a> {
             frame,
             time,
             lights: &[],
+            reached: 0,
             bones: &[],
             bones_before: &[],
             slots: &[],
@@ -328,6 +359,8 @@ struct Moment {
     view_before: Mat4,
     camera_view_before: Mat4,
     focus: [f32; 4],
+    /// The lens blurs what is out of focus.
+    focused: bool,
     script: BTreeMap<String, Vec<[f32; 4]>>,
     /// Texture matrices of `LightAgentViewProjMatrix` and the like, by object.
     toward: Vec<(Vec3, f32)>,
@@ -706,6 +739,10 @@ impl Demo {
     }
 
     /// Draws in the last frame.
+    /// A buffer of the script, for looking at it.
+    pub fn script_buffer(&self, name: &str) -> Option<&wgpu::Texture> {
+        Some(&self.targets[*self.buffer_ids.get(name)?].color.resolved)
+    }
     pub fn draw_calls(&self) -> usize {
         self.draw_calls
     }
@@ -784,6 +821,12 @@ impl Demo {
             .iter()
             .find_map(|p| self.text(p))
         };
+        // The blur divides by the sum of its weights, which is zero where everything is
+        // exactly in focus. A weight of one step of the buffer's alpha is the least there is.
+        let src = src.replace(
+            "float sLerpTapBlur = abs(cTapHigh.a * 2.0 - 1.0);",
+            "float sLerpTapBlur = max(abs(cTapHigh.a * 2.0 - 1.0), 1.0 / 255.0);",
+        );
         let file = sushi_shader::parse(&src, &include).map_err(|e| format!("{name}: {e}"))?;
         self.shaders.push(file);
         self.shader_names.push(key.clone());
@@ -1079,7 +1122,12 @@ impl Demo {
     fn model(&mut self, gpu: &Gpu, o: &object::Object, a: &anim::Animation) -> Result<usize> {
         let textures = o.textures.iter().map(|t| self.textures.find(t)).collect();
         let mut meshes = Vec::new();
-        for (number, m) in o.meshes.iter().chain(&a.morph_meshes).enumerate() {
+        // Meshes of an animation take the place of the object's own (0x4536f0).
+        let source = match a.morph_meshes.is_empty() {
+            true => &o.meshes,
+            false => &a.morph_meshes,
+        };
+        for (number, m) in source.iter().enumerate() {
             let shader = self.shader(&m.shader)?;
             let frame = m.frames.first().ok_or("mesh without vertices")?;
             // Which stream of the header each vertex buffer belongs to.
@@ -1831,6 +1879,8 @@ struct Drawing {
     text_size: f32,
     text_color: [f32; 4],
     camera_overrides: bool,
+    /// Bones of animations at a moment, and a frame earlier.
+    poses: HashMap<(*const Clip, u32), Rc<(Vec<BonePlace>, Vec<BonePlace>)>>,
 }
 fn upright(t: &sushi_formats::texture::Texture) -> Result<Vec<sushi_formats::texture::Level>> {
     let mut mips = t.decode()?.swap_remove(0);
@@ -1856,7 +1906,10 @@ fn fill(out: &mut [[f32; 4]], uniforms: &[Uniform], file: &ShaderFile, ctx: &Con
         // while the HLSL still addresses them as elements of one array.
         if count > 1 && direct.is_none() {
             let first = usize::from(!file.vars.contains_key(&format!("{}0", u.name)));
-            if file.vars.contains_key(&format!("{}{first}", u.name)) {
+            if let Some(var) = file.vars.get(&format!("{}{first}", u.name)) {
+                if fill_array(dst, stride, var, ctx) {
+                    continue;
+                }
                 for (i, chunk) in dst.chunks_exact_mut(stride).enumerate() {
                     let name = format!("{}{}", u.name, first + i);
                     fill_value(chunk, &name, file, ctx, &[]);
@@ -1866,6 +1919,47 @@ fn fill(out: &mut [[f32; 4]], uniforms: &[Uniform], file: &ShaderFile, ctx: &Con
         }
         fill_value(dst, &u.name, file, ctx, &u.default);
     }
+}
+
+/// Fills the large arrays, of bones and of transferred light, numbered from the first one's
+/// number, without going through every element's name.
+fn fill_array(out: &mut [[f32; 4]], stride: usize, first: &Var, ctx: &Context) -> bool {
+    let source = first.source.as_deref();
+    if let Some([kind, _, number, rest @ ..]) = source
+        && kind.eq_ignore_ascii_case("PrtCPCABuffer")
+        && let (Ok(number), Some((_, light)), 1) = (number.parse::<usize>(), ctx.around, stride)
+    {
+        let scale = scale_of(rest);
+        for (i, to) in out.iter_mut().enumerate() {
+            *to = light
+                .get(number + i)
+                .map_or([0.0; 4], |v| v.map(|v| v * scale));
+        }
+        return true;
+    }
+    let Some([kind, number]) = source else {
+        return false;
+    };
+    let row = match kind.trim_matches('"').to_ascii_lowercase().as_str() {
+        "worldmat" if stride == 4 => None,
+        "worldmatrow1" if stride == 1 => Some(0),
+        "worldmatrow2" if stride == 1 => Some(1),
+        "worldmatrow3" if stride == 1 => Some(2),
+        _ => return false,
+    };
+    let Ok(number) = number.parse::<usize>() else {
+        return false;
+    };
+    for (i, to) in out.chunks_exact_mut(stride).enumerate() {
+        let place = ctx.slots.get(number + i).and_then(|b| ctx.bones.get(*b));
+        let m = place.map_or(Mat4::IDENTITY, |p| p.matrix).transpose();
+        let rows = m.to_cols_array_2d();
+        match row {
+            Some(r) => to[0] = rows[r],
+            None => to.copy_from_slice(&rows),
+        }
+    }
+    true
 }
 
 fn fill_value(out: &mut [[f32; 4]], name: &str, file: &ShaderFile, ctx: &Context, default: &[f32]) {
@@ -1879,18 +1973,7 @@ fn fill_value(out: &mut [[f32; 4]], name: &str, file: &ShaderFile, ctx: &Context
         .copied();
     let values = local
         .map(|v| vec![v])
-        .or_else(|| {
-            edited.filter(|v| !v.values.is_empty()).map(|v| {
-                let i = v
-                    .times
-                    .partition_point(|t| *t <= ctx.time)
-                    .saturating_sub(1);
-                let n = if v.kind == 3 || v.kind == 7 { 4 } else { 1 };
-                vec![std::array::from_fn(|j| {
-                    v.values.get(i * n + j % n).copied().unwrap_or(0.0)
-                })]
-            })
-        })
+        .or_else(|| edited.and_then(|v| v.at(ctx.time)).map(|v| vec![v]))
         .or_else(|| {
             source.and_then(|s| {
                 if s.first()?.eq_ignore_ascii_case("ScriptVariable") {
@@ -1919,6 +2002,20 @@ fn fill_value(out: &mut [[f32; 4]], name: &str, file: &ShaderFile, ctx: &Context
     }
 }
 
+/// `Time` and `ObjectTime` (0x435600).
+fn clock(time: f32) -> [f32; 4] {
+    let y = time % 120.0;
+    [time.fract(), y, (y * std::f32::consts::PI).sin(), time]
+}
+
+/// The number after `Scale`.
+fn scale_of(args: &[String]) -> f32 {
+    args.windows(2)
+        .find(|s| s[0].eq_ignore_ascii_case("Scale"))
+        .and_then(|s| s[1].parse().ok())
+        .unwrap_or(1.0)
+}
+
 fn builtin(name: &str, args: &[String], ctx: &Context) -> Option<Vec<[f32; 4]>> {
     let name_lc = name.trim_matches('"').to_ascii_lowercase();
     let idx = |prefix: &str| {
@@ -1944,12 +2041,14 @@ fn builtin(name: &str, args: &[String], ctx: &Context) -> Option<Vec<[f32; 4]>> 
     if let Some(kind) = name_lc.strip_prefix("objectambient") {
         let n = kind.trim_end_matches(|c: char| c.is_ascii_digit());
         let light = args.first().and_then(|a| named(a)).or_else(|| {
+            // Numbers mean the lights that reach the object, in the scene's order.
             let index = kind[n.len()..]
                 .parse::<usize>()
                 .unwrap_or(1)
                 .saturating_sub(1);
-            ctx.lights.get(index).copied()
+            ctx.lights[..ctx.reached].get(index).copied()
         });
+        let light = light.filter(|l| l.object_ambient);
         if n == "viewprojmatrix" {
             return Some(matrix_registers(
                 light.map_or(Mat4::IDENTITY, Light::texture_matrix),
@@ -1993,8 +2092,8 @@ fn builtin(name: &str, args: &[String], ctx: &Context) -> Option<Vec<[f32; 4]>> 
         "cameraaxisx" => vector(eye.view.inverse().x_axis.truncate(), 0.0),
         "cameraaxisy" => vector(eye.view.inverse().y_axis.truncate(), 0.0),
         "cameraaxisz" => vector(eye.view.inverse().z_axis.truncate(), 0.0),
-        "time" | "currenttime" => vec![[ctx.frame.time; 4]],
-        "objecttime" => vec![[ctx.time; 4]],
+        "time" | "currenttime" => vec![clock(ctx.frame.time)],
+        "objecttime" => vec![clock(ctx.time)],
         "dofparams" => vec![ctx.frame.focus],
         "morphlerp0" => vec![[1.0 - ctx.tween, ctx.tween, 0.0, 0.0]],
         "worldmat" => matrix_registers(world(slot)),
@@ -2019,6 +2118,17 @@ fn builtin(name: &str, args: &[String], ctx: &Context) -> Option<Vec<[f32; 4]>> 
                 0.0,
             )
         }
+        "viewportsize" => {
+            let (w, h) = (ctx.frame.window.0 as f32, ctx.frame.window.1 as f32);
+            vec![[w, h, w / h, 0.0]]
+        }
+        // Of a pixel of the window, and of a buffer a quarter as large.
+        "invwindowsize" => {
+            let (w, h) = ctx.frame.window;
+            let of = |n: u32| 1.0 / n.max(1) as f32;
+            vec![[of(w), of(h), of(w >> 2), of(h >> 2)]]
+        }
+        "dofenabled" => vec![[f32::from(u8::from(ctx.frame.focused)); 4]],
         "screenres" | "screensize" => {
             let (w, h) = (ctx.frame.window.0 as f32, ctx.frame.window.1 as f32);
             vec![[w, h, w.recip(), h.recip()]]
@@ -2029,11 +2139,7 @@ fn builtin(name: &str, args: &[String], ctx: &Context) -> Option<Vec<[f32; 4]>> 
         "pstextile" | "particletexturescale" => vec![[ctx.tile[0], ctx.tile[1], 0.0, 0.0]],
         "prtcpcabuffer" => {
             let i = args.get(1)?.parse::<usize>().ok()?;
-            let scale = args
-                .windows(2)
-                .find(|s| s[0].eq_ignore_ascii_case("Scale"))
-                .and_then(|s| s[1].parse::<f32>().ok())
-                .unwrap_or(1.0);
+            let scale = scale_of(args);
             vec![ctx.around?.1.get(i)?.map(|v| v * scale)]
         }
         "irradiancesamplepos" => vector(ctx.around?.0.position, 1.0),
@@ -2130,6 +2236,7 @@ impl Drawing {
             view_before: demo.lens.projection(old.fov, aspect, aspect) * old.view(),
             camera_view_before: old.view(),
             focus: demo.lens.focus(&camera),
+            focused: camera.focus[1] > 0.0,
             ..Default::default()
         };
         Self {
@@ -2169,6 +2276,7 @@ impl Drawing {
             text_size: 0.04,
             text_color: [1.0; 4],
             camera_overrides: true,
+            poses: HashMap::new(),
         }
     }
 
@@ -2269,6 +2377,9 @@ const RECEIVE: u32 = 32;
 const NOT_RECEIVE: u32 = 64;
 const FORCE: u32 = 128;
 const OBJECTS: u32 = 256;
+const SCENE: u32 = 512;
+const NOTHING: u32 = 1024;
+const KEEP: u32 = 2048;
 
 struct Frame<'a> {
     demo: &'a mut Demo,
@@ -2418,6 +2529,10 @@ impl lua::Host for Frame<'_> {
             "NotReceive" => NOT_RECEIVE,
             "ForceDraw" => FORCE,
             "Objects" => OBJECTS,
+            "Scene" => SCENE,
+            "SceneAndObjects" => SCENE | OBJECTS,
+            "Nothing" => NOTHING,
+            "NoImplicitClear" => KEEP,
             "BUFFER_FORMAT_RGBA" => 1,
             "BUFFER_FORMAT_16161616" => 2,
             "BUFFER_FORMAT_1010102" => 3,
@@ -2643,6 +2758,13 @@ impl lua::Host for Frame<'_> {
             "DrawScene" | "DrawObjects" | "DrawParticles" | "DrawReflections" | "DrawQuad"
             | "DrawNonSceneQuad" => {
                 self.sync(&mut d);
+                if name == "DrawReflections" && flags(2) & KEEP == 0 {
+                    // The original begins with black (0x41a3e0).
+                    let old = (d.clear_color, d.clear_depth);
+                    (d.clear_color, d.clear_depth) = ([0.0, 0.0, 0.0, 1.0], 1.0);
+                    d.clear(self.demo, self.gpu, COLOR | Z);
+                    (d.clear_color, d.clear_depth) = old;
+                }
                 let start = d.calls.len();
                 match name {
                     "DrawScene" => {
@@ -2659,7 +2781,7 @@ impl lua::Host for Frame<'_> {
                         &mut d,
                         string(0),
                         n(1) as u32,
-                        flags(2) & OBJECTS != 0,
+                        flags(2),
                     ),
                     "DrawQuad" => self
                         .demo
@@ -2698,6 +2820,7 @@ impl Demo {
         let lit: Vec<_> = lights.iter().collect();
         let mut ctx = Context::new(&d.eye, &d.frame, d.frame.time, &params);
         ctx.lights = &lit;
+        ctx.reached = lit.len();
         for i in items {
             let draw = &draws[i.draw];
             if flags & (OPAQUE | TRANS) != 0
@@ -2753,7 +2876,7 @@ impl Demo {
         d: &mut Drawing,
         property: &str,
         number: u32,
-        objects: bool,
+        flags: u32,
     ) {
         let Some((index, mirror)) = self.scenes.get(d.scene).and_then(|s| {
             s.mirrors
@@ -2763,13 +2886,21 @@ impl Demo {
         }) else {
             return;
         };
+        let (plane, matrix) = (mirror.plane, mirror.matrix);
         let old = d.eye.clone();
-        let view = d.eye.view * mirror.matrix;
-        let projection = camera::clipped(d.eye.projection, view, mirror.plane);
+        let view = d.eye.view * matrix;
+        let projection = camera::clipped(d.eye.projection, view, plane);
         d.eye.aim(view, projection);
-        d.eye.mirror = Some(mirror.matrix);
-        self.draw_scene(gpu, d, property, OPAQUE | TRANS, Some(index));
-        if objects {
+        d.eye.mirror = Some(matrix);
+        // Both, unless the script says (0x49b850).
+        let what = match flags & (SCENE | OBJECTS | NOTHING) {
+            0 => SCENE | OBJECTS,
+            f => f,
+        };
+        if what & SCENE != 0 {
+            self.draw_scene(gpu, d, property, OPAQUE | TRANS, Some(index));
+        }
+        if what & OBJECTS != 0 {
             self.draw_objects(
                 gpu,
                 d,
@@ -2817,8 +2948,21 @@ impl Demo {
         for i in active {
             let model = &models[i.model];
             let t = d.frame.time - i.start;
-            let bones = i.clip.bones(t);
-            let before = i.clip.bones((t - BEFORE).max(0.0));
+            let drawn: Vec<_> = model
+                .meshes
+                .iter()
+                .filter(|m| m.drawn(flags) && self.shaders[m.shader].any(property))
+                .collect();
+            if drawn.is_empty() {
+                continue;
+            }
+            let pose = d.poses.entry((Rc::as_ptr(&i.clip), t.to_bits()));
+            let pose = pose.or_insert_with(|| {
+                let before = i.clip.bones((t - BEFORE).max(0.0));
+                Rc::new((i.clip.bones(t), before))
+            });
+            let pose = pose.clone();
+            let (bones, before) = &*pose;
             let params = i.clip.params(t);
             let (center, radius) = i
                 .clip
@@ -2826,8 +2970,8 @@ impl Demo {
                 .map_or((model.center, 0.0), |(_, _, c, r)| (c, r));
             let mut lights: Vec<_> = all_lights
                 .iter()
-                .filter(|l| l.object_ambient && l.shines_on(center, radius))
-                .take(4)
+                .filter(|l| l.shines_on(center, radius))
+                .take(MOST_LIGHTS)
                 .collect();
             let light_count = lights.len();
             lights.extend(
@@ -2835,21 +2979,7 @@ impl Demo {
                     .iter()
                     .filter(|l| !l.object_ambient || !l.shines_on(center, radius)),
             );
-            for m in &model.meshes {
-                let trans = m.flags & TRANSPARENT != 0;
-                let receives = m.flags & RECEIVES != 0;
-                if flags & STENCIL != 0 {
-                    if m.flags & CASTS == 0 {
-                        continue;
-                    }
-                } else if (flags & (OPAQUE | TRANS) != 0
-                    && flags & if trans { TRANS } else { OPAQUE } == 0)
-                    || (flags & (RECEIVE | NOT_RECEIVE) != 0
-                        && flags & if receives { RECEIVE } else { NOT_RECEIVE } == 0)
-                    || m.flags & HIDDEN != 0
-                {
-                    continue;
-                }
+            for m in drawn {
                 let Some(shader) = self.variant(m.shader, property, light_count) else {
                     continue;
                 };
@@ -2898,7 +3028,7 @@ impl Demo {
                     let Some(id) = self.pipeline(gpu, key) else {
                         continue;
                     };
-                    let mut slots = [0usize; 64];
+                    let mut slots = [0usize; MOST_BONES];
                     let mut textures = vec![None; m.slots.len()];
                     let mut edited = BTreeMap::<usize, &Edited>::new();
                     let mut vertices = Vec::new();
@@ -2913,8 +3043,9 @@ impl Demo {
                                     frame: &d.frame,
                                     time: t,
                                     lights: &lights,
-                                    bones: &bones,
-                                    bones_before: &before,
+                                    reached: light_count,
+                                    bones,
+                                    bones_before: before,
                                     slots: &slots,
                                     tween,
                                     weights: &morph,
@@ -2963,12 +3094,9 @@ impl Demo {
                                 vertices.clear();
                                 indices = stream.index_buffers.get(x).copied();
                                 for stream in map.iter().map(|i| &m.streams[*i]) {
-                                    let f = stream.frame.map_or(0, |f| {
-                                        if morph.is_empty() {
-                                            frame + f
-                                        } else {
-                                            morph.get(f).map_or(0, |w| w.0)
-                                        }
+                                    let f = stream.frame.map_or(0, |f| match &m.weights {
+                                        Some(_) => weighted_shape(f, &morph),
+                                        None => frame + f,
                                     });
                                     let selected = stream
                                         .buffers
@@ -3217,4 +3345,25 @@ fn particle_vertices(
         }
     }
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shapes_are_added_to_the_mesh_itself() {
+        let chosen = [(7, 0.5), (2, 0.25)];
+        assert_eq!(
+            [0, 1, 2, 3].map(|f| weighted_shape(f, &chosen)),
+            [0, 8, 3, 0]
+        );
+    }
+
+    #[test]
+    fn clock_is_fraction_and_seconds_of_two_minutes() {
+        let [fraction, seconds, sine, all] = clock(120.5);
+        assert_eq!((fraction, seconds, all), (0.5, 0.5, 120.5));
+        assert!((sine - 1.0).abs() < 1e-6);
+    }
 }

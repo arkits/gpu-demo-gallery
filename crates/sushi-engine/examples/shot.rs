@@ -41,6 +41,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     overlay.draw(&gpu, &mut enc, &targets, &marks, false, 1.0);
     gpu.queue.submit([enc.finish()]);
 
+    if let Ok(names) = std::env::var("SUSHI_DUMP") {
+        for n in names.split(',') {
+            let t = demo.script_buffer(n).ok_or("no such buffer")?;
+            let mut png = png::Encoder::new(
+                std::fs::File::create(format!("{out}.{n}.png"))?,
+                t.width(),
+                t.height(),
+            );
+            png.set_color(png::ColorType::Rgba);
+            png.write_header()?.write_image_data(&gpu.read_rgba(t))?;
+        }
+    }
     let mut png = png::Encoder::new(std::fs::File::create(out)?, SIZE.0, SIZE.1);
     png.set_color(png::ColorType::Rgb);
     // Alpha is not coverage.
