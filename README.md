@@ -5,9 +5,9 @@ The player reads the original Sushi archive and runs its scene, camera, shader, 
 
 [Open the WebGPU player](https://the-assassin-port.pages.dev/)
 
-Choose the installed demo folder in the browser, or put `Sushi.ati` in `data/` for a local build.
-Add `Audio/SceneIntro.wav` and `Logo2.tga` from the same demo for its soundtrack and logo. The original
-files are supplied separately and are excluded from Git.
+The player downloads the demo's files with the page (packed losslessly). The files are ATI's and
+are not in this repository. For a local build, put `Sushi.ati`, `Logo2.tga` and
+`Audio/SceneIntro.wav` in `data/`. A build without them asks for the installed demo's folder.
 
 ```sh
 scripts/dev.sh run           # native player

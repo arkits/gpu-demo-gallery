@@ -59,6 +59,7 @@ browser() {
 }
 build_web() {
   sh scripts/build-web.sh >"$OUT/build-web.log" 2>&1 || { cat "$OUT/build-web.log"; exit 1; }
+  sh scripts/pack.sh >"$OUT/pack.log" 2>&1 || { cat "$OUT/pack.log"; exit 1; }
 }
 
 command=${1:-help}
@@ -67,7 +68,7 @@ case $command in
 run) need_data; exec cargo run -q --release -p the-assassin -- "$@" "$SUSHI_ATI" ;;
 open) sh scripts/package-macos.sh >"$OUT/package.log" 2>&1 || { cat "$OUT/package.log"; exit 1; }
   open "dist/The Assassin.app" ;;
-web) build_web; exec python3 scripts/serve.py "${1:-8080}" ;;
+web) need_data; build_web; exec python3 scripts/serve.py "${1:-8080}" ;;
 check)
   need_data
   cargo fmt --check

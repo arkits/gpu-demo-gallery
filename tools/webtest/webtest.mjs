@@ -28,6 +28,12 @@ const uses = () => page.evaluate(() => {
 });
 page.on("console", (m) => m.type() === "error" && check(false, `console: ${m.text().slice(0, 300)}`));
 page.on("pageerror", (e) => check(false, `page: ${String(e).slice(0, 300)}`));
+// The page must play what a deployment bundles, split to fit Cloudflare Pages.
+const bundled = [];
+page.on("response", (r) => {
+  const path = new URL(r.url()).pathname;
+  if (path.startsWith("/local/")) bundled.push(`${r.status()} ${path.slice(7)}`);
+});
 const shot = (name) => page.screenshot({ path: `${out}/${name}.png` });
 const started = () => page.waitForFunction(() => window.demo, null, { timeout: 90000 });
 const state = () => page.evaluate(() => ({
@@ -38,6 +44,8 @@ const state = () => page.evaluate(() => ({
 async function start() {
   await page.goto(url);
   await page.waitForSelector("#play:not([hidden])", { timeout: 30000 });
+  const has = (end) => bundled.some((b) => b.startsWith("200") && b.endsWith(end));
+  check(has("assets.json") && has("-00.part") && has("Logo2.tga") && bundled.some((b) => b.startsWith("200 Audio/")), `bundled files: ${bundled.join(", ")}`);
   const begin = Date.now();
   await page.click("#play");
   await started();

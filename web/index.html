@@ -39,7 +39,7 @@
   </div>
   <p id="need">Needs your copy of ATI's demo: <code>Sushi.ati</code>, and optionally <code>SceneIntro.wav</code> and <code>Logo2.tga</code>. Files stay on this computer.</p>
   <p><kbd>1</kbd>–<kbd>9</kbd> chapters &nbsp; <kbd>Space</kbd> pause &nbsp; <kbd>←</kbd> <kbd>→</kbd> skip &nbsp; drag or <kbd>F</kbd> free camera &nbsp; <kbd>L</kbd> logo &nbsp; <kbd>M</kbd> mute &nbsp; <kbd>Enter</kbd> full screen</p>
-  <p>ATI Radeon technology demo.</p>
+  <p>ATI Radeon X1800 technology demo, 2005.</p>
   <progress id="progress" hidden></progress>
   <p id="status" role="status"></p>
 </main>
@@ -226,40 +226,41 @@
     status(`Could not load the player: ${e.message ?? e}`, true);
   });
   // Content served with the page: scripts/serve.py locally, or a bundled deployment.
-  async function get(url, onProgress) {
-    const r = await fetch(url).catch(() => null);
-    if (!r?.ok) return null;
-    const total = Number(r.headers.get("content-length")) || 0;
-    const parts = [];
-    let done = 0;
+  async function get(url, onBytes) {
+    const r = await fetch(url);
+    if (!r.ok || !r.body) throw new Error(`${url}: ${r.status}`);
+    const chunks = [];
     for (const reader = r.body.getReader(); ; ) {
-      const { done: end, value } = await reader.read();
-      if (end) break;
-      parts.push(value);
-      onProgress?.((done += value.length), total);
+      const { done, value } = await reader.read();
+      if (done) return new Blob(chunks);
+      chunks.push(value);
+      onBytes?.(value.length);
     }
-    return new Blob(parts);
   }
+  // The demo goes on without its sound or logo.
+  const extra = (url) => get(url).then(bytes).catch((e) => (console.error(e), null));
   const mb = (n) => (n / 1e6).toFixed(0);
   try {
-    // Some hosts answer unknown paths with a page, so the type matters too.
-    const url = "./local/Sushi.ati";
-    const head = await fetch(url, { method: "HEAD" }).catch(() => null);
-    if (head?.ok && !head.headers.get("content-type")?.includes("text/html")) {
+    const manifest = await fetch("./local/assets.json").catch(() => null);
+    // Some hosts answer unknown paths with a page.
+    if (manifest?.ok && manifest.headers.get("content-type")?.includes("json")) {
+      const { files: names, size: total } = await manifest.json();
       for (const id of ["choose", "need"]) $(id).hidden = true;
       $("progress").hidden = false;
-      const [archive, loop, logo] = await Promise.all([
-        get(url, (n, total) => {
-          if (total) [$("progress").max, $("progress").value] = [total, Math.min(n, total)];
-          status(`Downloading ${mb(n)}${total ? ` of ${mb(total)}` : ""} MB…`);
-        }),
-        get("./local/Audio/SceneIntro.wav"),
-        get("./local/Logo2.tga"),
-      ]);
-      if (!archive) throw new Error("the demo data could not be downloaded");
-      data.archive = await bytes(archive);
-      if (loop) data.loop = await bytes(loop);
-      if (logo) data.logo = await bytes(logo);
+      const extras = [extra("./local/Audio/SceneIntro.flac"), extra("./local/Logo2.tga")];
+      const parts = [];
+      let done = 0;
+      for (const name of names) {
+        parts.push(await get(`./local/${encodeURIComponent(name)}`, (n) => {
+          done += n;
+          [$("progress").max, $("progress").value] = [total, Math.min(done, total)];
+          status(`Downloading ${mb(done)} of ${mb(total)} MB…`);
+        }));
+      }
+      if (done !== total) throw new Error("incomplete download");
+      const archive = await bytes(new Blob(parts));
+      [data.loop, data.logo] = await Promise.all(extras);
+      data.archive = archive;
       offer();
     }
   } catch (e) {
