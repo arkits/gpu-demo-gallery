@@ -12,7 +12,7 @@ mkdir -p target/package "$dest"
 while IFS= read -r name; do
   path=$(find "$data/sounds" -type f -iname "$name.wav" | head -1)
   [ -n "$path" ] || { echo "missing sound: $name" >&2; exit 1; }
-  ffmpeg -v error -y -i "$path" -map_metadata -1 -compression_level 12 "$dest/$name.flac"
+  ffmpeg -nostdin -v error -y -i "$path" -map_metadata -1 -compression_level 12 "$dest/$name.flac"
 done < scripts/audio.list
 cargo run -q --release --example pack -- "$data" target/package/data.pack
 xz -T2 -6 -c --check=crc32 target/package/data.pack > "$out.tmp"
