@@ -34,5 +34,8 @@ make creature creature/target/devtest/native-a.png 1024:700:0:0
 make car-paint car-paint/target/devtest/webgpu-chapter3.png 504:620:514:72
 make pipe-dream pipedream/target/devtest/native-still.png 1024:768:0:0
 make box-of-smoke box-of-smoke/target/devtest/native-s.png 840:768:150:0
+crop=in_w:in_h
+shot toy-soldier 8 0.8 -0.3 1
+shot crystal-ball 5 0 0 0
 echo '<!doctype html><title>Not found</title><p>Not found.' > dist/404.html
 ls -l dist/img
