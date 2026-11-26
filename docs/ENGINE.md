@@ -1,59 +1,110 @@
-# Demoroom engine notes
+# How Demoroom works
 
-Based on Ghidra/REA decompilation in `.rea3dfx/demoroom` and `.rea3dfx/apilib`,
-plus byte-level validation of the staged `data/` files. No original binaries
-were run. This is the ATB pioneer port and owns `crates/atb`.
+From Ghidra decompilation of the original program and the staged files; no original binaries were run. `[I]` marks inferences.
 
-## Observed data (formats confirmed)
+## How Demoroom draws
 
-- `demoroom.bof`: `BOFM` container. Header: three big-endian version words
-  (2, 1, 5), a `Dict` tag at 0x10, a little-endian entry count (38), then
-  `[u8 len][ASCII name incl NUL]` records: `helpscreen`, `0000.3DF` …
-  `0020.3DF`, projector textures, `demolite`. The object graph after the dict
-  is opaque (raw dumps with baked pointers). `crates/atb/src/bof.rs` reads the
-  validated name table; its framing was checked against every staged ATB BOF.
-- `*.3DF`: `3df v1.1` / `rgb565` / `lod range: 1 <max>` / `aspect ratio: 1 1`.
-  The payload is the LOD pyramid **largest-first**, each texel **big-endian**
-  RGB565; total bytes = `2 * Σ w_k*h_k`. Confirmed by decoding `0000.3DF`
-  (the animated Egyptian-figure texture) and `SANDM.3DF` (sand). Reader:
-  `crates/atb/src/tex3df.rs`.
-- `DEMOLITE.3DS`: 3D Studio R4 (the room object — `room01`, `ankh`, `floor01`,
-  cameras/lights). Standard chunk tree: `0x4110` verts, `0x4140` UVs, `0x4120`
-  faces + `0x4130` material names. All 27 staged `.3DS` meshes across the ATB
-  packages parse cleanly.
-- `KEY.DAT`, `JOY_MAP.DAT`, `CONFIG.DAT`: input/config mappings.
+`demoroom.exe`'s set-up (`0x401e00`, `0x401ed0`) loads `demoroom.bof` and
+takes from its dictionary the help picture, the room (`demolite`, an `Anim`
+whose first frame places its seven parts), the ten projector pictures
+(`0x401fd0`) and the twenty film frames `0000.3df`-`0019.3df` (`0x4020c0`).
+The loose `.3DF` and `.3DS` files beside it are not read: everything is in
+the scene file.
 
-## Reader status
+It adds one light, a projector of 100 degrees each way at (4, 2, 5)
+(`0x4022a0`), and gives every shape a second pass (`0x4022f0`) with a
+material of preset 0x10b: the projector's picture, clamped, through its
+frustum, multiplied over what is drawn. The room's own materials (0x5001)
+are lit, and with only a projector light that leaves their emissive 0.6.
+Projector pictures have dark borders, so the room is dark outside the beam.
 
-`crates/atb` has strict, bounds-checked readers for BOF name tables (`bof.rs`),
-3DF textures (`tex3df.rs`) and 3DS meshes (`mesh3ds.rs`), with unit tests
-(synthetic fixtures) and integration tests against the staged files
-(`ATB_DATA=... ATB_SCAN=... cargo test -p atb`; all 27 staged `.3DS` meshes
-parse). `crates/demoroom` now **renders real ATB content end to end**: it loads
-`demoroom.bof` (38 names), `DEMOLITE.3DS` (7 geometry meshes, 142 triangles,
-centred + Z-up→Y-up) and a `.3DF` texture, then draws the textured room through
-the shared wgpu `gl` layer. Verified by `examples/shot.rs` (non-blank PNG),
-`--smoke` (offscreen frames), clippy native+wasm, and **`scripts/dev.sh all`**
-(check / smoke / webtest WebGPU+WebGL2 / compare, all green). It runs in a
-window through a winit `Player` and in the browser through the wasm shell
-(`web/index.html` + `WebFiles::open` + `DEMOPAK1`/xz pack).
+The frame (`0x401770`) swaps the slide (`Space` steps through ten; the
+tenth plays the film a frame a refresh), turns and moves the camera and
+the projector by the held keys — 1.5 degrees a frame, and a 25th of the
+room's radius a frame forward — and draws the room, then the projector's
+marker, a flat white arrow ten units long (`0x421ef0`). The camera starts
+at (4, 2, -500) looking along +z (`0x401e00`). Fog (`Ctrl-F`) is black,
+from 0.6 to 1.0 of the room's radius.
 
-Still future work: BOF object-graph extraction, the original's projected-light
-cycling / chromakey multipass / per-object materials. The current draw uses one
-texture and baked per-face lighting, not the demo's lighting rig.
+### Differences from the original
 
-## Runtime anchors
+- The original steps once a refresh; the port steps at 60 Hz.
+- Keys: the keypad camera keys are also on A/D, the Ctrl keys are plain.
+- Behind the projector's plane Glide drew whatever the division gave; the
+  port draws it unlit.
 
-- `FUN_00401ed0`: loads `demoroom.bof`, finds `helpscreen` and `demolite`, loads projected/static/animated textures.
-- `FUN_00401fd0` / `0x4020c0`: load the 10 static projector and 20 animated `0000..0019` textures.
-- `FUN_00401770`: frame/update, projected light cycling, camera/light transforms, chromakey/projected texture passes.
-- `FUN_00403430`: frame shell, help/HUD/stats, buffer swap.
-- `FUN_004081f0`: file load by extension via loader table.
-- `FUN_00406790`: scene draw through a virtual node-draw interface.
+### Not checked
 
-## Port plan (remaining)
+- Chroma-key mode (`0x45c170`), joystick, the performance display.
 
-- `crates/atb`: BOF object-graph access, `.VQ` texture reader, narrow scene/camera/light interfaces. (`.3DS` reader is done.)
-- `crates/demoroom`: replace the placeholder renderer with the shared wgpu
-  `gl` layer, load the real BOF scene and textures, implement projected-light
-  cycling, chromakey multipass, camera/light controls, and native/web shells.
+## The ATB engine (shared by the ATB ports)
+
+ATB, 3dfx's Arcade Tool Box, is linked into each demo's `.exe`. The
+addresses below are `wiz.exe`'s unless a section says otherwise; the other
+ATB programs hold the same code at nearby addresses.
+
+### Scene files (`.BOF`)
+
+`crates/atb/src/bof.rs` reads them. `atsLoad` (`0x414620`) checks `BOFM`
+and version 2, then reads objects until an id of 0 (`0x411440`): each is
+its id (counting up from 1), its class name as a counted string, then the
+class's fields as that class's loader reads them (vtable slot 0x24). The
+stream is big-endian and unpadded. References between objects are ids,
+turned into pointers after loading (slot 0x28).
+
+| Class | Fields (after the parent's) |
+|---|---|
+| Node | two words (a draw mask among them), name, bounding sphere |
+| Group | version 1, a 16-bit child count, child ids |
+| Frame | version 1, a word, a 4x4 matrix (row vectors) |
+| Seq | version 1, bounce, counted, seconds a child, offset, repeats |
+| LOD | version 0, centre, ranges (`0x416050` picks the child whose range is the largest below the eye's distance) |
+| Anim | version 1, current frame, frame count, id of the matrices (an `Object` block of frames × children × 16 floats) |
+| Shape | version 1, (material, geometry) pairs |
+| Image | `AtrImg`: Glide format, size, mip levels, file name, texels, and a 256-entry table for palette/YIQ formats |
+| Texture | version 2, a handle, image ids |
+| Material | `atrMaterial`: 79 words of Glide state (one of them a byte) |
+| TriSet | `atrTriSet`: strips of up to 62 vertices of 16 floats, triangles packed as three bytes in a word, and optionally a light-map picture per triangle |
+| CMesh | `atmCmesh`: a collision mesh |
+| Object | an opaque block of words |
+
+Every staged `.BOF` reads to its last byte. Earlier notes called the object
+graph a memory dump with baked pointers; it is not.
+
+A vertex's 16 floats are position, normal, texture coordinates, then a
+colour (rgb or rgba); the other slots hold second and third texture
+coordinates where a material asks for them.
+
+### Materials and drawing
+
+`atrMaterialRealize` (`0x4326a0`) maps a material's words straight onto
+Glide: `grTexCombine`, `grColorCombine`, `grAlphaCombine`,
+`grAlphaBlendFunction`, alpha test, chroma key, cull, clamp, filtering and
+depth mask. The port's `glide` fragment program evaluates the same combine
+equations, and its pipeline state takes the same blend factors, so each
+material looks as its words say. `atrMaterialSetup` (`demoroom.exe`
+`0x420830`) builds materials the programs make in code from flags: the low
+byte picks a texture set-up, 0xf00 the blend (0x100 multiplies), 0x3000
+the colour combine, 0xc000 where colour comes from (lit, vertex colours or
+a constant).
+
+Texture coordinates come from the material's mode (`0x4326a0`): the
+vertex's own (0x1000-0x3000), a sphere map from the reflected eye ray
+(0x4000, `0x43c650`), the per-triangle light-map corners (0x5000,
+`0x44ab40`) or a projector's frustum (0x6000, `0x43cb10`).
+
+Lighting is per vertex on the CPU (`0x41e710` sets it up): emissive colour,
+plus ambient lights times diffuse, plus directional and point lights by
+Lambert's law; a specular term uses the material's shininess word. [I] for
+the specular exponent's exact use. Vertex-coloured materials take the
+colour slots instead.
+
+The camera (`rcamera.c`): horizontal field of view 60 degrees by default,
+near 1, far 65535, looking along its frame's z with y up; the view is the
+inverse of its frame (`0x41e480`).
+
+### 3D Studio and VQ models
+
+`tdstoats.c` (`atsflip.exe` `0x410630`) and `vqtoats.c` (`0x40d510`) turn
+`.3ds` and `.vq` files into the same objects; `crates/atb/src/tds.rs` does
+the same, with the same presets, colours and axes.

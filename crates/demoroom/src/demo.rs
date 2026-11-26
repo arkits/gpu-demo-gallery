@@ -1,174 +1,276 @@
-//! Demoroom, rendered from the demo's real ATB assets.
-//!
-//! This is the ATB pioneer: it exercises `crates/atb` end to end. It reads the
-//! `demoroom.bof` name table, the `DEMOLITE.3DS` room geometry, and a `.3DF`
-//! texture, then draws the textured room through the shared `gl` layer. The
-//! original's projected-light cycling, chromakey multipass and the BOF object
-//! graph are still future work (see `docs/ENGINE.md`); this proves the readers
-//! and the renderer work together, with no placeholder cube.
+//! Demoroom: a room lit by a projector you steer, drawn in two passes. The
+//! scene is `demolite` in `demoroom.bof`; the frame (`0x401770`) and set-up
+//! (`0x401e00`, `0x401ed0`) are described in `docs/ENGINE.md`.
+use atb::bof::Object;
+use atb::{Bof, Item, Material, View};
 use glam::{Mat4, Vec3};
 
 use crate::Error;
 use crate::data::Files;
-use crate::gl::{
-    Depth, Gl, Gpu, REPEAT, State, Surface, TextureId, Vertex, from_opengl, look_at, perspective,
-};
+use crate::gl::{Gl, Gpu, State, Surface, TextureId, Vertex, WHITE};
 use crate::image::Image;
+use crate::render::{self, Camera, Fog, Frame, Light, Pictures};
 
-/// Fragment programs: `plain` and `textured` come from `prelude.wgsl`; `lit` is here.
 pub const SHADER: &str = include_str!("../shaders/demo.wgsl");
-pub const PROGRAMS: &[&str] = &["plain", "textured", "lit"];
-pub const BUTTONS: &[(&str, &str)] = &[("w", "Wireframe"), ("p", "Pause")];
+pub const PROGRAMS: &[&str] = &["plain", "textured", "glide"];
+pub const BUTTONS: &[(&str, &str)] = &[
+    (" ", "Next light"),
+    ("l", "Light on/off"),
+    ("f", "Fog"),
+    ("c", "Centre"),
+    ("w", "Wireframe"),
+    ("t", "Textures"),
+    ("h", "Help"),
+];
 
-/// Lower-case names of the demo files the port loads. All exist in the staged
-/// `data/`. `data.rs` keeps exactly these (and sounds) when packing/serving.
-pub const FILES: &[&str] = &["demoroom.bof", "0000.3df", "demolite.3ds"];
+/// The demo reads only its scene file: every picture is inside it.
+pub const FILES: &[&str] = &["demoroom.bof"];
 pub const PARTS: &[(&str, usize, usize)] = &[];
 pub const SOUNDS: &[&str] = &[];
 
-const PLAIN: usize = 0;
-const LIT: usize = 2;
+const TEXTURED: usize = 1;
+/// The original advances once a refresh; the port steps at 60 Hz.
+const RATE: f64 = 60.0;
+/// The projector pictures `Space` steps through (`0x401fd0`), then the
+/// twenty-frame film (`0x4020c0`).
+const SLIDES: [&str; 9] = [
+    "projblue.3df",
+    "projblu2.3df",
+    "projred.3df",
+    "projred2.3df",
+    "projgrn.3df",
+    "projgrn2.3df",
+    "projmlti.3df",
+    "projwht.3df",
+    "projgord.3df",
+];
+const FILM: usize = 20;
+/// Turn per frame: 3 degrees times one half (`0x45c15c`, `0x45b02c`).
+const TURN: f32 = 0.052_359_8 * 0.5;
 
-/// A CPU-side triangle in model space, with its texture coordinates and a
-/// baked lighting colour (from the face normal).
-struct Tri {
-    p: [Vec3; 3],
-    uv: [[f32; 2]; 3],
-    color: [f32; 4],
+#[derive(Clone, Copy)]
+struct Pose {
+    /// Angles about x, z and y, applied in that order.
+    pitch: f32,
+    roll: f32,
+    yaw: f32,
+    pos: Vec3,
 }
 
+impl Pose {
+    fn matrix(&self) -> Mat4 {
+        // Row-vector `Rx * Rz * Ry` is column-vector `Ry * Rz * Rx`, with
+        // the same angles: ATB's rotation arrays read as columns are glam's.
+        Mat4::from_translation(self.pos)
+            * Mat4::from_rotation_y(self.yaw)
+            * Mat4::from_rotation_z(self.roll)
+            * Mat4::from_rotation_x(self.pitch)
+    }
+    fn forward(&self) -> Vec3 {
+        self.matrix().z_axis.truncate()
+    }
+}
+
+const CAMERA: Pose = Pose {
+    pitch: 0.0,
+    roll: 0.0,
+    yaw: 0.0,
+    pos: Vec3::new(4.0, 2.0, -500.0),
+};
+const LAMP: Pose = Pose {
+    pitch: 0.0,
+    roll: 0.0,
+    yaw: 0.0,
+    pos: Vec3::new(4.0, 2.0, 5.0),
+};
+
 pub struct Demo {
-    texture: TextureId,
-    tris: Vec<Tri>,
-    center: Vec3,
-    scale: f32,
-    dict_len: usize,
-    mesh_count: usize,
-    time: f64,
-    paused: bool,
+    bof: Bof,
+    root: u32,
+    pictures: Pictures,
+    slides: Vec<u32>,
+    film: Vec<u32>,
+    help: TextureId,
+    /// The projected-light pass (`0x402230`, preset 0x10b) and the lamp
+    /// marker's material (`0x402340`, preset 0x6000).
+    extra: [Material; 2],
+    /// The texture the projector shows; its picture is swapped each frame.
+    slide_texture: u32,
+    slide: usize,
+    film_frame: usize,
+    camera: Pose,
+    lamp: Pose,
+    speed: f32,
+    fog_far: f32,
+    fog: bool,
+    light: bool,
     wireframe: bool,
-    yaw: f32,
-    pitch: f32,
-    dist: f32,
-    held: Option<(f64, f64, u8)>,
-    drag: (f32, f32),
+    textures: bool,
+    show_help: bool,
+    shift: bool,
+    held: [bool; 8],
+    drag: (f32, f32, f32),
+    pointer: Option<(f64, f64, u8)>,
+    due: f64,
+    frames: u64,
+    triangles: usize,
 }
 
 impl Demo {
     pub fn new(gpu: &Gpu, gl: &mut Gl, files: &Files) -> Result<Self, Error> {
-        // 1. The name table (proves the BOF reader against the real file).
-        let bof = atb::Bof::parse(files.get("demoroom.bof")?)?;
-        let dict_len = bof.names().len();
-
-        // 2. A real 3DF texture (proves the tex3df reader), as an Image.
-        let tex = atb::read_texture_3df(files.get("0000.3DF")?)?;
-        let base = tex.base();
-        let image = Image {
-            width: base.width,
-            height: base.height,
-            rgba: base.rgba.clone(),
+        let bof = Bof::parse(files.get("demoroom.bof")?)?;
+        let find = |name: &str| {
+            bof.find(name)
+                .ok_or_else(|| format!("demoroom.bof has no {name}"))
         };
-        let texture = gl.texture(gpu, &image, REPEAT);
-
-        // 3. The room geometry (proves the 3DS reader).
-        let scene = atb::read_mesh_3ds(files.get("DEMOLITE.3DS")?)?;
-        let mut tris = Vec::new();
-        let mut lo = Vec3::splat(f32::MAX);
-        let mut hi = Vec3::splat(f32::MIN);
-        let mut mesh_count = 0;
-
-        for mesh in &scene.meshes {
-            if mesh.faces.is_empty() {
-                continue; // cameras / lights have no geometry
-            }
-            mesh_count += 1;
-            for &[a, b, c] in &mesh.faces {
-                let (ia, ib, ic) = (a as usize, b as usize, c as usize);
-                if ia >= mesh.vertices.len()
-                    || ib >= mesh.vertices.len()
-                    || ic >= mesh.vertices.len()
-                {
-                    continue;
-                }
-                let (pa, pb, pc) = (
-                    Vec3::from(mesh.vertices[ia]),
-                    Vec3::from(mesh.vertices[ib]),
-                    Vec3::from(mesh.vertices[ic]),
-                );
-                for p in [pa, pb, pc] {
-                    lo = lo.min(p);
-                    hi = hi.max(p);
-                }
-                let uv = |i: usize| {
-                    mesh.texcoords
-                        .get(i)
-                        .map(|t| [t[0], t[1]])
-                        .unwrap_or([0.0, 0.0])
-                };
-                // Simple directional lighting from the face normal.
-                let n = (pb - pa).cross(pc - pa).normalize_or_zero();
-                let light =
-                    (n.dot(Vec3::new(0.4, 0.8, 0.3).normalize()).abs() * 0.6 + 0.4).clamp(0.0, 1.0);
-                tris.push(Tri {
-                    p: [pa, pb, pc],
-                    uv: [uv(ia), uv(ib), uv(ic)],
-                    color: [light, light, light, 1.0],
-                });
-            }
-        }
-        if tris.is_empty() {
-            return Err("DEMOLITE.3DS had no drawable faces".into());
-        }
-
-        let center = (lo + hi) * 0.5;
-        let extent = (hi - lo).max_element().max(1.0);
-        let scale = 2.0 / extent;
-
+        let root = find("demolite")?;
+        let slides = SLIDES
+            .iter()
+            .map(|n| find(n))
+            .collect::<Result<Vec<_>, _>>()?;
+        let film = (0..FILM)
+            .map(|i| find(&format!("{i:04}.3df")))
+            .collect::<Result<Vec<_>, _>>()?;
+        let help = match bof.image(find("helpscreen")?).map(|i| i.rgba()) {
+            Some(Ok(p)) => gl.texture(
+                gpu,
+                &Image {
+                    width: p.width,
+                    height: p.height,
+                    rgba: p.rgba,
+                },
+                crate::gl::CLAMP,
+            ),
+            _ => WHITE,
+        };
+        // The fog reaches the scene's bounding radius (`0x401ed0`).
+        let fog_far = match bof.get(root).and_then(Object::node) {
+            Some(n) => n.sphere[3],
+            None => 2000.0,
+        };
+        let extra = [Material::preset(0x10b), {
+            let mut m = Material::preset(0x6000);
+            m.words[1..4].copy_from_slice(&[1.0f32.to_bits(); 3]);
+            m
+        }];
+        // The projector's texture is the pass material's; the port keeps one
+        // past the file's objects and swaps its picture.
+        let slide_texture = bof.objects.len() as u32 + 100;
+        let mut extra = extra;
+        extra[0].words[14] = slide_texture;
         Ok(Self {
-            texture,
-            tris,
-            center,
-            scale,
-            dict_len,
-            mesh_count,
-            time: 0.0,
-            paused: false,
+            root,
+            pictures: Pictures::default(),
+            slides,
+            film,
+            help,
+            extra,
+            slide_texture,
+            slide: 0,
+            film_frame: 0,
+            camera: CAMERA,
+            lamp: LAMP,
+            speed: fog_far * 0.04,
+            fog_far,
+            fog: false,
+            light: true,
             wireframe: false,
-            yaw: 0.6,
-            pitch: 0.25,
-            dist: 3.2,
-            held: None,
-            drag: (0.0, 0.0),
+            textures: true,
+            show_help: false,
+            shift: false,
+            held: [false; 8],
+            drag: (0.0, 0.0, 0.0),
+            pointer: None,
+            due: 0.0,
+            frames: 0,
+            triangles: 0,
+            bof,
         })
     }
 
-    pub fn step(&mut self, dt: f64) {
-        if !self.paused {
-            self.time += dt;
+    /// One refresh of `0x401770`.
+    fn tick(&mut self) {
+        let axis = |a: bool, b: bool| f32::from(u8::from(a)) - f32::from(u8::from(b));
+        let [left, right, up, down, cl, cr, cu, cd] = self.held;
+        // Arrows turn the lamp; with Shift they move it along its beam.
+        if self.shift {
+            let f = self.lamp.forward();
+            self.lamp.pos += f * axis(up, down) * self.speed * 0.1;
+        } else {
+            self.lamp.yaw += axis(right, left) * TURN;
+            self.lamp.pitch += axis(down, up) * TURN;
         }
-        if let Some((_, _, pb)) = self.held
-            && pb & 1 != 0
-        {
-            let drag = std::mem::take(&mut self.drag);
-            self.yaw += drag.0.to_radians();
-            self.pitch = (self.pitch + drag.1.to_radians()).clamp(-1.2, 1.2);
+        // The keypad (here WASD and the mouse) turns or moves the camera.
+        let (dx, dy, dz) = std::mem::take(&mut self.drag);
+        let fwd = axis(cu, cd) + dz;
+        if fwd != 0.0 {
+            let f = self.camera.forward();
+            self.camera.pos += f * fwd * self.speed;
+        }
+        self.camera.yaw += (axis(cr, cl) * TURN) + dx;
+        self.camera.pitch += dy;
+        if self.slide == SLIDES.len() {
+            self.film_frame = (self.film_frame + 1) % FILM;
+        }
+        self.frames += 1;
+    }
+
+    pub fn step(&mut self, dt: f64) {
+        self.due = (self.due + dt * RATE).min(8.0);
+        while self.due >= 1.0 {
+            self.due -= 1.0;
+            self.tick();
         }
     }
 
     pub fn freeze(&mut self, seconds: f64, keys: &str) {
         for k in keys.chars() {
-            self.key(&k.to_string(), true);
+            let k = k.to_string();
+            self.key(&k, true);
+            self.key(&k, false);
         }
-        self.time = seconds;
+        for _ in 0..(seconds * RATE).round() as usize {
+            self.tick();
+        }
     }
 
     pub fn key(&mut self, key: &str, down: bool) -> bool {
+        let hold = match key {
+            "ArrowLeft" => Some(0),
+            "ArrowRight" => Some(1),
+            "ArrowUp" => Some(2),
+            "ArrowDown" => Some(3),
+            "a" | "A" | "4" => Some(4),
+            "d" | "D" | "6" => Some(5),
+            "8" => Some(6),
+            "2" => Some(7),
+            _ => None,
+        };
+        if let Some(i) = hold {
+            self.held[i] = down;
+            return true;
+        }
+        if key == "Shift" {
+            self.shift = down;
+            return true;
+        }
         if !down {
-            return matches!(key, "e" | "E" | "w" | "W" | "p" | "P");
+            return matches!(
+                key,
+                " " | "l" | "L" | "f" | "F" | "c" | "C" | "w" | "W" | "t" | "T" | "h" | "H" | "F1"
+            );
         }
         match key {
+            " " | "n" | "N" => self.slide = (self.slide + 1) % (SLIDES.len() + 1),
+            "l" | "L" => self.light = !self.light,
+            "f" | "F" => self.fog = !self.fog,
+            "c" | "C" => {
+                self.camera = CAMERA;
+                self.lamp = LAMP;
+            }
             "w" | "W" => self.wireframe = !self.wireframe,
-            "p" | "P" => self.paused = !self.paused,
+            "t" | "T" => self.textures = !self.textures,
+            "h" | "H" | "F1" => self.show_help = !self.show_help,
             _ => return false,
         }
         true
@@ -176,20 +278,20 @@ impl Demo {
 
     pub fn pointer(&mut self, x: f64, y: f64, buttons: u8) {
         if buttons & 1 != 0 {
-            if let Some((px, py, pb)) = self.held
+            if let Some((px, py, pb)) = self.pointer
                 && pb & 1 != 0
             {
-                self.drag.0 += ((x - px) * 160.0) as f32;
-                self.drag.1 += ((y - py) * 120.0) as f32;
+                self.drag.0 += (x - px) as f32 * 2.5;
+                self.drag.1 += (y - py) as f32 * 2.0;
             }
-            self.held = Some((x, y, buttons));
+            self.pointer = Some((x, y, buttons));
         } else {
-            self.held = None;
+            self.pointer = None;
         }
     }
 
     pub fn wheel(&mut self, amount: f64) {
-        self.dist = (self.dist - amount as f32 * 1.5).clamp(1.5, 8.0);
+        self.drag.2 += amount as f32 * 2.0;
     }
 
     pub fn cues(&mut self) -> Vec<String> {
@@ -198,68 +300,114 @@ impl Demo {
 
     pub fn report(&self) -> String {
         format!(
-            "dict {} meshes {} tris {} wire {} t {:.2}",
-            self.dict_len,
-            self.mesh_count,
-            self.tris.len(),
-            self.wireframe,
-            self.time,
+            "slide {} light {} fog {} camera {:.0},{:.0},{:.0} tris {} frame {}",
+            self.slide,
+            self.light,
+            self.fog,
+            self.camera.pos.x,
+            self.camera.pos.y,
+            self.camera.pos.z,
+            self.triangles,
+            self.frames,
         )
     }
 
-    pub fn draw(&mut self, _gpu: &Gpu, gl: &mut Gl, (w, h): (u32, u32)) {
+    pub fn draw(&mut self, gpu: &Gpu, gl: &mut Gl, (w, h): (u32, u32)) {
         let aspect = w.max(1) as f32 / h.max(1) as f32;
-        let proj = from_opengl(perspective(55.0, aspect, 0.05, 50.0));
-        let eye = Vec3::new(
-            self.yaw.sin() * self.pitch.cos(),
-            self.pitch.sin(),
-            self.yaw.cos() * self.pitch.cos(),
-        ) * self.dist;
-        let view = look_at(eye, Vec3::ZERO, Vec3::Y);
-        let spin = Mat4::from_rotation_y(self.time as f32 * 0.15);
-        // 3D Studio is Z-up; remap so the room's height becomes world Y.
-        let zup = Mat4::from_cols(
-            glam::Vec4::new(1.0, 0.0, 0.0, 0.0),  // x -> x
-            glam::Vec4::new(0.0, 0.0, -1.0, 0.0), // y -> -z
-            glam::Vec4::new(0.0, 1.0, 0.0, 0.0),  // z -> y
-            glam::Vec4::new(0.0, 0.0, 0.0, 1.0),
+        let camera = Camera::new(self.camera.matrix());
+        let mut items: Vec<Item> = Vec::new();
+        atb::walk(
+            &self.bof,
+            self.root,
+            &View {
+                eye: camera.eye(),
+                ..View::default()
+            },
+            &mut items,
         );
-        // Centre first, then scale, then change basis — order matters.
-        let model = spin
-            * zup
-            * Mat4::from_scale(Vec3::splat(self.scale))
-            * Mat4::from_translation(-self.center);
-        let vp = proj * view * model;
-
-        gl.begin([0.03, 0.04, 0.06, 1.0]);
-
-        let mut verts = Vec::with_capacity(self.tris.len() * 3);
-        for t in &self.tris {
-            for i in 0..3 {
-                verts.push(
-                    Vertex::new(vp * t.p[i].extend(1.0), t.color).uv(0, t.uv[i][0], t.uv[i][1]),
-                );
-            }
-        }
-        gl.draw(
-            State::new(LIT).depth(Depth::Less(true)),
-            &Surface::textures(&[self.texture]),
-            &verts,
+        // The lamp: a projector of 100 degrees each way (`0x4022a0`).
+        let spread = (1.745_33f32 * 0.5).tan();
+        let lamp = Light {
+            kind: 4,
+            color: Vec3::ONE,
+            frame: self.lamp.matrix(),
+            spread: (spread, spread),
+        };
+        let lights = [lamp];
+        let image = if self.slide < SLIDES.len() {
+            self.slides[self.slide]
+        } else {
+            self.film[self.film_frame]
+        };
+        let slide_texture = self.slide_texture;
+        let n = self.bof.objects.len() as u32;
+        let frame = Frame {
+            camera,
+            lights: &lights,
+            fog: self.fog.then_some(Fog {
+                near: self.fog_far * 0.6,
+                far: self.fog_far,
+                color: [0.0; 3],
+            }),
+            texture_image: &move |t| (t == slide_texture).then_some(image),
+            extra: &self.extra,
+            pass: self.light.then_some(n + 1),
+            wireframe: self.wireframe,
+            textures: self.textures,
+            bilinear: true,
+        };
+        gl.begin([0.0, 0.0, 0.0, 1.0]);
+        self.triangles = render::draw(
+            gpu,
+            gl,
+            &mut self.pictures,
+            &self.bof,
+            &items,
+            &frame,
+            aspect,
         );
-
-        if self.wireframe {
-            let mut lines = Vec::with_capacity(self.tris.len() * 6);
-            for t in &self.tris {
-                let q: Vec<Vertex> = (0..3)
-                    .map(|i| Vertex::new(vp * t.p[i].extend(1.0), [1.0, 1.0, 1.0, 1.0]))
-                    .collect();
-                lines.extend([q[0], q[1], q[1], q[2], q[2], q[0]]);
-            }
-            gl.draw(
-                State::new(PLAIN).depth(Depth::LessEqual(false)).lines(),
-                &Surface::default(),
-                &lines,
+        let vp = frame.camera.projection(aspect) * frame.camera.view();
+        self.marker(gl, vp);
+        if self.show_help {
+            // The help picture (`helpscreen`), centred at its own size.
+            let (hw, hh) = (512.0 / w.max(1) as f32, 400.0 / h.max(1) as f32);
+            let c = [1.0; 4];
+            let q = |x: f32, y: f32, u: f32, v: f32| {
+                Vertex::new(glam::Vec4::new(x, y, 0.0, 1.0), c).uv(0, u, v)
+            };
+            gl.quad(
+                State::new(TEXTURED),
+                &Surface::textures(&[self.help]),
+                [
+                    q(-hw, hh, 0.0, 0.0),
+                    q(hw, hh, 1.0, 0.0),
+                    q(hw, -hh, 1.0, 1.0),
+                    q(-hw, -hh, 0.0, 1.0),
+                ],
             );
         }
+    }
+
+    /// The lamp's marker: a flat white arrow ten units long pointing along
+    /// its beam (`0x421ef0`).
+    fn marker(&self, gl: &mut Gl, vp: Mat4) {
+        let s = 10.0;
+        let p = |x: f32, z: f32| Vec3::new(x * s, 0.0, z * s);
+        let tris = [
+            [p(-0.3, 0.8), p(0.0, 1.0), p(0.3, 0.8)],
+            [p(-0.1, 0.8), p(0.1, 0.8), p(-0.1, 0.0)],
+            [p(-0.1, 0.0), p(0.1, 0.8), p(0.1, 0.0)],
+        ];
+        let m = self.lamp.matrix();
+        let verts: Vec<Vertex> = tris
+            .iter()
+            .flatten()
+            .map(|&v| Vertex::new(vp * m.transform_point3(v).extend(1.0), [1.0; 4]))
+            .collect();
+        gl.draw(
+            State::new(0).depth(crate::gl::Depth::LessEqual(true)),
+            &Surface::default(),
+            &verts,
+        );
     }
 }

@@ -30,11 +30,27 @@ pub struct Mesh {
     pub faces: Vec<[u16; 3]>,
     /// Material names from `0x4130` sub-chunks, in order.
     pub materials: Vec<String>,
+    /// The faces each material covers (`0x4130`: name, count, face indices).
+    pub groups: Vec<(String, Vec<u16>)>,
+}
+
+/// A material from the editor's library (`0xafff`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Material3ds {
+    pub name: String,
+    pub ambient: [u8; 3],
+    pub diffuse: [u8; 3],
+    pub specular: [u8; 3],
+    /// Texture map file name (`0xa200` / `0xa300`).
+    pub texture: Option<String>,
+    /// Reflection map file name (`0xa220` / `0xa300`).
+    pub reflection: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scene3ds {
     pub meshes: Vec<Mesh>,
+    pub materials: Vec<Material3ds>,
 }
 
 /// A chunk cursor, checked against the parent's end on every step.
@@ -100,6 +116,7 @@ fn walk(bytes: &[u8], start: usize, end: usize, scene: &mut Scene3ds) -> Result<
     while let Some((id, payload, chunk_end)) = r.header() {
         match id {
             0x3d3d | 0x4100 => walk(bytes, payload, chunk_end, scene)?,
+            0xafff => scene.materials.push(material(bytes, payload, chunk_end)),
             0x4000 => {
                 // Object name is a NUL-terminated string, then trimesh chunks.
                 let mut name_end = payload;
@@ -168,7 +185,19 @@ fn object(bytes: &[u8], start: usize, end: usize, mesh: &mut Mesh) -> Result<(),
                 let mut sub = Reader::new(bytes, payload + 2 + n * 8, chunk_end);
                 while let Some((sid, sp, se)) = sub.header() {
                     if sid == 0x4130 {
-                        mesh.materials.push(sub.cstring(sp, se));
+                        let name = sub.cstring(sp, se);
+                        let at = sp + name.len() + 1;
+                        let count = sub.u16(at).ok_or("3DS material group cut short")? as usize;
+                        ensure(at + 2 + count * 2 <= se, "3DS material group overruns")?;
+                        let faces: Vec<u16> = (0..count)
+                            .map(|i| sub.u16(at + 2 + i * 2).unwrap())
+                            .collect();
+                        ensure(
+                            faces.iter().all(|&f| (f as usize) < n),
+                            "3DS material group names a missing face",
+                        )?;
+                        mesh.materials.push(name.clone());
+                        mesh.groups.push((name, faces));
                     }
                 }
             }
@@ -176,6 +205,48 @@ fn object(bytes: &[u8], start: usize, end: usize, mesh: &mut Mesh) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// A library material: name, colours and the map file names.
+fn material(bytes: &[u8], start: usize, end: usize) -> Material3ds {
+    let mut m = Material3ds::default();
+    let mut r = Reader::new(bytes, start, end);
+    // A colour chunk holds a 24-bit (0x0011) or float (0x0010) colour.
+    let color = |s: usize, e: usize| -> [u8; 3] {
+        let mut c = Reader::new(bytes, s, e);
+        while let Some((id, p, ce)) = c.header() {
+            match id {
+                0x0011 if p + 3 <= ce => return [bytes[p], bytes[p + 1], bytes[p + 2]],
+                0x0010 if p + 12 <= ce => {
+                    return [0, 4, 8]
+                        .map(|o| (c.f32(p + o).unwrap_or(0.0) * 255.0).clamp(0.0, 255.0) as u8);
+                }
+                _ => {}
+            }
+        }
+        [0; 3]
+    };
+    let map = |s: usize, e: usize| -> Option<String> {
+        let mut c = Reader::new(bytes, s, e);
+        while let Some((id, p, ce)) = c.header() {
+            if id == 0xa300 {
+                return Some(c.cstring(p, ce));
+            }
+        }
+        None
+    };
+    while let Some((id, p, e)) = r.header() {
+        match id {
+            0xa000 => m.name = r.cstring(p, e),
+            0xa010 => m.ambient = color(p, e),
+            0xa020 => m.diffuse = color(p, e),
+            0xa030 => m.specular = color(p, e),
+            0xa200 => m.texture = map(p, e),
+            0xa220 => m.reflection = map(p, e),
+            _ => {}
+        }
+    }
+    m
 }
 
 fn ensure(ok: bool, msg: &str) -> Result<(), Error> {
