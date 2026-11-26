@@ -36,8 +36,9 @@ fn assets_parse_and_round_trip() {
         let reads = |n: u32| (8..=10).contains(&n);
         assert!(pass.state.blend.is_none_or(|(s, d)| !reads(s) && !reads(d)));
     }
-    // Every program of every pass is valid.
-    Stage::new(&files, &mut models).unwrap();
+    // Every program of every pass is valid, and every clip fits its meshes.
+    let stage = Stage::new(&files, &mut models).unwrap();
+    stage.check_clips(&models[0]).unwrap();
     let mut seen = std::collections::HashSet::new();
     for shape in models.iter().flat_map(|m| &m.shapes) {
         for pass in &shape.passes {

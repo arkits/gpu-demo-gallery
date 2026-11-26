@@ -72,7 +72,13 @@ struct Clip {
 }
 
 impl Clip {
-    fn read(item: usize, bytes: &[u8], model: &Model) -> Result<Self, Error> {
+    /// `own` has each mesh's tangents as the scene gives them, for keys without any.
+    fn read(
+        item: usize,
+        bytes: &[u8],
+        model: &Model,
+        own: &[Option<Vec<f32>>],
+    ) -> Result<Self, Error> {
         let root = crate::tree::read_binary(bytes)?;
         let mut tracks = Vec::new();
         let mut animation = None;
@@ -96,12 +102,18 @@ impl Clip {
                 let mut keys = Vec::new();
                 for k in channel.nodes("curves") {
                     let list = |f| k.floats(f).to_vec();
-                    let key = Key {
+                    let mut key = Key {
                         ms: k.int("time"),
                         coords: list("coords"),
                         normals: list("normals"),
                         tangents: list("tangents"),
                     };
+                    // Five of the clips have no tangents for the face; it keeps its own [I].
+                    if key.tangents.is_empty()
+                        && let Some(t) = &own[geometry]
+                    {
+                        key.tangents.clone_from(t);
+                    }
                     if key.coords.len() != count * 3
                         || key.normals.len() != count * 3
                         || key.tangents.len() != count * 4
@@ -135,6 +147,8 @@ fn around(keys: &[Key], ms: f32) -> (usize, usize, f32) {
 
 pub struct Stage {
     clips: Vec<Vec<u8>>,
+    /// Each mesh's tangents before any clip replaced them.
+    tangents: Vec<Option<Vec<f32>>>,
     clip: Option<Clip>,
     /// Seconds into the clip.
     local: f32,
@@ -155,14 +169,32 @@ impl Stage {
                     .map(<[u8]>::to_vec)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let tangents = models[0]
+            .geometries
+            .iter()
+            .map(|g| {
+                let t = g.tex_coords.get(2).filter(|t| t.width == 4)?;
+                (t.values.len() == g.count() * 4).then(|| t.values.clone())
+            })
+            .collect();
         Ok(Self {
             clips,
+            tangents,
             clip: None,
             local: 0.0,
             fields: models[0].still(),
             loaded: Vec::new(),
             blend: 0.0,
         })
+    }
+
+    /// Reads every clip, as playing them would.
+    pub fn check_clips(&self, model: &Model) -> Result<(), Error> {
+        for (item, bytes) in self.clips.iter().enumerate() {
+            Clip::read(item, bytes, model, &self.tangents)
+                .map_err(|e| format!("{}: {e}", demo::CLIPS[item].scene))?;
+        }
+        Ok(())
     }
 
     pub fn show(&self, _: &[&Model]) -> Show {
@@ -182,8 +214,10 @@ impl Stage {
             if let Some(a) = self.clip.as_ref().and_then(|c| c.animation.as_ref()) {
                 a.apply(&mut self.fields, f64::from(self.local) * 1000.0);
             }
-            // All clips were read when the files were checked.
-            self.clip = Clip::read(item, &self.clips[item], model).ok();
+            // Every clip reads (tests/data.rs); this only guards against other files.
+            self.clip = Clip::read(item, &self.clips[item], model, &self.tangents)
+                .inspect_err(|e| eprintln!("clip {item}: {e}"))
+                .ok();
             self.loaded.clear();
         }
         self.local = local;

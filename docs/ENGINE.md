@@ -11,7 +11,8 @@ from the demo's files. The program was not run. Addresses are of that file. [I] 
   (`0x485c70`).
 - A clip is a scene of its own: the face as whole meshes every 33 ms, which the vertex program blends, and
   curves for joints. Scale channels are taken out (`0x402e20`, `0x403000`). Joints that a clip does not move
-  stay as the one before left them.
+  stay as the one before left them. Five clips (bigman, getahead, benice, psst, yawn) have no tangents
+  for the face; it keeps the scene's own [I].
 - The light in the scene is a placeholder. The program sets its direction in the camera's space to
   (0.62, -0.38, 0.67) (`0x401c70`; the L key, `0x403700`).
 - Units with the texture `phongE10_tex_e`, the cube map of lights, get a texture matrix `followsLight` that
