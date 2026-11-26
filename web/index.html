@@ -29,9 +29,9 @@
 </style>
 <!-- Cloudflare Pages adds its analytics script to an explicit body. -->
 <body>
-<canvas id="view" tabindex="0" aria-label="Toy soldiers marching on a tabletop"></canvas>
+<canvas id="view" tabindex="0" aria-label="A mechanical squid in the sea"></canvas>
 <div id="modes" hidden>
-  <button data-key="s">Thrust</button><button data-key="p">Pause</button><button data-key="Home">Reset view</button>
+  <button data-key="s">Change skin</button><button data-key="ArrowLeft">Left</button><button data-key="ArrowRight">Right</button><button data-key="ArrowUp">Up</button><button data-key="ArrowDown">Down</button><button data-key="p">Pause</button><button data-key="Home">Reset view</button>
   <button id="mute" aria-pressed="false">Mute</button>
 </div>
 <main id="start">
@@ -39,8 +39,8 @@
   <button id="play" class="primary" hidden>Start</button>
   <label id="choose">Choose demo folder <input id="folder" type="file" webkitdirectory></label>
   <p id="need">Needs the unpacked files of NVIDIA's demo. They stay on this computer.</p>
-  <p>A mechanical squid moves through an underwater environment with kelp and fish.</p>
-  <p>Drag to orbit and scroll or pinch to zoom. <kbd>S</kbd> thrust · <kbd>P</kbd> pause · <kbd>M</kbd> mute · <kbd>Enter</kbd> full screen</p>
+  <p>A mechanical squid swims among kelp, plants and fish, and changes its skin.</p>
+  <p>Drag to orbit and scroll or pinch to zoom. <kbd>S</kbd> change skin · <kbd>Arrows</kbd> steer · <kbd>P</kbd> pause · <kbd>M</kbd> mute · <kbd>Enter</kbd> full screen</p>
   <p>NVIDIA's “Squid” demo, 2002.</p>
   <progress id="progress" hidden></progress>
   <p id="status" role="status"></p>
@@ -69,7 +69,7 @@
       this.volume = this.context.createGain();
       this.meter = this.context.createAnalyser();
       this.volume.connect(this.meter).connect(this.context.destination);
-      for (const n of ["squid16m", "speedup"]) this.get(n);
+      for (const n of ["squid16m", "morph", "sqthrust78b", "sq-eyem12mx"]) this.get(n);
     },
     get(name) {
       return this.buffers[name] ??= (async () => {
@@ -217,7 +217,7 @@
   async function take(list) {
     const found = new WebFiles();
     for (const f of list) {
-      if (/\.(nmb|dds|tga|ifl|png)$/i.test(f.name)) found.insert(f.webkitRelativePath.split("/").slice(1).join("/"), new Uint8Array(await f.arrayBuffer()));
+      if (/\.(nmb|dds|tga|ifl|png|vxp)$/i.test(f.name)) found.insert(f.webkitRelativePath.split("/").slice(1).join("/"), new Uint8Array(await f.arrayBuffer()));
       else if (/\.wav$/i.test(f.name)) sound.sources[f.name.toLowerCase().replace(".wav", "")] = f;
     }
     try {
@@ -240,15 +240,15 @@
   // Content served with the page: scripts/serve.py locally, or a bundled deployment.
   const mb = (n) => (n / 1e6).toFixed(1);
   try {
-    const manifest = await fetch("./local/assets.json").catch(() => null);
+    const manifest = await fetch("./local/assets.json", { cache: "no-store" }).catch(() => null);
     if (manifest?.ok && manifest.headers.get("content-type")?.includes("json")) {
-      const { files: names, size: total } = await manifest.json();
+      const { files: names, size: total, version } = await manifest.json();
       for (const id of ["choose", "need"]) $(id).hidden = true;
       $("progress").hidden = false;
       const parts = [];
       let done = 0;
       for (const name of names) {
-        const r = await fetch(`./local/${encodeURIComponent(name)}`);
+        const r = await fetch(`./local/${encodeURIComponent(name)}?v=${version}`);
         if (!r.ok || !r.body) throw new Error(`Asset download failed (${r.status})`);
         for (const reader = r.body.getReader(); ; ) {
           const { done: end, value } = await reader.read();

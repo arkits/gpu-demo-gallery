@@ -14,7 +14,7 @@ scripts/dev.sh all       # native, WebGPU and WebGL2 checks
 scripts/dev.sh package   # macOS app and Windows executable
 ```
 
-Arrow keys steer. S thrusts. Space pauses. Drag to orbit and scroll or pinch to zoom. P pauses, Home resets the view,
+The squid swims by itself. Arrow keys steer it for a while. S changes its skin. Space pauses. Drag to orbit and scroll or pinch to zoom. P pauses, Home resets the view,
 L toggles the NVIDIA logo, M mutes, and Enter toggles full screen.
 
 See [engine notes](docs/ENGINE.md) and [development](docs/DEVELOPMENT.md).
