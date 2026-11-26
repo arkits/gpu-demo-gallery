@@ -1,4 +1,4 @@
-//! Checks the demo's own files load through the strict ATB readers.
+//! Checks the demo's own files load through the strict readers.
 use grand_bleu::data::Files;
 use std::path::PathBuf;
 
@@ -14,12 +14,13 @@ fn data() -> Option<PathBuf> {
 }
 
 #[test]
-fn real_assets_load() {
+fn every_animal_reads() {
     let Some(dir) = data() else { return };
     let files = Files::from_path(&dir).expect("need the demo's files");
-    files.check().unwrap();
-    let scene = atb::Scene::load(&files).unwrap();
-    assert!(!scene.dict.is_empty() || !scene.meshes.is_empty() || !scene.textures.is_empty());
+    for f in grand_bleu::demo::FILES {
+        let bof = atb::Bof::parse(files.get(f).unwrap()).unwrap_or_else(|e| panic!("{f}: {e}"));
+        assert!(!bof.dict.is_empty(), "{f}");
+    }
 }
 
 #[test]

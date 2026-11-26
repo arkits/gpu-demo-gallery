@@ -1,277 +1,146 @@
-//! Grand Bleu — rendered from the demo's own ATB assets.
-//!
-//! Loads every `.BOF` name table, `.3DS` mesh and `.3DF` texture in the folder
-//! through `crates/atb`'s strict readers, then draws the real meshes (or a
-//! reconstructed frame when the BOF object graph is opaque) textured with the
-//! demo's own `.3DF` images. See `docs/ENGINE.md`.
-use glam::{Mat4, Vec3, Vec4};
+//! Grand Bleu's animals, from their own `.BOF` files, each swimming with its
+//! own animation. In `flipper.exe` Space moves the automatic camera to the
+//! next animal; the port does the same, one animal at a time. The terrain,
+//! plants, water light, schools and the animals' paths are not ported yet
+//! (see `docs/ENGINE.md`).
+use atb::{Bof, Item, View};
+use glam::Vec3;
 
 use crate::Error;
 use crate::data::Files;
-use crate::gl::{
-    Depth, Gl, Gpu, Sampling, State, Surface, TextureId, Vertex, from_opengl, look_at, perspective,
-};
-use crate::image::Image;
+use crate::gl::{Gl, Gpu};
+use crate::render::{self, Camera, Fog, Frame, Light, Pictures, look_at};
 
 pub const SHADER: &str = include_str!("../shaders/demo.wgsl");
-pub const PROGRAMS: &[&str] = &["plain", "textured", "lit"];
-pub const BUTTONS: &[(&str, &str)] = &[("w", "Wireframe"), ("p", "Pause"), ("t", "Next texture")];
+pub const PROGRAMS: &[&str] = &["plain", "textured", "glide"];
+pub const BUTTONS: &[(&str, &str)] = &[
+    (" ", "Next animal"),
+    ("p", "Freeze"),
+    ("w", "Wireframe"),
+    ("t", "Textures"),
+];
 
-/// All ATB assets the port may load; `data.rs` keeps these from the folder/pack.
-pub const FILES: &[&str] = &[
-    "flipper.bof",
+/// The animals `flipper.exe` loads (`0x401ba0`), in its order.
+const ANIMALS: [&str; 13] = [
     "dolph5.bof",
     "dolph4.bof",
-    "duckie.bof",
-    "blangel1.bof",
-    "blangel2.bof",
-    "blangel3.bof",
-    "blangel4.bof",
-    "butter.bof",
-    "galax.bof",
-    "manta.bof",
-    "ryellow.bof",
-    "ryellow2.bof",
-    "salmon.bof",
     "shark.bof",
-    "tuna.bof",
-    "galleon1.bof",
+    "manta.bof",
     "turtle.bof",
-    "galleon.3ds",
-    "explos01.3df",
-    "explos02.3df",
-    "explos03.3df",
-    "explos04.3df",
-    "explos05.3df",
-    "explos06.3df",
-    "explos07.3df",
-    "explos08.3df",
-    "explos09.3df",
-    "explos10.3df",
-    "explos11.3df",
-    "oldwood.3df",
-    "shiphull.3df",
-    "coral1_1.3df",
-    "coral2_2.3df",
-    "coral3_3.3df",
-    "terr1.3df",
-    "terr1_1.3df",
-    "terr2.3df",
-    "terr2_1.3df",
-    "terr3.3df",
-    "terr3_1.3df",
-    "terr4.3df",
-    "terr4_1.3df",
-    "backpt.3df",
-    "proj.3df",
-    "light1.3df",
-    "bground1.3df",
+    "tuna.bof",
+    "salmon.bof",
+    "galax.bof",
+    "butter.bof",
+    "ryellow.bof",
+    "blangel1.bof",
+    "duckie.bof",
+    "galleon1.bof",
 ];
+pub const FILES: &[&str] = &ANIMALS;
 pub const PARTS: &[(&str, usize, usize)] = &[];
 pub const SOUNDS: &[&str] = &[];
 
-const PLAIN: usize = 0;
-const LIT: usize = 2;
-/// Clamp + no mips: many ATB textures are non-square / non-power-of-two, which
-/// must not use repeat addressing with generated mips (WebGL2 parity).
-const TEX: Sampling = Sampling {
-    clamp: [true; 2],
-    mips: false,
-    linear: true,
-    anisotropy: 1,
-};
+const RATE: f64 = 60.0;
+/// Swimming frames a second: the files' `Seq` nodes leave timing to the
+/// program, which sets the frame itself. [I]
+const STROKE: f64 = 30.0;
 
-struct Tri {
-    p: [Vec3; 3],
-    uv: [[f32; 2]; 3],
-    color: [f32; 4],
-    tex: Option<usize>,
+struct Animal {
+    bof: Bof,
+    root: u32,
+    centre: Vec3,
+    radius: f32,
+    pictures: Pictures,
 }
 
 pub struct Demo {
-    textures: Vec<TextureId>,
-    tris: Vec<Tri>,
-    center: Vec3,
-    scale: f32,
-    dict_len: usize,
-    mesh_count: usize,
-    tex_count: usize,
+    animals: Vec<Animal>,
     current: usize,
     time: f64,
-    paused: bool,
+    frozen: bool,
     wireframe: bool,
+    textures: bool,
     yaw: f32,
-    pitch: f32,
-    dist: f32,
-    held: Option<(f64, f64, u8)>,
-    drag: (f32, f32),
+    drag: f32,
+    pointer: Option<(f64, f64, u8)>,
+    due: f64,
+    frames: u64,
 }
 
 impl Demo {
-    pub fn new(gpu: &Gpu, gl: &mut Gl, files: &Files) -> Result<Self, Error> {
-        // `Files` implements atb::Source, so every ATB asset is parsed here.
-        let scene = atb::Scene::load(files)?;
-        if scene.dict.is_empty() && scene.meshes.is_empty() && scene.textures.is_empty() {
-            return Err("no ATB assets found".into());
+    pub fn new(_gpu: &Gpu, _gl: &mut Gl, files: &Files) -> Result<Self, Error> {
+        let mut animals = Vec::new();
+        for name in ANIMALS {
+            let bof = Bof::parse(files.get(name)?)?;
+            let root = bof
+                .dict
+                .first()
+                .map(|&(_, id)| id)
+                .ok_or("animal without a name")?;
+            let sphere = bof
+                .get(root)
+                .and_then(atb::Object::node)
+                .map_or([0.0, 0.0, 0.0, 1.0], |n| n.sphere);
+            animals.push(Animal {
+                bof,
+                root,
+                centre: Vec3::new(sphere[0], sphere[1], sphere[2]),
+                radius: sphere[3].max(1.0),
+                pictures: Pictures::default(),
+            });
         }
-
-        // Upload every real .3DF base mip as a texture.
-        let mut textures = Vec::new();
-        for (_, tex) in &scene.textures {
-            let base = tex.base();
-            let image = Image {
-                width: base.width,
-                height: base.height,
-                rgba: base.rgba.clone(),
-            };
-            textures.push(gl.texture(gpu, &image, TEX));
-        }
-        let ntex = textures.len();
-
-        // Build triangles from all real .3DS meshes.
-        let mut tris = Vec::new();
-        let mut lo = Vec3::splat(f32::MAX);
-        let mut hi = Vec3::splat(f32::MIN);
-        let mut mesh_count = 0;
-        for (_, scene3ds) in &scene.meshes {
-            for mesh in &scene3ds.meshes {
-                if mesh.faces.is_empty() {
-                    continue;
-                }
-                mesh_count += 1;
-                for &[a, b, c] in &mesh.faces {
-                    let (ia, ib, ic) = (a as usize, b as usize, c as usize);
-                    if ia >= mesh.vertices.len()
-                        || ib >= mesh.vertices.len()
-                        || ic >= mesh.vertices.len()
-                    {
-                        continue;
-                    }
-                    let (pa, pb, pc) = (
-                        Vec3::from(mesh.vertices[ia]),
-                        Vec3::from(mesh.vertices[ib]),
-                        Vec3::from(mesh.vertices[ic]),
-                    );
-                    for p in [pa, pb, pc] {
-                        lo = lo.min(p);
-                        hi = hi.max(p);
-                    }
-                    let uv = |i: usize| {
-                        mesh.texcoords
-                            .get(i)
-                            .map(|t| [t[0], t[1]])
-                            .unwrap_or([0.0, 0.0])
-                    };
-                    let n = (pb - pa).cross(pc - pa).normalize_or_zero();
-                    let light = (n.dot(Vec3::new(0.4, 0.8, 0.3).normalize()).abs() * 0.6 + 0.4)
-                        .clamp(0.0, 1.0);
-                    tris.push(Tri {
-                        p: [pa, pb, pc],
-                        uv: [uv(ia), uv(ib), uv(ic)],
-                        color: [light, light, light, 1.0],
-                        tex: (ntex > 0).then_some(0),
-                    });
-                }
-            }
-        }
-
-        // Some ATB demos ship only a .BOF whose object graph is opaque, or only
-        // movie frames with no geometry. Draw a reconstructed panel grid derived
-        // from the real name table / texture names, each panel showing a demo
-        // texture (as documented in ENGINE.md).
-        if tris.is_empty() {
-            let mut panels: Vec<String> = scene.dict.clone();
-            if panels.is_empty() {
-                panels = scene.textures.iter().map(|(n, _)| n.clone()).collect();
-            }
-            if panels.is_empty() {
-                panels.push("scene".into());
-            }
-            panels.truncate(64);
-            let n = panels.len();
-            let cols = (n as f32).sqrt().ceil().max(1.0);
-            let rows = (n as f32 / cols).ceil().max(1.0);
-            for (i, _) in panels.iter().enumerate() {
-                let x = (i % cols as usize) as f32 - cols * 0.5;
-                let y = (i / cols as usize) as f32 - rows * 0.5;
-                let o = Vec3::new(x * 1.2, y * 1.2, 0.0);
-                let (pa, pb, pc, pd) = (
-                    o + Vec3::new(-0.5, -0.5, 0.0),
-                    o + Vec3::new(0.5, -0.5, 0.0),
-                    o + Vec3::new(0.5, 0.5, 0.0),
-                    o + Vec3::new(-0.5, 0.5, 0.0),
-                );
-                let shade = 0.55 + 0.45 * (i as f32 / n as f32);
-                let tex = (ntex > 0).then(|| i % ntex);
-                push_quad(
-                    &mut tris,
-                    pa,
-                    pb,
-                    pc,
-                    pd,
-                    [shade, shade * 0.85, 0.7, 1.0],
-                    tex,
-                );
-            }
-            lo = Vec3::new(-cols, -rows, -1.0);
-            hi = Vec3::new(cols, rows, 1.0);
-            mesh_count = n;
-        }
-
-        let center = (lo + hi) * 0.5;
-        let extent = (hi - lo).max_element().max(1.0);
-        let scale = 2.0 / extent;
-
         Ok(Self {
-            textures,
-            tris,
-            center,
-            scale,
-            dict_len: scene.dict.len(),
-            mesh_count,
-            tex_count: scene.textures.len(),
+            animals,
             current: 0,
             time: 0.0,
-            paused: false,
+            frozen: false,
             wireframe: false,
+            textures: true,
             yaw: 0.6,
-            pitch: 0.25,
-            dist: 3.2,
-            held: None,
-            drag: (0.0, 0.0),
+            drag: 0.0,
+            pointer: None,
+            due: 0.0,
+            frames: 0,
         })
     }
 
-    pub fn step(&mut self, dt: f64) {
-        if !self.paused {
-            self.time += dt;
+    fn tick(&mut self) {
+        if !self.frozen {
+            self.time += 1.0 / RATE;
         }
-        if let Some((_, _, pb)) = self.held
-            && pb & 1 != 0
-        {
-            let drag = std::mem::take(&mut self.drag);
-            self.yaw += drag.0.to_radians();
-            self.pitch = (self.pitch + drag.1.to_radians()).clamp(-1.2, 1.2);
+        self.yaw += std::mem::take(&mut self.drag);
+        self.frames += 1;
+    }
+
+    pub fn step(&mut self, dt: f64) {
+        self.due = (self.due + dt * RATE).min(8.0);
+        while self.due >= 1.0 {
+            self.due -= 1.0;
+            self.tick();
         }
     }
 
     pub fn freeze(&mut self, seconds: f64, keys: &str) {
         for k in keys.chars() {
-            self.key(&k.to_string(), true);
+            let k = k.to_string();
+            self.key(&k, true);
+            self.key(&k, false);
         }
-        self.time = seconds;
+        for _ in 0..(seconds * RATE).round() as usize {
+            self.tick();
+        }
     }
 
     pub fn key(&mut self, key: &str, down: bool) -> bool {
         if !down {
-            return matches!(key, "w" | "W" | "p" | "P" | "t" | "T");
+            return matches!(key, " " | "p" | "P" | "F8" | "w" | "W" | "t" | "T");
         }
         match key {
+            " " => self.current = (self.current + 1) % self.animals.len(),
+            // F8 froze the animals.
+            "p" | "P" | "F8" => self.frozen = !self.frozen,
             "w" | "W" => self.wireframe = !self.wireframe,
-            "p" | "P" => self.paused = !self.paused,
-            "t" | "T" if !self.textures.is_empty() => {
-                self.current = (self.current + 1) % self.textures.len()
-            }
+            "t" | "T" => self.textures = !self.textures,
             _ => return false,
         }
         true
@@ -279,21 +148,18 @@ impl Demo {
 
     pub fn pointer(&mut self, x: f64, y: f64, buttons: u8) {
         if buttons & 1 != 0 {
-            if let Some((px, py, pb)) = self.held
+            if let Some((px, _, pb)) = self.pointer
                 && pb & 1 != 0
             {
-                self.drag.0 += ((x - px) * 160.0) as f32;
-                self.drag.1 += ((y - py) * 120.0) as f32;
+                self.drag += (x - px) as f32 * 3.0;
             }
-            self.held = Some((x, y, buttons));
+            self.pointer = Some((x, y, buttons));
         } else {
-            self.held = None;
+            self.pointer = None;
         }
     }
 
-    pub fn wheel(&mut self, amount: f64) {
-        self.dist = (self.dist - amount as f32 * 1.5).clamp(1.5, 8.0);
-    }
+    pub fn wheel(&mut self, _amount: f64) {}
 
     pub fn cues(&mut self) -> Vec<String> {
         Vec::new()
@@ -301,102 +167,51 @@ impl Demo {
 
     pub fn report(&self) -> String {
         format!(
-            "dict {} meshes {} tex {} frame {} wire {} t {:.2}",
-            self.dict_len, self.mesh_count, self.tex_count, self.current, self.wireframe, self.time,
+            "animal {} t {:.2} frame {}",
+            ANIMALS[self.current], self.time, self.frames
         )
     }
 
-    pub fn draw(&mut self, _gpu: &Gpu, gl: &mut Gl, (w, h): (u32, u32)) {
+    pub fn draw(&mut self, gpu: &Gpu, gl: &mut Gl, (w, h): (u32, u32)) {
         let aspect = w.max(1) as f32 / h.max(1) as f32;
-        let proj = from_opengl(perspective(55.0, aspect, 0.05, 50.0));
-        let eye = Vec3::new(
-            self.yaw.sin() * self.pitch.cos(),
-            self.pitch.sin(),
-            self.yaw.cos() * self.pitch.cos(),
-        ) * self.dist;
-        let view = look_at(eye, Vec3::ZERO, Vec3::Y);
-        let zup = Mat4::from_cols(
-            Vec4::new(1.0, 0.0, 0.0, 0.0),
-            Vec4::new(0.0, 0.0, -1.0, 0.0),
-            Vec4::new(0.0, 1.0, 0.0, 0.0),
-            Vec4::new(0.0, 0.0, 0.0, 1.0),
+        let a = &mut self.animals[self.current];
+        // Beside and a little above the animal, two and a half radii off. [I]
+        let eye = a.centre + Vec3::new(self.yaw.sin(), 0.35, self.yaw.cos()) * a.radius * 2.5;
+        let mut camera = Camera::new(look_at(a.centre, eye, Vec3::Y));
+        camera.far = a.radius * 40.0;
+        let frame_of = (self.time * STROKE) as usize;
+        let mut items: Vec<Item> = Vec::new();
+        atb::walk(
+            &a.bof,
+            a.root,
+            &View {
+                eye,
+                frame: &move |_| Some(frame_of),
+                ..View::default()
+            },
+            &mut items,
         );
-        let spin = Mat4::from_rotation_y(if self.paused {
-            0.0
-        } else {
-            self.time as f32 * 0.15
-        });
-        let model = spin
-            * zup
-            * Mat4::from_scale(Vec3::splat(self.scale))
-            * Mat4::from_translation(-self.center);
-        let vp = proj * view * model;
-
-        gl.begin([0.03, 0.04, 0.06, 1.0]);
-
-        let groups = self.textures.len().max(1);
-        for g in 0..groups {
-            let mut verts = Vec::new();
-            for t in &self.tris {
-                let base = t.tex.unwrap_or(0);
-                let idx = (base + self.current) % groups;
-                if idx != g {
-                    continue;
-                }
-                for i in 0..3 {
-                    verts.push(
-                        Vertex::new(vp * t.p[i].extend(1.0), t.color).uv(0, t.uv[i][0], t.uv[i][1]),
-                    );
-                }
-            }
-            if verts.is_empty() {
-                continue;
-            }
-            let tex = self.textures.get(g).copied().unwrap_or(0);
-            gl.draw(
-                State::new(LIT).depth(Depth::Less(true)),
-                &Surface::textures(&[tex]),
-                &verts,
-            );
-        }
-
-        if self.wireframe {
-            let mut lines = Vec::with_capacity(self.tris.len() * 6);
-            for t in &self.tris {
-                let q: Vec<Vertex> = (0..3)
-                    .map(|i| Vertex::new(vp * t.p[i].extend(1.0), [1.0, 1.0, 1.0, 1.0]))
-                    .collect();
-                lines.extend([q[0], q[1], q[1], q[2], q[2], q[0]]);
-            }
-            gl.draw(
-                State::new(PLAIN).depth(Depth::LessEqual(false)).lines(),
-                &Surface::default(),
-                &lines,
-            );
-        }
+        let lights = [
+            Light::ambient(Vec3::splat(0.5)),
+            Light::directional(Vec3::new(0.9, 1.0, 1.0), Vec3::new(0.2, -1.0, 0.3)),
+        ];
+        let fog = Fog {
+            near: a.radius * 3.0,
+            far: a.radius * 12.0,
+            color: [0.0, 0.12, 0.25],
+        };
+        let frame = Frame {
+            camera,
+            lights: &lights,
+            fog: Some(fog),
+            texture_image: &|_| None,
+            extra: &[],
+            pass: None,
+            wireframe: self.wireframe,
+            textures: self.textures,
+            bilinear: true,
+        };
+        gl.begin([0.0, 0.12, 0.25, 1.0]);
+        render::draw(gpu, gl, &mut a.pictures, &a.bof, &items, &frame, aspect);
     }
-}
-
-fn push_quad(
-    tris: &mut Vec<Tri>,
-    a: Vec3,
-    b: Vec3,
-    c: Vec3,
-    d: Vec3,
-    color: [f32; 4],
-    tex: Option<usize>,
-) {
-    let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-    tris.push(Tri {
-        p: [a, b, c],
-        uv: [uv[0], uv[1], uv[2]],
-        color,
-        tex,
-    });
-    tris.push(Tri {
-        p: [a, c, d],
-        uv: [uv[0], uv[2], uv[3]],
-        color,
-        tex,
-    });
 }
