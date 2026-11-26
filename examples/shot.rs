@@ -1,4 +1,5 @@
 //! Renders one frame: `shot DATA SECONDS YAW PITCH ACTION OUT.png`.
+//! Action 0 is Normal, 1 is Depth Vision and 2 is Night Vision.
 use bugs::{data::Files, gpu, scene::Scene};
 
 const SIZE: (u32, u32) = (1024, 768);
@@ -22,6 +23,9 @@ fn main() -> Result<(), bugs::Error> {
         pitch.parse()?,
         action == "1",
     );
+    if action == "2" {
+        show.key("2");
+    }
     let target = g.target(SIZE.0, SIZE.1, gpu::COLOR, 1);
     let mut enc = g.device.create_command_encoder(&Default::default());
     let view = target.create_view(&Default::default());

@@ -66,18 +66,29 @@ impl WebPlayer {
     pub fn key(&mut self, key: &str) -> bool {
         self.0.show.key(key)
     }
-    /// Sounds to start: a file name without extension, with "*" if it repeats.
+    pub fn key_up(&mut self, key: &str) {
+        self.0.show.key_up(key);
+    }
+    pub fn clear_input(&mut self) {
+        self.0.show.clear_input();
+    }
+    pub fn selected(&self, key: &str) -> bool {
+        self.0.show.frame().selected(key)
+    }
+    /// Name, loop flag, gain and stereo pan for each sound.
     pub fn cues(&mut self) -> Vec<String> {
         self.0
             .show
             .take_cues()
             .into_iter()
             .map(|cue| {
-                if cue.repeat {
-                    format!("{}*", cue.name)
-                } else {
-                    cue.name.to_owned()
-                }
+                format!(
+                    "{}|{}|{:.4}|{:.4}",
+                    cue.name,
+                    u8::from(cue.repeat),
+                    cue.gain,
+                    cue.pan
+                )
             })
             .collect()
     }

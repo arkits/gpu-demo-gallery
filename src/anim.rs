@@ -25,6 +25,8 @@ pub struct Curve {
 pub struct Channel {
     pub node: String,
     pub field: String,
+    /// Which element of a list moves.
+    pub index: usize,
     pub curves: [Option<Curve>; 3],
 }
 
@@ -56,35 +58,34 @@ impl Curve {
             method: n.int("interpMethod"),
             keys,
         };
-        if c.stop < c.start || c.before > 5 || c.after > 5 || c.method > 2 {
+        let known = |mode| matches!(mode, 0 | 2 | 3);
+        if c.stop < c.start || !known(c.before) || !known(c.after) || c.method > 2 {
             return Err("unsupported curve".into());
         }
         Ok(c)
     }
 
-    /// `None` where the curve says nothing (0x46a8f0).
-    pub fn at(&self, ms: f64) -> Option<f32> {
-        let (start, stop) = (f64::from(self.start), f64::from(self.stop));
-        let length = stop - start;
-        if length == 0.0 {
-            return (ms == start
-                || (ms < start && self.before != 0)
-                || (ms > stop && self.after != 0))
-                .then(|| self.keys[0].value);
-        }
-        let local = if ms < start {
-            if self.before == 0 {
-                return None;
-            }
-            length - (start - ms) % length
-        } else if ms <= stop {
-            ms - start
-        } else if self.after != 0 {
-            (ms - stop) % length
+    /// Outside its span a curve holds still (0), repeats (2), or repeats from where it
+    /// ended (3).
+    pub fn at(&self, ms: f64) -> f32 {
+        let length = f64::from(self.stop - self.start);
+        let local = ms - f64::from(self.start);
+        let mode = if local < 0.0 {
+            self.before
+        } else if local > length {
+            self.after
         } else {
-            return None;
+            return self.value((local / 1000.0) as f32);
         };
-        Some(self.value((local / 1000.0) as f32))
+        if length == 0.0 || mode == 0 {
+            return self.value((local.clamp(0.0, length) / 1000.0) as f32);
+        }
+        let value = self.value((local.rem_euclid(length) / 1000.0) as f32);
+        let turns = (local / length).floor() as f32;
+        match mode {
+            3 => value + turns * (self.value((length / 1000.0) as f32) - self.value(0.0)),
+            _ => value,
+        }
     }
 
     fn value(&self, t: f32) -> f32 {
@@ -170,6 +171,7 @@ pub fn read(root: &Node) -> Result<Vec<Channel>, Error> {
                 .first()
                 .cloned()
                 .unwrap_or_else(|| n.text("targetField").to_owned()),
+            index: n.int("index") as usize,
             curves: [curve("xCurve")?, curve("yCurve")?, curve("zCurve")?],
         })
     };
@@ -184,7 +186,7 @@ pub fn read(root: &Node) -> Result<Vec<Channel>, Error> {
 mod tests {
     use super::*;
 
-    fn curve(method: u32) -> Curve {
+    fn curve(method: u32, before: u32, after: u32) -> Curve {
         let key = |time, value, slope: f32| Key {
             time,
             value,
@@ -194,25 +196,35 @@ mod tests {
         Curve {
             start: 100,
             stop: 1100,
-            before: 0,
-            after: 1,
+            before,
+            after,
             method,
             keys: vec![key(0.0, 1.0, 0.0), key(1.0, 3.0, 0.0)],
         }
     }
 
     #[test]
-    fn repeats_after_its_end() {
+    fn repeats_or_holds() {
         for m in 0..3 {
-            let c = curve(m);
-            assert_eq!(c.at(50.0), None);
-            assert!((c.at(100.0).unwrap() - 1.0).abs() < 1e-3);
-            assert!((c.at(600.0).unwrap() - 2.0).abs() < 1e-3);
-            let (a, b) = (c.at(700.0).unwrap(), c.at(1700.0).unwrap());
-            assert!((a - b).abs() < 1e-3);
+            let near = |c: &Curve, ms: f64, v: f32| assert!((c.at(ms) - v).abs() < 1e-2, "{ms}");
+            let hold = curve(m, 0, 0);
+            for (ms, v) in [
+                (50.0, 1.0),
+                (100.0, 1.0),
+                (600.0, 2.0),
+                (1100.0, 3.0),
+                (9e9, 3.0),
+            ] {
+                near(&hold, ms, v);
+            }
+            near(&curve(m, 2, 2), 1600.0, 2.0);
+            near(&curve(m, 2, 2), -400.0, 2.0);
+            near(&curve(m, 3, 3), 1600.0, 4.0);
+            near(&curve(m, 3, 3), 2600.0, 6.0);
+            near(&curve(m, 3, 3), -400.0, 0.0);
         }
         // Flat tangents ease in: both cubics agree, the line does not.
-        let at = |m| curve(m).at(350.0).unwrap();
+        let at = |m| curve(m, 0, 0).at(350.0);
         assert!((at(1) - at(2)).abs() < 1e-3 && at(0) > at(1) + 0.1);
     }
 }

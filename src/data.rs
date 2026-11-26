@@ -20,7 +20,7 @@ pub struct Files(BTreeMap<String, Vec<u8>>);
 impl Files {
     pub fn insert(&mut self, name: &str, data: Vec<u8>) {
         let name = asset_name(name);
-        if [".nmb", ".dds", ".tga", ".ifl", ".png"]
+        if [".nmb", ".dds", ".tga", ".ifl", ".png", ".vxp"]
             .iter()
             .any(|e| name.ends_with(e))
         {
@@ -33,6 +33,10 @@ impl Files {
             .get(&asset_name(name))
             .map(Vec::as_slice)
             .ok_or_else(|| format!("missing {name}").into())
+    }
+
+    pub(crate) fn text(&self, name: &str) -> Result<String, Error> {
+        Ok(String::from_utf8_lossy(self.get(name)?).into_owned())
     }
 
     pub(crate) fn resolve(&self, name: &str) -> Result<String, Error> {
@@ -52,10 +56,20 @@ impl Files {
         Err(format!("missing {name}").into())
     }
 
-    pub fn model(&self, name: &str) -> Result<Model, Error> {
+    /// Reads the scenes of the demo. Later ones can use what the first has.
+    pub fn models(&self) -> Result<Vec<Model>, Error> {
+        let mut out: Vec<Model> = Vec::new();
+        for name in demo::MODELS {
+            let model = self.model(name, out.first())?;
+            out.push(model);
+        }
+        Ok(out)
+    }
+
+    fn model(&self, name: &str, shared: Option<&Model>) -> Result<Model, Error> {
         let load = || -> Result<Model, Error> {
             let root = read_binary(self.get(&format!("models/{name}"))?)?;
-            Model::new(&root, self)
+            Model::new(&root, self, shared)
         };
         load().map_err(|e| format!("{name}: {e}").into())
     }
@@ -78,10 +92,13 @@ impl Files {
         let mut names: BTreeSet<String> = self
             .0
             .keys()
-            .filter(|name| name.starts_with("textures/"))
+            .filter(|name| name.starts_with("textures/") || name.starts_with("programs/"))
             .cloned()
             .collect();
         names.insert("userinterface/nvidialogo.dds".to_owned());
+        for button in crate::show::MENU {
+            names.extend([button.texture(false), button.texture(true)]);
+        }
         for file in demo::MODELS.iter().chain(demo::CLIPS) {
             let name = format!("models/{file}");
             read_binary(self.get(&name)?).map_err(|e| format!("{name}: {e}"))?;
@@ -155,7 +172,10 @@ impl Files {
             let item = item?;
             let name = item.file_name().to_string_lossy().to_ascii_lowercase();
             if !item.file_type()?.is_dir()
-                || !(name == "models" || name == "userinterface" || name.starts_with("textures"))
+                || !(name == "models"
+                    || name == "programs"
+                    || name == "userinterface"
+                    || name.starts_with("textures"))
             {
                 continue;
             }

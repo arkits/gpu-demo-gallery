@@ -1,6 +1,6 @@
 // Drives the web build in headless Chrome: webtest.mjs <url> <out dir> <command> [gpu]
 //   show   start, sound, action, drag, resize
-//   still  four moments, for comparison with native frames
+//   still  five moments, for comparison with native frames
 import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
 const { chromium } = createRequire(process.env.PLAYWRIGHT_FROM + "/")("playwright-core");
@@ -57,9 +57,21 @@ const commands = {
     const f = await frames(3000);
     check(f.fps > 35, `scene: ${f.fps.toFixed(0)} fps, worst frame ${f.worst.toFixed(0)} ms`);
     const music = await page.evaluate(() => window.demo.sound());
-    check(music.looping === "wind_constant" && music.level > 0.0005, `music plays: ${JSON.stringify(music)}`);
-    await page.click('#modes [data-key="s"]');
-    await shot("action");
+    check(music.loops.includes("wind_constant") && music.loops.includes("heli") && music.level > 0.0005,
+      `wind and helicopter play: ${JSON.stringify(music)}`);
+    await page.click("#controls");
+    for (const key of ["2", "3", "1", "w", "p", "a", "s", "l", "n"]) {
+      const btn = page.locator(`#options [data-key="${key}"]`);
+      await btn.click();
+      check(await btn.getAttribute("aria-pressed") === "true", `control ${key}`);
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+    }
+    await shot("alias");
+    await page.locator('#options [data-key="a"]').click();
+    await page.click("#controls");
+    await page.keyboard.down("ArrowUp");
+    await page.waitForTimeout(500);
+    await page.keyboard.up("ArrowUp");
     await shot("before");
     await page.mouse.move(300, 300); await page.mouse.down(); await page.mouse.move(600, 260, { steps: 20 });
     await page.mouse.up();
@@ -73,7 +85,7 @@ const commands = {
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "fits a phone");
   },
   async still() {
-    for (const [name, query] of [["a", "time=5"], ["b", "time=8&yaw=0.8&pitch=-0.3&action=1"], ["c", "time=3&yaw=1.57"], ["d", "time=2&yaw=4&pitch=0.7"]]) {
+    for (const [name, query] of [["a", "time=113"], ["b", "time=114&yaw=0.25&pitch=-0.15&action=1"], ["c", "time=42&yaw=0.2"], ["d", "time=5&yaw=0.1&pitch=0.15"], ["night", "time=113&action=2"]]) {
       await page.goto(`${url}?${query}`);
       await page.waitForFunction(() => document.documentElement.dataset.done, null, { timeout: 90000 });
       await page.waitForTimeout(150);

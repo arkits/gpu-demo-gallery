@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compares 8-bit RGB/RGBA PNGs, ignoring alpha, with no dependencies.
 
-compare_png.py [--max-mean M] reference.png other.png...
+compare_png.py [--night] [--max-mean M] reference.png other.png...
 Exits 1 if any mean difference (0-255) exceeds M.
 """
 import struct
@@ -46,13 +46,33 @@ def load(path):
     return width, height, b"".join(out)
 
 
+def check_night(path, img):
+    width, height, data = img
+    # Ignore the NVIDIA badge in the bottom-right corner.
+    scene = data[:width * (height * 4 // 5) * 3]
+    pixels = zip(scene[::3], scene[1::3], scene[2::3])
+    gray, red, green = 0, 0, 0
+    for r, g, b in pixels:
+        gray += r == g == b and 24 <= r <= 27
+        red += r > g + 32 and r > b + 32
+        green += g > r + 32 and g > b + 32
+    passed = gray > len(scene) // 12 and red > 100 and green > 100
+    print(f"{path}: Night Vision palette {'passed' if passed else 'failed'} "
+          f"(dark gray {gray}, red {red}, green {green})")
+    return passed
+
+
 def main(args):
+    night = args[:1] == ["--night"]
+    if night:
+        args = args[1:]
     limit = None
     if args[:1] == ["--max-mean"]:
         limit, args = float(args[1]), args[2:]
     if len(args) < 2:
         sys.exit(__doc__)
-    ref, failed = load(args[0]), False
+    ref = load(args[0])
+    failed = night and not check_night(args[0], ref)
     for path in args[1:]:
         img = load(path)
         if img[:2] != ref[:2]:
@@ -61,6 +81,8 @@ def main(args):
         mean = sum(diff) / len(diff)
         print(f"{path}: max {max(diff)} mean {mean:.4f} over-8 {sum(d > 8 for d in diff)}")
         failed |= limit is not None and mean > limit
+        if night:
+            failed |= not check_night(path, img)
     sys.exit(failed)
 
 

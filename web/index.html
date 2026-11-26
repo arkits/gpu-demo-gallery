@@ -20,27 +20,54 @@
   kbd { font: 12px ui-monospace, monospace; border: 1px solid #355a4d; border-radius: 4px; padding: 1px 5px; }
   progress { width: min(320px, 80vw); accent-color: #59d3a6; }
   #status[data-error] { color: #ff9d8a; }
-  #modes { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(14px, env(safe-area-inset-bottom)); display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; width: min(560px, calc(100vw - 32px)); }
-  #modes.still { opacity: 0; }
-  #modes:hover, #modes:focus-within { opacity: 1; }
-  #modes { transition: opacity .4s; bottom: auto; top: max(14px, env(safe-area-inset-top)); }
+  #modes { position: fixed; right: max(12px, env(safe-area-inset-right)); top: max(12px, env(safe-area-inset-top)); display: flex; gap: 6px; }
+  #modes button { background: #081713e8; padding: 6px 12px; min-height: 44px; }
   #modes button[aria-pressed=true] { border-color: #59d3a6; color: #b6f0da; }
-  #modes button { background: #041510c0; padding: 6px 12px; min-height: 44px; }
+  #quick { display: flex; gap: 6px; }
+  #options { position: absolute; top: calc(100% + 8px); right: 0; width: min(320px, calc(100vw - 24px)); box-sizing: border-box; padding: 10px; border: 1px solid #3f6a5c; background: #081713f2; max-height: calc(100dvh - 76px); overflow-y: auto; }
+  #options fieldset { border: 0; border-top: 1px solid #355a4d; padding: 4px 0 6px; margin: 0 0 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+  #options legend { padding-right: 8px; color: #8fada2; font: 11px ui-monospace, monospace; letter-spacing: .09em; text-transform: uppercase; }
+  #options button { padding: 4px 8px; }
 </style>
 <!-- Cloudflare Pages adds its analytics script to an explicit body. -->
 <body>
-<canvas id="view" tabindex="0" aria-label="Toy soldiers marching on a tabletop"></canvas>
+<canvas id="view" tabindex="0" aria-label="Alien bugs walking in a spotlight"></canvas>
 <div id="modes" hidden>
-  <button data-key="s">Swarm pace</button><button data-key="d">Depth Vision</button><button data-key="p">Pause</button><button data-key="Home">Reset view</button>
-  <button id="mute" aria-pressed="false">Mute</button>
+  <div id="quick">
+    <button id="controls" aria-expanded="false" aria-controls="options">Controls</button>
+    <button id="mute" aria-pressed="false">Mute</button>
+  </div>
+  <div id="options" hidden>
+    <fieldset><legend>Vision</legend>
+      <button data-key="1" data-mode>Normal</button>
+      <button data-key="2" data-mode>Night Vision</button>
+      <button data-key="3" data-mode>Depth Vision</button>
+    </fieldset>
+    <fieldset><legend>Draw style</legend>
+      <button data-key="s" data-mode>Solid</button>
+      <button data-key="w" data-mode>Lines</button>
+      <button data-key="p" data-mode>Points</button>
+      <button data-key="a" data-mode>Aliased inset</button>
+    </fieldset>
+    <fieldset><legend>Navigation</legend>
+      <button data-key="n" data-mode>Walk</button>
+      <button data-key="l" data-mode>Light</button>
+      <button data-key="Home">Reset view</button>
+    </fieldset>
+    <fieldset><legend>Show</legend>
+      <button data-key="-">Fewer bugs</button>
+      <button data-key="+">More bugs</button>
+      <button data-key=" " data-mode>Pause</button>
+    </fieldset>
+  </div>
 </div>
 <main id="start">
   <h1>Bugs</h1>
   <button id="play" class="primary" hidden>Start</button>
   <label id="choose">Choose demo folder <input id="folder" type="file" webkitdirectory></label>
   <p id="need">Needs the unpacked files of NVIDIA's demo. They stay on this computer.</p>
-  <p>Alien insects swarm over rolling terrain and abandoned machinery.</p>
-  <p>Drag to orbit and scroll or pinch to zoom. <kbd>S</kbd> swarm pace · <kbd>P</kbd> pause · <kbd>M</kbd> mute · <kbd>Enter</kbd> full screen</p>
+  <p>Sixty alien bugs walk on their six legs through a spotlight in a junkyard.</p>
+  <p>Drag to look. Use the arrow keys or scroll to walk. <kbd>1</kbd>–<kbd>3</kbd> vision modes · <kbd>L</kbd> light control · <kbd>Space</kbd> pause · <kbd>Enter</kbd> full screen</p>
   <p>NVIDIA's “Bugs” demo, 2002.</p>
   <progress id="progress" hidden></progress>
   <p id="status" role="status"></p>
@@ -57,19 +84,19 @@
     const s = window.devicePixelRatio || 1;
     return [Math.round(canvas.clientWidth * s), Math.round(canvas.clientHeight * s)];
   };
-  // ?time=&yaw=&pitch=&action=1 shows one still, for checking frames.
+  // ?time=&yaw=&pitch= shows a still. Use action=1 for Depth or action=2 for Night.
   const params = new URLSearchParams(location.search);
   const still = params.has("time");
   let files = null, player = null;
 
   const sound = {
-    sources: {}, buffers: {}, muted: false, loop: null, effect: null,
+    sources: {}, buffers: {}, muted: false, loops: new Map(), voices: [],
     open() {
       this.context = new AudioContext();
       this.volume = this.context.createGain();
       this.meter = this.context.createAnalyser();
       this.volume.connect(this.meter).connect(this.context.destination);
-      for (const n of ["wind_constant", "bug_screech1"]) this.get(n);
+      for (const n of ["wind_constant", "heli", "horde_rumble", "bug_screech1", "bug_screech2", "bug_screech3", "bug_clack1", "bug_clack2", "bug_clack3"]) this.get(n);
     },
     get(name) {
       return this.buffers[name] ??= (async () => {
@@ -81,14 +108,35 @@
       })();
     },
     async cue(text) {
-      const loop = text.endsWith("*"), name = text.replace("*", ""), kind = loop ? "loop" : "effect";
-      this[kind]?.node?.stop();
-      const entry = this[kind] = { name };
+      const [name, flag, gainText, panText] = text.split("|");
+      const loop = flag === "1", gain = Number(gainText), pan = Number(panText);
+      const now = this.context.currentTime;
+      const current = this.loops.get(name);
+      if (current) {
+        current.gain = gain;
+        current.pan = pan;
+        current.level?.gain.setTargetAtTime(gain, now, 0.05);
+        current.position?.pan.setTargetAtTime(pan, now, 0.05);
+        return;
+      }
+      const entry = { gain, pan };
+      if (loop) this.loops.set(name, entry);
       const buffer = await this.get(name);
-      // Another cue may have come while this one was loading.
-      if (!buffer || this[kind] !== entry) return;
+      if (!buffer) return;
       entry.node = new AudioBufferSourceNode(this.context, { buffer, loop });
-      entry.node.connect(this.volume);
+      entry.level = new GainNode(this.context, { gain: entry.gain });
+      entry.position = new StereoPannerNode(this.context, { pan: entry.pan });
+      entry.node.connect(entry.level).connect(entry.position).connect(this.volume);
+      if (!loop) {
+        this.voices.push(entry);
+        if (this.voices.length > 24) this.voices.shift().node.stop();
+        entry.node.onended = () => {
+          this.voices = this.voices.filter((voice) => voice !== entry);
+          entry.node.disconnect();
+          entry.level.disconnect();
+          entry.position.disconnect();
+        };
+      }
       entry.node.start();
     },
     mute() {
@@ -99,7 +147,8 @@
     state() {
       const d = new Float32Array(this.meter.fftSize);
       this.meter.getFloatTimeDomainData(d);
-      return { looping: this.loop?.node && this.loop.name, level: Math.max(...d.map(Math.abs)) };
+      const loops = [...this.loops].filter(([, loop]) => loop.node).map(([name]) => name);
+      return { loops, level: Math.max(...d.map(Math.abs)) };
     },
   };
 
@@ -136,7 +185,10 @@
   function run() {
     let last = size().join(), n = 0;
     const number = (k) => Number(params.get(k) ?? 0);
-    if (still) player.freeze(number("time"), number("yaw"), number("pitch"), number("action") === 1);
+    if (still) {
+      player.freeze(number("time"), number("yaw"), number("pitch"), number("action") === 1);
+      if (number("action") === 2) player.key("2");
+    }
     const tick = (now) => {
       const [w, h] = size();
       if (`${w},${h}` !== last) {
@@ -155,29 +207,41 @@
     };
     requestAnimationFrame(tick);
     if (still) return;
-    let hide;
-    const wake = () => {
-      $("modes").classList.remove("still");
-      clearTimeout(hide);
-      hide = setTimeout(() => $("modes").classList.add("still"), 4000);
+    const sync = () => {
+      for (const button of $("options").querySelectorAll("[data-mode]")) {
+        button.setAttribute("aria-pressed", player.selected(button.dataset.key));
+      }
     };
-    for (const t of ["pointermove", "pointerdown", "keydown"]) addEventListener(t, wake);
-    wake();
+    const menu = (open) => {
+      $("options").hidden = !open;
+      $("controls").setAttribute("aria-expanded", open);
+    };
+    $("controls").addEventListener("click", () => menu($("options").hidden));
+    $("mute").addEventListener("click", () => sound.mute());
+    sync();
     document.addEventListener("visibilitychange", () => document.hidden ? sound.context?.suspend() : sound.context?.resume());
+    addEventListener("blur", () => player.clear_input());
+    addEventListener("keyup", (e) => player.key_up(e.key));
 
     addEventListener("keydown", (e) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
       if (e.key === "Enter" && e.target.tagName !== "BUTTON") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
       else if (e.key === " " && e.target.tagName === "BUTTON") return;
-      else if (e.key === "m" || e.key === "M") sound.mute();
-      else if (!player.key(e.key)) return;
+      else if (e.key === "Escape" && !$("options").hidden) {
+        menu(false);
+        $("controls").focus();
+      } else if (!e.repeat && (e.key === "m" || e.key === "M")) sound.mute();
+      else if (e.key === "Tab" || e.repeat || !player.key(e.key)) return;
+      sync();
       e.preventDefault();
     });
-    for (const b of $("modes").children) b.addEventListener("click", () => {
-      if (b.id === "mute") sound.mute();
-      else player.key(b.dataset.key);
-      canvas.focus();
-    });
+    for (const button of $("options").querySelectorAll("[data-key]")) {
+      button.addEventListener("click", () => {
+        if (button.dataset.key === "l" && player.selected("l")) return;
+        player.key(button.dataset.key);
+        sync();
+      });
+    }
 
     const at = (e) => [e.clientX / canvas.clientWidth, e.clientY / canvas.clientHeight];
     const touches = new Map();
@@ -189,7 +253,7 @@
     canvas.addEventListener("pointerdown", (e) => {
       canvas.setPointerCapture(e.pointerId);
       touches.set(e.pointerId, at(e));
-      if (touches.size === 1) player.press(...at(e));
+      if (touches.size === 1) { player.press(...at(e)); sync(); }
       else player.release();
     });
     const up = (e) => {
@@ -217,7 +281,7 @@
   async function take(list) {
     const found = new WebFiles();
     for (const f of list) {
-      if (/\.(nmb|dds|tga|ifl|png)$/i.test(f.name)) found.insert(f.webkitRelativePath.split("/").slice(1).join("/"), new Uint8Array(await f.arrayBuffer()));
+      if (/\.(nmb|dds|tga|ifl|png|vxp)$/i.test(f.name)) found.insert(f.webkitRelativePath.split("/").slice(1).join("/"), new Uint8Array(await f.arrayBuffer()));
       else if (/\.wav$/i.test(f.name)) sound.sources[f.name.toLowerCase().replace(".wav", "")] = f;
     }
     try {
@@ -240,15 +304,15 @@
   // Content served with the page: scripts/serve.py locally, or a bundled deployment.
   const mb = (n) => (n / 1e6).toFixed(1);
   try {
-    const manifest = await fetch("./local/assets.json").catch(() => null);
+    const manifest = await fetch("./local/assets.json", { cache: "no-store" }).catch(() => null);
     if (manifest?.ok && manifest.headers.get("content-type")?.includes("json")) {
-      const { files: names, size: total } = await manifest.json();
+      const { files: names, size: total, version } = await manifest.json();
       for (const id of ["choose", "need"]) $(id).hidden = true;
       $("progress").hidden = false;
       const parts = [];
       let done = 0;
       for (const name of names) {
-        const r = await fetch(`./local/${encodeURIComponent(name)}`);
+        const r = await fetch(`./local/${encodeURIComponent(name)}?v=${version}`);
         if (!r.ok || !r.body) throw new Error(`Asset download failed (${r.status})`);
         for (const reader = r.body.getReader(); ; ) {
           const { done: end, value } = await reader.read();

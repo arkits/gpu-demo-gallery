@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -7,7 +8,7 @@ use bugs::data::Files;
 use bugs::show::Cue;
 use bugs::{Error, Player};
 use rodio::buffer::SamplesBuffer;
-use rodio::{MixerDeviceSink, Source};
+use rodio::{MixerDeviceSink, Source, SpatialPlayer};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -168,8 +169,9 @@ fn wav(d: &[u8]) -> Option<SamplesBuffer> {
 struct Sound {
     dir: PathBuf,
     device: MixerDeviceSink,
-    music: Option<rodio::Player>,
-    effect: Option<rodio::Player>,
+    loops: HashMap<&'static str, (SpatialPlayer, f32)>,
+    voices: Vec<(SpatialPlayer, f32)>,
+    clips: HashMap<&'static str, Option<SamplesBuffer>>,
     muted: bool,
 }
 
@@ -185,44 +187,56 @@ impl Sound {
         Some(Self {
             dir,
             device,
-            music: None,
-            effect: None,
+            loops: HashMap::new(),
+            voices: Vec::new(),
+            clips: HashMap::new(),
             muted: false,
         })
     }
 
     fn play(&mut self, cue: Cue) {
-        let name = cue.name;
-        let filename = format!("{name}.wav");
-        let file = std::fs::read_dir(&self.dir)
-            .ok()
-            .into_iter()
-            .flatten()
-            .flatten()
-            .find(|f| {
+        let emitter = [cue.pan * 2.0, 0.0, 1.0];
+        let volume = if self.muted { 0.0 } else { cue.gain };
+        if let Some((player, gain)) = self.loops.get_mut(cue.name) {
+            *gain = cue.gain;
+            player.set_emitter_position(emitter);
+            player.set_volume(volume);
+            return;
+        }
+        let buffer = self.clips.entry(cue.name).or_insert_with(|| {
+            let filename = format!("{}.wav", cue.name);
+            let file = std::fs::read_dir(&self.dir).ok()?.flatten().find(|f| {
                 f.file_name()
                     .to_string_lossy()
                     .eq_ignore_ascii_case(&filename)
-            });
-        let data = file.and_then(|file| std::fs::read(file.path()).ok());
-        let Some(buffer) = data.and_then(|d| wav(&d)) else {
-            return eprintln!("cannot play {name}.wav");
-        };
-        let player = rodio::Player::connect_new(self.device.mixer());
-        player.set_volume(if self.muted { 0.0 } else { 1.0 });
+            })?;
+            wav(&std::fs::read(file.path()).ok()?)
+        });
+        let Some(buffer) = buffer.clone() else { return };
+        let player = SpatialPlayer::connect_new(
+            self.device.mixer(),
+            emitter,
+            [-0.7, 0.0, 0.0],
+            [0.7, 0.0, 0.0],
+        );
+        player.set_volume(volume);
         if cue.repeat {
             player.append(buffer.repeat_infinite());
-            self.music = Some(player);
+            self.loops.insert(cue.name, (player, cue.gain));
         } else {
+            self.voices.retain(|(player, _)| !player.empty());
+            if self.voices.len() >= 24 {
+                self.voices.remove(0);
+            }
             player.append(buffer);
-            self.effect = Some(player);
+            self.voices.push((player, cue.gain));
         }
     }
 
     fn mute(&mut self) {
         self.muted = !self.muted;
-        for p in self.music.iter().chain(&self.effect) {
-            p.set_volume(if self.muted { 0.0 } else { 1.0 });
+        for (player, gain) in self.loops.values().chain(&self.voices) {
+            player.set_volume(if self.muted { 0.0 } else { *gain });
         }
     }
 }
@@ -307,6 +321,7 @@ impl Shell {
             Key::Named(NamedKey::ArrowLeft) => _ = player.show.key("ArrowLeft"),
             Key::Named(NamedKey::ArrowRight) => _ = player.show.key("ArrowRight"),
             Key::Named(NamedKey::Home) => _ = player.show.key("Home"),
+            Key::Named(NamedKey::Tab) => _ = player.show.key("Tab"),
             Key::Character(c) if c.eq_ignore_ascii_case("m") => {
                 if let Some(s) = &mut self.sound {
                     s.mute();
@@ -367,6 +382,32 @@ impl ApplicationHandler for Shell {
                     },
                 ..
             } => self.key(el, &logical_key),
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(key),
+                        state: ElementState::Released,
+                        ..
+                    },
+                ..
+            } => {
+                if let Some(player) = &mut self.player {
+                    let name = match key {
+                        NamedKey::ArrowUp => "ArrowUp",
+                        NamedKey::ArrowDown => "ArrowDown",
+                        NamedKey::ArrowLeft => "ArrowLeft",
+                        NamedKey::ArrowRight => "ArrowRight",
+                        _ => return,
+                    };
+                    player.show.key_up(name);
+                }
+            }
+            WindowEvent::Focused(false) => {
+                self.held = false;
+                if let Some(player) = &mut self.player {
+                    player.show.clear_input();
+                }
+            }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,

@@ -7,8 +7,9 @@ out=$1
 dest=$(dirname "$out")
 manifest=$dest/assets.json
 if [ -f "$out" ] && [ -f "$manifest" ] &&
-   [ -z "$(find src scripts/pack.sh scripts/audio.list "$data" -newer "$out" -type f | head -1)" ]; then exit 0; fi
+   [ -z "$(find src scripts/pack.sh scripts/pack_parts.py scripts/audio.list "$data" -newer "$out" -type f | head -1)" ]; then exit 0; fi
 mkdir -p target/package "$dest"
+rm -f "$dest"/*.flac
 while IFS= read -r name; do
   path=$(find "$data/sounds" -type f -iname "$name.wav" | head -1)
   [ -n "$path" ] || { echo "missing sound: $name" >&2; exit 1; }

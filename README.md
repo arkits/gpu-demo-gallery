@@ -14,7 +14,18 @@ scripts/dev.sh all       # native, WebGPU and WebGL2 checks
 scripts/dev.sh package   # macOS app and Windows executable
 ```
 
-S changes the swarm pace. D toggles Depth Vision. Drag to orbit and scroll or pinch to zoom. P pauses, Home resets the view,
-L toggles the NVIDIA logo, M mutes, and Enter toggles full screen.
+The opening starts on an empty stage. One bug arrives first, followed by the swarm.
+
+| Control | Action |
+| --- | --- |
+| Drag, arrow keys, scroll or pinch | Look around and walk |
+| 1, 2, 3 | Normal, Night Vision, Depth Vision |
+| S, W, P | Solid, lines, points |
+| L, N | Steer the spotlight, return to walking |
+| A | Toggle the aliased inset |
+| +, − | Add or remove bugs |
+| Space, Home | Pause, reset the view |
+| Tab (native), Controls (web) | Open the controls |
+| M, Enter | Mute, toggle full screen |
 
 See [engine notes](docs/ENGINE.md) and [development](docs/DEVELOPMENT.md).
