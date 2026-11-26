@@ -125,7 +125,7 @@ fn compare(fun: i32, a: f32, b: f32) -> bool {
 }
 
 @fragment
-fn glide(i: V) -> @location(0) vec4<f32> {
+fn glide(i: V) -> Out {
     let p = params.v;
     var uv = i.uv0.xy;
     var outside = false;
@@ -165,5 +165,5 @@ fn glide(i: V) -> @location(0) vec4<f32> {
         let f = clamp((i.uv1.x - p[7].y) / max(p[7].z - p[7].y, 1e-3), 0.0, 1.0);
         rgb = mix(rgb, p[8].rgb, f);
     }
-    return vec4(rgb, a);
+    return glide_out(vec4(rgb, a), i.clip);
 }
