@@ -1,6 +1,8 @@
 # ATB-TV
 
-A port of 3dfx's "ATB-TV" ATB demo (1997) to current systems: browsers (WebGPU, or WebGL2), macOS, and Windows. Written in Rust with wgpu. A TV cabinet playing a movie, built from the demo's own .3DF frames.
+A television on a marble stand turns slowly while a 73-frame movie plays on its curved screen. `atbtv.exe` builds the set in code and plays every `.3df` in `movie/` as an animated texture.
+
+A port of 3dfx's "ATB-TV" demo (1997) to current systems: browsers (WebGPU, or WebGL2), macOS, and Windows. Written in Rust with wgpu.
 
 Play it: https://atb-tv-port.pages.dev
 
@@ -13,11 +15,15 @@ The demo's files are 3dfx's and are not in this repository. Put its `data` folde
 
 | Input | Action |
 |---|---|
-| w | Wireframe |
-| p | Pause spin |
-| t | Next texture |
-| Drag | Turn camera |
-| Scroll | Move in / out |
+| Space | Turn on/off |
+| a | Movie on/off |
+| c | Play the movie on the screen, stand or floor |
+| l | Lighting: plain, shiny, flat |
+| - / = | Shininess |
+| m | Untextured |
+| Up / Down | Move the camera |
+| Left / Right | Widen / narrow the view |
+| w / t | Wireframe / textures |
 | Enter, Esc | Full screen, quit (native) |
 
 How the original works: [docs/ENGINE.md](docs/ENGINE.md).

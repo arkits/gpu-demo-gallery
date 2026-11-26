@@ -1,4 +1,4 @@
-//! Checks the demo's own files load through the strict ATB readers.
+//! Checks the demo's own files load through the strict readers.
 use atb_tv::data::Files;
 use std::path::PathBuf;
 
@@ -14,12 +14,13 @@ fn data() -> Option<PathBuf> {
 }
 
 #[test]
-fn real_assets_load() {
+fn every_picture_reads() {
     let Some(dir) = data() else { return };
     let files = Files::from_path(&dir).expect("need the demo's files");
     files.check().unwrap();
-    let scene = atb::Scene::load(&files).unwrap();
-    assert!(!scene.dict.is_empty() || !scene.meshes.is_empty() || !scene.textures.is_empty());
+    for f in atb_tv::demo::FILES {
+        atb::read_texture_3df(files.get(f).unwrap()).unwrap_or_else(|e| panic!("{f}: {e}"));
+    }
 }
 
 #[test]

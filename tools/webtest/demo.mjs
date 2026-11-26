@@ -1,13 +1,12 @@
 export const sound = null;
 export async function actions({ page, check, report, shot }) {
-  check((await report()).length > 0, `report: ${await report()}`);
-  const keys = "w t p".split(" ").filter(Boolean);
-  for (const k of keys) {
-    await page.keyboard.press(k);
-    await page.click(`#modes [data-key="${k}"]`);
-  }
-  await page.mouse.move(400, 400); await page.mouse.down(); await page.mouse.move(600, 420, { steps: 6 }); await page.mouse.up();
-  await page.mouse.wheel(0, -150);
+  // The movie advances a frame a refresh.
+  const a = await report(); await page.waitForTimeout(300);
+  check(a !== (await report()), `movie plays: ${await report()}`);
+  await page.keyboard.press("l");
+  check((await report()).includes("lighting 1"), `lighting key: ${await report()}`);
+  await page.click('#modes [data-key="c"]');
+  check((await report()).includes("target 1"), `movie on button: ${await report()}`);
   await page.waitForTimeout(400);
   await shot("background");
 }
