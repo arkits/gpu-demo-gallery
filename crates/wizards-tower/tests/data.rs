@@ -1,4 +1,4 @@
-//! Checks the demo's own files load through the strict ATB readers.
+//! Checks the demo's own file loads through the strict readers.
 use std::path::PathBuf;
 use wizards_tower::data::Files;
 
@@ -14,12 +14,13 @@ fn data() -> Option<PathBuf> {
 }
 
 #[test]
-fn real_assets_load() {
+fn scene_reads() {
     let Some(dir) = data() else { return };
     let files = Files::from_path(&dir).expect("need the demo's files");
-    files.check().unwrap();
-    let scene = atb::Scene::load(&files).unwrap();
-    assert!(!scene.dict.is_empty() || !scene.meshes.is_empty() || !scene.textures.is_empty());
+    let bof = atb::Bof::parse(files.get("wiz.bof").unwrap()).unwrap();
+    for name in ["room1", "room2", "room3", "room4", "room5", "floor"] {
+        assert!(bof.find(name).is_some(), "{name}");
+    }
 }
 
 #[test]

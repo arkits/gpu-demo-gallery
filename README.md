@@ -1,6 +1,8 @@
 # Wizards Tower
 
-A port of 3dfx's "Wizards Tower" ATB demo (1997) to current systems: browsers (WebGPU, or WebGL2), macOS, and Windows. Written in Rust with wgpu. A textured room from the wiz.bof name table and its .3DF textures.
+A walk through the five rooms of a wizard's tower, each triangle lit by its own light map in a second, multiplied pass, as `wiz.exe` showed off light-mapped environments.
+
+A port of 3dfx's "Wizards Tower" demo (1996) to current systems: browsers (WebGPU, or WebGL2), macOS, and Windows. Written in Rust with wgpu.
 
 Play it: https://wizards-tower-port.pages.dev
 
@@ -13,11 +15,11 @@ The demo's files are 3dfx's and are not in this repository. Put its `data` folde
 
 | Input | Action |
 |---|---|
-| w | Wireframe |
-| p | Pause spin |
-| t | Next texture |
-| Drag | Turn camera |
-| Scroll | Move in / out |
+| Up / Down | Walk |
+| Left / Right | Turn |
+| Drag | Look |
+| 1-5 | Go to room 1-5 |
+| w / t | Wireframe / textures |
 | Enter, Esc | Full screen, quit (native) |
 
 How the original works: [docs/ENGINE.md](docs/ENGINE.md).
