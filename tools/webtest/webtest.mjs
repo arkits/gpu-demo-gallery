@@ -58,12 +58,12 @@ const commands = {
     check(f.fps > 50 && f.worst < 100, `scene: ${f.fps.toFixed(0)} fps, worst frame ${f.worst.toFixed(0)} ms`);
     const music = await page.evaluate(() => window.demo.sound());
     check(music.looping === "crystal_ball" && music.level > 0.0005, `music plays: ${JSON.stringify(music)}`);
+    // Into the ball, then the other castle, whose music takes over.
     await page.keyboard.press(" ");
-    await page.waitForFunction(() => window.demo.sound().looping === "light_castle");
-    check(true, "action music starts");
+    await page.waitForTimeout(2000);
     await shot("action");
     await page.keyboard.press("s");
-    await page.waitForFunction(() => window.demo.sound().looping === "dark_castle");
+    await page.waitForFunction(() => window.demo.sound().looping === "dark_castle", null, { timeout: 5000 });
     check(true, "castle swap changes music");
     await shot("before");
     await page.mouse.move(300, 300); await page.mouse.down(); await page.mouse.move(600, 260, { steps: 20 });

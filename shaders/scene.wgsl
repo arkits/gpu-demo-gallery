@@ -4,12 +4,16 @@ struct Frame {
     eye: vec4<f32>,
     light: vec4<f32>,
     parameters: vec4<f32>,
+    right: vec4<f32>,
+    up: vec4<f32>,
+    back: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var wrap: sampler;
 @group(1) @binding(0) var base: texture_2d<f32>;
 @group(1) @binding(1) var second: texture_2d<f32>;
 @group(1) @binding(2) var environment: texture_cube<f32>;
+@group(1) @binding(3) var around: texture_cube<f32>;
 
 struct Vertex {
     @location(0) position: vec3<f32>,
@@ -45,7 +49,7 @@ struct Surface {
 }
 
 fn cube_sample(direction: vec3<f32>) -> vec4<f32> {
-    return textureSample(environment, wrap, direction * vec3(1.0, 1.0, -1.0));
+    return textureSample(environment, wrap, direction);
 }
 
 @fragment fn surface_fs(s: Surface) -> @location(0) vec4<f32> {
@@ -56,7 +60,11 @@ fn cube_sample(direction: vec3<f32>) -> vec4<f32> {
     let map0 = textureSample(base, wrap, s.uv);
     let map1 = textureSample(second, wrap, s.uv2);
     let reflection = cube_sample(reflect(view, normal)).rgb;
-    let refraction = cube_sample(refract(view, normal, 0.71)).rgb;
+    let mirrored = textureSample(around, wrap, reflect(view, normal)).rgb;
+    let wall = cube_sample(normal).rgb;
+    // Direct3D's camera looks along z, not against it.
+    let facing = cube_sample(vec3(dot(frame.right.xyz, normal), dot(frame.up.xyz, normal),
+        -dot(frame.back.xyz, normal))).a;
     let n = normalize(mat3x3(s.axis_x, s.axis_y, s.axis_z) * (map0.xyz * 2.0 - 1.0));
     let lit = max(s.ambient_mode.xyz, vec3(0.23)) + 0.76 * max(dot(normal, light), 0.0);
     var rgb = s.diffuse.rgb * lit;
@@ -65,20 +73,19 @@ fn cube_sample(direction: vec3<f32>) -> vec4<f32> {
     switch mode {
         case 1u: { rgb *= map0.rgb; }
         case 2u: { rgb = map1.rgb * (0.18 + 0.82 * max(dot(n, light), 0.0)); }
-        case 3u: { rgb = rgb * map0.rgb + reflection * 0.34; }
+        case 3u: { rgb = mix(reflection, rgb * map0.rgb, s.diffuse.a); }
         case 4u: { rgb = mix(rgb, reflection, 0.72); }
-        case 5u: {
-            rgb = refraction * vec3(0.94, 0.98, 1.0);
-        }
+        // The far wall of the ball, by its normal.
+        case 5u: { rgb = wall; }
+        // Glass: what is around the ball, less where one looks straight at it.
         case 6u: {
-            let fresnel = pow(1.0 - abs(dot(-view, normal)), 3.0);
-            rgb = reflection;
-            alpha = 0.09 + 0.58 * fresnel;
+            rgb = mirrored * 0.8;
+            alpha = facing * frame.parameters.x;
         }
         case 7u: { rgb = map0.rgb * (0.56 + map1.rgb * 0.44); }
         default: {}
     }
-    return vec4(rgb * frame.parameters.x, alpha);
+    return vec4(rgb, alpha);
 }
 
 struct Quad {
@@ -94,28 +101,19 @@ struct Quad {
 @fragment fn sky_fs(s: Quad) -> @location(0) vec4<f32> {
     let far = frame.inverse * vec4(s.xy, 1.0, 1.0);
     let direction = normalize(far.xyz / far.w - frame.eye.xyz);
-    return vec4(cube_sample(direction).rgb * frame.parameters.x * frame.parameters.y, 1.0);
+    return vec4(cube_sample(direction).rgb * frame.parameters.y, 1.0);
 }
 
 @vertex fn badge_vs(@builtin(vertex_index) index: u32) -> Quad {
     let uv = array(vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(0.0, 0.0),
         vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(1.0, 0.0))[index];
-    let extent = vec2(min(0.38, 0.51 / frame.parameters.z), 0.15);
+    // The logo is twice as wide as high.
+    let extent = vec2(0.30 * 2.0 / frame.parameters.z, 0.30) * 0.5;
     return Quad(vec4(vec2(1.0 - extent.x, -1.0) + vec2(uv.x, 1.0 - uv.y) * extent, 0.0, 1.0), uv);
 }
 
 @fragment fn badge_fs(s: Quad) -> @location(0) vec4<f32> {
     return textureSample(base, wrap, s.xy);
-}
-
-@vertex fn shadow_vs(v: Vertex) -> @builtin(position) vec4<f32> {
-    let p = mat4x4(v.x, v.y, v.z, v.origin) * vec4(v.position, 1.0);
-    let shift = frame.light.xz / frame.light.y * p.y;
-    return frame.view_proj * vec4(p.x - shift.x, 0.025, p.z - shift.y, 1.0);
-}
-
-@fragment fn shadow_fs() -> @location(0) vec4<f32> {
-    return vec4(0.07, 0.05, 0.08, 0.34);
 }
 
 fn random(seed: u32) -> f32 {
@@ -133,13 +131,12 @@ fn random(seed: u32) -> f32 {
     let local = array(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0),
         vec2(-1.0, 1.0), vec2(1.0, -1.0), vec2(1.0, 1.0))[vertex];
     let p = radius * vec3(sin(polar) * cos(azimuth), cos(polar), sin(polar) * sin(azimuth));
-    let clip = frame.view_proj * vec4(p, 1.0);
-    let scale = select(0.0, 0.15 + 0.06 * sin(age * (0.1 + random(i + 5u) * 9.9)),
-        polar < 3.1415927);
-    // The glass is a separate pass. A small depth offset keeps flakes inside it visible.
-    return Quad(vec4(clip.xy + local * scale, clip.z - 0.25 * clip.w, clip.w), local);
+    // Those that have come down lie still and are not drawn.
+    let size = select(0.0, 0.035 + 0.015 * sin(age * (0.1 + random(i + 5u) * 9.9)), polar < 3.1415927);
+    let at = p + size * (frame.right.xyz * local.x + frame.up.xyz * local.y);
+    return Quad(frame.view_proj * vec4(at, 1.0), local);
 }
 
 @fragment fn snow_fs(s: Quad) -> @location(0) vec4<f32> {
-    return vec4(0.93, 0.96, 1.0, (1.0 - smoothstep(0.25, 1.0, length(s.xy))) * 0.86 * frame.parameters.x);
+    return vec4(0.93, 0.96, 1.0, (1.0 - smoothstep(0.25, 1.0, length(s.xy))) * 0.86);
 }

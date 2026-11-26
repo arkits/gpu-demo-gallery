@@ -51,10 +51,6 @@ impl Files {
                     }
                 }
             }
-            if !demo::CRYSTAL && demo::MODELS[2..6].contains(&name) {
-                let source = read_binary(self.get("models/soldier_hi_r.nmb")?)?;
-                model.read_animations(&source)?;
-            }
             Ok(model)
         };
         load().map_err(|e| format!("{name}: {e}").into())
@@ -82,9 +78,6 @@ impl Files {
                 names.extend(shape.textures.into_iter().flatten());
                 names.extend(shape.cube);
             }
-        }
-        if !demo::CRYSTAL {
-            names.insert("textures/room.ifl".to_owned());
         }
         let faces = names
             .iter()

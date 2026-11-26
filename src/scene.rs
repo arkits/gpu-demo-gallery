@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3};
+use glam::Vec3;
 use wgpu::VertexStepMode::{Instance, Vertex};
 
 use crate::{
@@ -22,6 +22,8 @@ struct Uniform {
     eye: [f32; 4],
     light: [f32; 4],
     parameters: [f32; 4],
+    /// Axes of the camera.
+    axes: [[f32; 4]; 3],
 }
 
 #[repr(C)]
@@ -41,7 +43,6 @@ struct Mesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     group: wgpu::BindGroup,
-    inside_group: Option<wgpu::BindGroup>,
     count: u32,
     node: usize,
     kind: Kind,
@@ -53,8 +54,6 @@ struct Actor {
     model: Model,
     meshes: Vec<Mesh>,
     sky: wgpu::BindGroup,
-    center: Vec3,
-    radius: f32,
 }
 
 struct Targets {
@@ -71,15 +70,21 @@ pub struct Scene {
     badge: wgpu::BindGroup,
     surface: wgpu::RenderPipeline,
     glass: wgpu::RenderPipeline,
+    /// The far wall of the ball.
+    wall: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
-    shadow: Option<wgpu::RenderPipeline>,
-    snow: Option<wgpu::RenderPipeline>,
+    snow: wgpu::RenderPipeline,
     overlay: wgpu::RenderPipeline,
     format: wgpu::TextureFormat,
     targets: Option<Targets>,
 }
 
-type Images = (Option<String>, Option<String>, Option<String>);
+/// The first model has the ball and its stand; the others are castles.
+const BALL: usize = 0;
+const LOGO: &str = "userinterface/nvidialogo.dds";
+
+/// Two planes and two cube maps.
+type Images = (Option<String>, Option<String>, [Option<String>; 2]);
 
 struct ImagesLoader<'a> {
     gpu: &'a Gpu,
@@ -166,9 +171,10 @@ impl ImagesLoader<'_> {
         let views = [
             self.image(key.0.as_deref(), false)?,
             self.image(key.1.as_deref(), false)?,
-            self.image(key.2.as_deref(), true)?,
+            self.image(key.2[0].as_deref(), true)?,
+            self.image(key.2[1].as_deref(), true)?,
         ];
-        let entries = [0, 1, 2].map(|i| wgpu::BindGroupEntry {
+        let entries = [0, 1, 2, 3].map(|i| wgpu::BindGroupEntry {
             binding: i,
             resource: wgpu::BindingResource::TextureView(&views[i as usize]),
         });
@@ -204,7 +210,7 @@ impl Scene {
         use wgpu::TextureViewDimension::{Cube, D2};
         let textures = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            entries: &[entry(0, D2), entry(1, D2), entry(2, Cube)],
+            entries: &[entry(0, D2), entry(1, D2), entry(2, Cube), entry(3, Cube)],
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -286,9 +292,7 @@ impl Scene {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH,
                     depth_write_enabled: Some(write),
-                    depth_compare: Some(if vertex == "shadow_vs" {
-                        wgpu::CompareFunction::Less
-                    } else if test {
+                    depth_compare: Some(if test {
                         wgpu::CompareFunction::LessEqual
                     } else {
                         wgpu::CompareFunction::Always
@@ -327,27 +331,19 @@ impl Scene {
         let mut actors = Vec::new();
         for name in demo::MODELS {
             let model = files.model(name)?;
-            let (min, max) = model.bounds();
-            let sky = loader.group((
-                None,
-                None,
-                model
-                    .environment
-                    .clone()
-                    .or_else(|| (!demo::CRYSTAL).then(|| "textures/room.ifl".to_owned())),
-            ))?;
+            let sky = loader.group((None, None, [model.environment.clone(), None]))?;
             let meshes = model
                 .shapes
                 .iter()
                 .map(|shape| {
                     let [a, b] = shape.textures.clone();
-                    let key = (a, b, shape.cube.clone());
-                    let group = loader.group(key.clone())?;
-                    let inside_group = (shape.kind == Kind::Refract)
-                        .then(|| {
-                            loader.group((key.0, key.1, Some("textures_ball/lava.ifl".to_owned())))
-                        })
-                        .transpose()?;
+                    // Over the glass lies what is around the ball.
+                    let around = model.environment.clone();
+                    let cubes = [
+                        shape.cube.clone(),
+                        around.filter(|_| shape.kind == Kind::Glass),
+                    ];
+                    let group = loader.group((a, b, cubes))?;
                     let mode = match shape.kind {
                         Kind::Lit => 0.0,
                         Kind::Textured => 1.0,
@@ -370,7 +366,6 @@ impl Scene {
                             wgpu::BufferUsages::INDEX,
                         ),
                         group,
-                        inside_group,
                         node: shape.node,
                         kind: shape.kind,
                         count: shape.indices.len() as u32,
@@ -379,25 +374,9 @@ impl Scene {
                     })
                 })
                 .collect::<Result<_, _>>()?;
-            actors.push(Actor {
-                model,
-                meshes,
-                sky,
-                center: (min + max) * 0.5,
-                radius: (max - min).length() * 0.5,
-            });
+            actors.push(Actor { model, meshes, sky });
         }
-        let capacity = if demo::CRYSTAL {
-            actors.iter().map(|a| a.meshes.len()).max().unwrap_or(0)
-        } else {
-            actors[0].meshes.len()
-                + actors.last().unwrap().meshes.len()
-                + 54 * actors[1..6]
-                    .iter()
-                    .map(|a| a.meshes.len())
-                    .max()
-                    .unwrap_or(0)
-        };
+        let capacity: usize = actors.iter().map(|a| a.meshes.len()).sum();
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: (size_of::<Placement>() * capacity) as u64,
@@ -411,7 +390,7 @@ impl Scene {
             constants,
             format,
             targets: None,
-            badge: loader.group((Some("userinterface/nvidialogo.dds".to_owned()), None, None))?,
+            badge: loader.group((Some(LOGO.to_owned()), None, [None, None]))?,
             surface: pipeline(
                 "surface_vs",
                 "surface_fs",
@@ -421,37 +400,41 @@ impl Scene {
                 true,
                 None,
             ),
+            // The more see-through it is, the less of it there is.
             glass: pipeline(
                 "surface_vs",
                 "surface_fs",
                 &mesh_buffers,
-                Some(wgpu::BlendState::ALPHA_BLENDING),
+                Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        dst_factor: wgpu::BlendFactor::SrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent::REPLACE,
+                }),
                 true,
                 false,
                 Some(wgpu::Face::Back),
             ),
-            shadow: (!demo::CRYSTAL).then(|| {
-                pipeline(
-                    "shadow_vs",
-                    "shadow_fs",
-                    &mesh_buffers,
-                    Some(wgpu::BlendState::ALPHA_BLENDING),
-                    true,
-                    true,
-                    None,
-                )
-            }),
-            snow: demo::CRYSTAL.then(|| {
-                pipeline(
-                    "snow_vs",
-                    "snow_fs",
-                    &[],
-                    Some(wgpu::BlendState::ALPHA_BLENDING),
-                    true,
-                    false,
-                    None,
-                )
-            }),
+            wall: pipeline(
+                "surface_vs",
+                "surface_fs",
+                &mesh_buffers,
+                None,
+                true,
+                true,
+                Some(wgpu::Face::Front),
+            ),
+            snow: pipeline(
+                "snow_vs",
+                "snow_fs",
+                &[],
+                Some(wgpu::BlendState::ALPHA_BLENDING),
+                true,
+                false,
+                None,
+            ),
             sky: pipeline("sky_vs", "sky_fs", &[], None, false, false, None),
             overlay: pipeline(
                 "badge_vs",
@@ -466,12 +449,7 @@ impl Scene {
     }
 
     pub fn show(&self) -> Show {
-        let ball = &self.actors[0];
-        if demo::CRYSTAL {
-            Show::new(ball.center, ball.radius)
-        } else {
-            Show::new(Vec3::new(0.0, 10.0, 0.0), 45.0)
-        }
+        Show::default()
     }
 
     pub fn draw(
@@ -500,116 +478,46 @@ impl Scene {
         let target = self.targets.as_ref().unwrap();
         let aspect = size.0 as f32 / size.1 as f32;
         let fov = 2.0 * (0.36 * (4.0 / 3.0 / aspect).max(1.0)).atan();
-        let which = if demo::CRYSTAL && frame.inside {
-            frame.castle + 1
-        } else {
-            0
-        };
-        let actor = &self.actors[which];
-        let view = if which > 0 {
-            let offset = frame.view.inverse().transform_vector3(Vec3::Z);
-            glam::camera::rh::view::look_at_mat4(
-                actor.center + offset * actor.radius * 1.95,
-                actor.center,
-                Vec3::Y,
-            )
-        } else {
-            frame.view
-        };
+        let castle = 1 + frame.castle;
+        let actor = &self.actors[if frame.inside { castle } else { BALL }];
+        let view = frame.view;
         let eye = view.inverse().transform_point3(Vec3::ZERO);
         let proj = glam::camera::rh::proj::directx::perspective(fov, aspect, 0.15, 2500.0);
         let vp = proj * view;
-        let light = if demo::CRYSTAL && frame.castle == 1 {
-            Vec3::new(0.38, 0.9, -0.2)
-        } else {
-            Vec3::new(0.4, 0.85, 0.53)
+        let light = match frame.castle {
+            1 => Vec3::new(0.38, 0.9, -0.2),
+            _ => Vec3::new(0.4, 0.85, 0.53),
         };
+        let around = if frame.inside { 1.0 } else { 0.8 };
         let uniform = Uniform {
             view_proj: vp.to_cols_array(),
             inverse: vp.inverse().to_cols_array(),
             eye: eye.extend(1.0).to_array(),
             light: light.extend(0.0).to_array(),
-            parameters: [
-                frame.exposure,
-                if demo::CRYSTAL && !frame.inside {
-                    0.8
-                } else {
-                    1.0
-                },
-                aspect,
-                frame.snow_time,
-            ],
+            parameters: [frame.clear, around, aspect, frame.snow_time],
+            axes: [0, 1, 2].map(|i| view.row(i).to_array()),
         };
         gpu.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniform));
 
         let mut data = Vec::new();
         let mut draws = Vec::new();
-        let mut add =
-            |actor_index: usize, placements: &[(Mat4, Option<usize>, f64)]| {
-                let actor = &self.actors[actor_index];
-                if placements.is_empty() {
-                    return;
-                }
-                let poses: Vec<_> = placements
-                    .iter()
-                    .map(|(_, clip, time)| {
-                        actor
-                            .model
-                            .pose(clip.and_then(|i| actor.model.animations.get(i)), *time)
-                    })
-                    .collect();
-                for mesh in &actor.meshes {
-                    let start = data.len();
-                    data.extend(placements.iter().zip(&poses).map(|((world, _, _), pose)| {
-                        Placement {
-                            transform: (*world * pose[mesh.node]).to_cols_array(),
-                            diffuse: mesh.diffuse,
-                            ambient_mode: mesh.ambient_mode,
-                        }
-                    }));
-                    draws.push((mesh, start, placements.len() as u32));
-                }
-            };
-        add(which, &[(Mat4::IDENTITY, None, 0.0)]);
-        if !demo::CRYSTAL {
-            let panic = frame.action.is_some();
-            let time = frame.action.unwrap_or(frame.seconds);
-            let mut lod: [Vec<_>; 5] = Default::default();
-            for row in 0..6 {
-                for col in 0..9 {
-                    let phase = ((row * 11 + col * 7) % 9) as f32 * 0.018;
-                    let mut place =
-                        Vec3::new((row as f32 - 2.5) * 20.0, 0.0, (col as f32 - 4.0) * 22.2);
-                    place.z = (place.z + 112.0 + frame.seconds * 6.0).rem_euclid(220.0) - 112.0;
-                    let mut turn = 0.0;
-                    if let Some(action) = frame.action {
-                        turn = if row >= 3 { 1.15 } else { -1.15 };
-                        place += Vec3::new(turn * action * 4.0, 0.0, action * 4.0);
-                    }
-                    let distance = eye.distance(place + Vec3::Y * 6.0);
-                    let bucket = [5.0, 20.0, 60.0, 140.0].partition_point(|d| distance > *d);
-                    lod[bucket].push((
-                        Mat4::from_translation(place) * Mat4::from_rotation_y(turn),
-                        Some(usize::from(panic)),
-                        f64::from((time + phase) * 1000.0),
-                    ));
-                }
-            }
-            for (i, positions) in lod.iter().enumerate() {
-                add(i + 1, positions);
-            }
-            if let Some(seconds) = frame.action {
-                let position = Vec3::new(0.0, 0.0, 75.0 - (seconds * 12.0).min(105.0));
-                add(
-                    6,
-                    &[(
-                        Mat4::from_translation(position)
-                            * Mat4::from_rotation_y(std::f32::consts::PI),
-                        Some(0),
-                        f64::from(seconds * 1000.0),
-                    )],
-                );
+        // The castle stands in the ball.
+        let shown: &[usize] = if frame.inside {
+            &[castle]
+        } else {
+            &[BALL, castle]
+        };
+        for &index in shown {
+            let actor = &self.actors[index];
+            let pose = actor.model.pose(None, 0.0);
+            for mesh in &actor.meshes {
+                data.push(Placement {
+                    transform: pose[mesh.node].to_cols_array(),
+                    diffuse: mesh.diffuse,
+                    ambient_mode: mesh.ambient_mode,
+                });
+                draws.push((mesh, data.len() - 1));
             }
         }
         gpu.queue
@@ -639,16 +547,13 @@ impl Scene {
         pass.set_bind_group(1, &actor.sky, &[]);
         pass.set_pipeline(&self.sky);
         pass.draw(0..3, 0..1);
-        let render = |pass: &mut wgpu::RenderPass<'_>, mesh: &Mesh, start: usize, count: u32| {
-            pass.set_bind_group(
-                1,
-                if frame.castle != 0 {
-                    mesh.inside_group.as_ref().unwrap_or(&mesh.group)
-                } else {
-                    &mesh.group
-                },
-                &[],
-            );
+        let render = |pass: &mut wgpu::RenderPass<'_>, mesh: &Mesh, start: usize| {
+            let group = match mesh.kind {
+                // The ball's wall shows what is around the castle.
+                Kind::Refract => &self.actors[castle].sky,
+                _ => &mesh.group,
+            };
+            pass.set_bind_group(1, group, &[]);
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_vertex_buffer(
                 1,
@@ -656,38 +561,26 @@ impl Scene {
                     .slice((start * size_of::<Placement>()) as u64..),
             );
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..mesh.count, 0, 0..count);
+            pass.draw_indexed(0..mesh.count, 0, 0..1);
         };
-        if let Some(shadow) = &self.shadow {
-            pass.set_pipeline(&self.surface);
-            for &(mesh, start, count) in &draws[..actor.meshes.len()] {
-                render(&mut pass, mesh, start, count);
-            }
-            pass.set_pipeline(shadow);
-            for &(mesh, start, count) in &draws[actor.meshes.len()..] {
-                render(&mut pass, mesh, start, count);
-            }
+        // Solid things, the far wall, snow, and the glass over it all.
+        let solid = |k| !matches!(k, Kind::Glass | Kind::Refract);
+        pass.set_pipeline(&self.surface);
+        for &(mesh, start) in draws.iter().filter(|d| solid(d.0.kind)) {
+            render(&mut pass, mesh, start);
         }
-        for glass in [false, true] {
-            pass.set_pipeline(if glass { &self.glass } else { &self.surface });
-            let first = if self.shadow.is_some() {
-                actor.meshes.len()
-            } else {
-                0
-            };
-            for &(mesh, start, count) in &draws[first..] {
-                if (mesh.kind == Kind::Glass) == glass {
-                    render(&mut pass, mesh, start, count);
-                }
-            }
+        pass.set_pipeline(&self.wall);
+        for &(mesh, start) in draws.iter().filter(|d| d.0.kind == Kind::Refract) {
+            render(&mut pass, mesh, start);
         }
-        if let Some(snow) = &self.snow
-            && !frame.inside
-            && frame.snow_time < 24.0
-        {
+        if frame.snow_time < 24.0 {
             pass.set_bind_group(1, &actor.sky, &[]);
-            pass.set_pipeline(snow);
+            pass.set_pipeline(&self.snow);
             pass.draw(0..6, 0..2000);
+        }
+        pass.set_pipeline(&self.glass);
+        for &(mesh, start) in draws.iter().filter(|d| d.0.kind == Kind::Glass) {
+            render(&mut pass, mesh, start);
         }
         if frame.logo {
             pass.set_bind_group(1, &self.badge, &[]);

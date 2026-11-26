@@ -17,6 +17,11 @@ rm -rf "$site"
 mkdir -p "$site/local"
 cp -R dist/pkg dist/index.html "$site/"
 cp target/package/crystal_ball.xz target/package/*.flac "$site/local/"
+# The pack is cached for a week, so a new one needs a new address.
+version=$(shasum -a 256 target/package/crystal_ball.xz | cut -c1-12)
+sed -i.bak "s|\"./local/crystal_ball.xz\"|\"./local/crystal_ball.xz?v=$version\"|" "$site/index.html"
+rm "$site/index.html.bak"
+grep -q "crystal_ball.xz?v=$version" "$site/index.html" || { echo "could not version the pack" >&2; exit 1; }
 # Without this, Pages answers unknown paths with index.html.
 echo '<!doctype html><title>Not found</title><p>Not found.' > "$site/404.html"
 cat > "$site/_headers" <<'H'

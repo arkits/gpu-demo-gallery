@@ -1,4 +1,4 @@
-//! Playback time, orbit controls, and the demo-specific cues.
+//! Time, camera and input shared by native and web builds.
 use glam::{Mat4, Vec3};
 
 use crate::demo;
@@ -9,144 +9,106 @@ pub struct Cue {
     pub repeat: bool,
 }
 
+/// Radius of the ball, which is around the origin.
+const BALL: f32 = 10.0;
+/// Yaw, pitch and distance, outside and inside the ball.
+const OUTSIDE: (f32, f32, f32) = (0.35, 0.10, 44.0);
+const INSIDE: (f32, f32, f32) = (0.5, 0.12, 7.2);
+/// Seconds that the way in or out takes [I].
+const WAY: f64 = 1.6;
+
 pub struct Show {
     time: f64,
     last_wall: Option<f64>,
     yaw: f32,
     pitch: f32,
     distance: f32,
-    radius: f32,
-    center: Vec3,
     drag: Option<(f64, f64)>,
     cues: Vec<Cue>,
-    action_time: Option<f64>,
     castle: usize,
-    transition: Option<Transition>,
+    /// When the castles began to change. The glass clouds for a second, then clears for
+    /// another (0x4048d0).
+    changing: Option<f64>,
+    /// When the way to another distance began, and from where to where.
+    way: Option<(f64, f32, f32)>,
+    music: &'static str,
     snow_started: f64,
-    inside: bool,
-    show_camera: bool,
     pub paused: bool,
     pub logo: bool,
 }
 
-struct Transition {
-    started: f64,
-    inside: bool,
-    castle: usize,
-}
-
 pub struct Frame {
-    pub seconds: f32,
     pub view: Mat4,
-    pub action: Option<f32>,
     pub castle: usize,
+    /// The eye is in the ball.
     pub inside: bool,
-    pub exposure: f32,
+    /// How clear the glass is.
+    pub clear: f32,
     pub snow_time: f32,
     pub logo: bool,
 }
 
-impl Show {
-    pub fn new(center: Vec3, radius: f32) -> Self {
-        let (yaw, pitch, distance) = Self::home(radius);
+impl Default for Show {
+    fn default() -> Self {
         Self {
             time: 0.0,
             last_wall: None,
-            yaw,
-            pitch,
-            distance,
-            center,
-            radius,
+            yaw: OUTSIDE.0,
+            pitch: OUTSIDE.1,
+            distance: OUTSIDE.2,
             drag: None,
             cues: vec![Cue {
                 name: demo::INITIAL_MUSIC,
                 repeat: true,
             }],
-            action_time: None,
             castle: 0,
-            transition: None,
+            changing: None,
+            way: None,
+            music: demo::INITIAL_MUSIC,
             snow_started: 0.0,
-            inside: false,
-            show_camera: !demo::CRYSTAL,
             paused: false,
             logo: true,
         }
     }
+}
 
-    fn home(radius: f32) -> (f32, f32, f32) {
-        if demo::CRYSTAL {
-            (0.35, 0.10, radius * 2.9)
-        } else {
-            (0.26, 0.23, 96.0)
-        }
-    }
-
+impl Show {
     pub fn advance(&mut self, wall: f64) {
         let dt = self
             .last_wall
             .replace(wall)
             .map_or(0.0, |last| (wall - last).clamp(0.0, 0.1));
-        if self.paused {
-            return;
-        }
-        self.time += dt;
-        if let Some(transition) = &self.transition {
-            let elapsed = self.time - transition.started;
-            if elapsed >= 1.0
-                && (self.inside, self.castle) != (transition.inside, transition.castle)
-            {
-                self.inside = transition.inside;
-                self.castle = transition.castle;
-                self.cue(self.music(), true);
-            }
-            if elapsed >= 2.0 {
-                self.transition = None;
-            }
-        }
-        if !demo::CRYSTAL
-            && self
-                .action_time
-                .is_some_and(|start| self.time - start > 14.0)
-        {
-            self.action_time = None;
-            self.cue("march", true);
+        if !self.paused {
+            self.run(dt);
         }
     }
 
-    pub fn frame(&self) -> Frame {
-        let action = self
-            .action_time
-            .map(|start| (self.time - start).max(0.0) as f32);
-        let (mut yaw, mut pitch, mut distance) = (self.yaw, self.pitch, self.distance);
-        if self.show_camera {
-            yaw += self.time as f32 * 0.085;
-            pitch += (self.time as f32 * 0.28).sin() * 0.11;
-            distance *= 0.88 + 0.12 * (self.time as f32 * 0.18).cos();
+    fn run(&mut self, dt: f64) {
+        let before = self.time;
+        self.time += dt;
+        if let Some(start) = self.changing {
+            if before - start < 1.0 && self.time - start >= 1.0 {
+                self.castle ^= 1;
+                self.play(["light_castle", "dark_castle"][self.castle]);
+            }
+            if self.time - start >= 2.0 {
+                self.changing = None;
+            }
         }
-        let orbit = Vec3::new(
-            yaw.sin() * pitch.cos(),
-            pitch.sin(),
-            yaw.cos() * pitch.cos(),
-        );
-        let eye = self.center + distance * orbit;
-        let exposure = if demo::CRYSTAL {
-            self.transition.as_ref().map_or(1.0, |transition| {
-                ((self.time - transition.started) as f32 - 1.0)
-                    .abs()
-                    .clamp(0.06, 1.0)
-            })
-        } else {
-            1.0
-        };
-        Frame {
-            seconds: self.time as f32,
-            view: glam::camera::rh::view::look_at_mat4(eye, self.center, Vec3::Y),
-            action,
-            castle: self.castle,
-            inside: self.inside,
-            exposure,
-            snow_time: (self.time - self.snow_started).max(0.0) as f32,
-            logo: self.logo,
+        if let Some((start, from, to)) = self.way {
+            let t = (((self.time - start) / WAY) as f32).min(1.0);
+            self.distance = from + (to - from) * t * t * (3.0 - 2.0 * t);
+            if t >= 1.0 {
+                self.way = None;
+            }
+        }
+    }
+
+    /// Changes the music.
+    fn play(&mut self, name: &'static str) {
+        if self.music != name {
+            self.music = name;
+            self.cue(name, true);
         }
     }
 
@@ -154,84 +116,86 @@ impl Show {
         self.cues.push(Cue { name, repeat });
     }
 
+    fn inside(&self) -> bool {
+        self.distance < BALL
+    }
+
+    pub fn frame(&self) -> Frame {
+        let orbit = Vec3::new(
+            self.yaw.sin() * self.pitch.cos(),
+            self.pitch.sin(),
+            self.yaw.cos() * self.pitch.cos(),
+        );
+        // Outside, the stand belongs to the picture.
+        let center = Vec3::Y * if self.inside() { -0.5 } else { -3.2 };
+        let eye = self.distance * orbit;
+        let clear = self.changing.map_or(1.0, |start| {
+            ((self.time - start) as f32 - 1.0).abs().clamp(0.0, 1.0)
+        });
+        Frame {
+            view: glam::camera::rh::view::look_at_mat4(eye, center, Vec3::Y),
+            castle: self.castle,
+            inside: self.inside(),
+            clear,
+            snow_time: (self.time - self.snow_started).max(0.0) as f32,
+            logo: self.logo,
+        }
+    }
+
     pub fn take_cues(&mut self) -> Vec<Cue> {
         std::mem::take(&mut self.cues)
+    }
+
+    /// In or out of the ball.
+    fn enter(&mut self, inside: bool) {
+        let home = if inside { INSIDE } else { OUTSIDE };
+        self.way = Some((self.time, self.distance, home.2));
+        self.cue("transition", false);
     }
 
     pub fn key(&mut self, key: &str) -> bool {
         match key {
             "p" | "P" => self.paused = !self.paused,
             "l" | "L" => self.logo = !self.logo,
-            "Home" => (self.yaw, self.pitch, self.distance) = Self::home(self.radius),
-            " " if demo::CRYSTAL => self.change(!self.inside, self.castle),
-            "s" | "S" if demo::CRYSTAL => self.change(self.inside, self.castle ^ 1),
-            "r" | "R" if demo::CRYSTAL => self.snow_started = self.time,
+            "Home" => {
+                (self.yaw, self.pitch, self.distance) = OUTSIDE;
+                self.way = None;
+            }
             " " => {
-                self.action_time = Some(self.time);
-                self.cue("panic", true);
-                self.cue("scary", false);
+                let inside = self.way.map_or(self.inside(), |(_, _, to)| to < BALL);
+                self.enter(!inside);
             }
-            "s" | "S" => {
-                self.action_time = None;
-                self.cue("march", true);
+            "s" | "S" if self.changing.is_none() => {
+                self.changing = Some(self.time);
+                self.cue(["thunder", "transition"][self.castle], false);
             }
+            "s" | "S" => {}
+            "r" | "R" => self.snow_started = self.time,
             _ => return false,
         }
         true
     }
 
-    fn change(&mut self, inside: bool, castle: usize) {
-        self.transition = Some(Transition {
-            started: self.time,
-            inside,
-            castle,
-        });
-        self.cue(
-            if castle == 1 && self.castle != castle {
-                "thunder"
-            } else {
-                "transition"
-            },
-            false,
-        );
-    }
-
-    fn music(&self) -> &'static str {
-        if !self.inside {
-            "crystal_ball"
-        } else if self.castle == 0 {
-            "light_castle"
-        } else {
-            "dark_castle"
-        }
-    }
-
-    /// Set the camera and time exactly for the native and web frame checks.
+    /// Sets the moment and the camera exactly, for checking frames.
     pub fn freeze(&mut self, seconds: f64, yaw: f64, pitch: f64, action: bool) {
+        if action {
+            self.castle = 1;
+            (self.yaw, self.pitch, self.distance) = INSIDE;
+        }
         self.time = seconds;
         self.yaw += yaw as f32;
-        self.pitch += pitch as f32;
-        self.show_camera = false;
+        self.pitch = (self.pitch + pitch as f32).clamp(-0.5, 1.48);
         self.paused = true;
-        if action {
-            if demo::CRYSTAL {
-                self.inside = true;
-            } else {
-                self.action_time = Some(0.0);
-            }
-        }
     }
 
     pub fn press(&mut self, x: f64, y: f64) {
         self.drag = Some((x, y));
-        self.show_camera = false;
     }
 
     pub fn motion(&mut self, x: f64, y: f64) {
-        if let Some((previous_x, previous_y)) = self.drag {
-            self.yaw += (x - previous_x) as f32 * std::f32::consts::TAU;
-            self.pitch =
-                (self.pitch + (y - previous_y) as f32 * std::f32::consts::PI).clamp(-0.04, 1.48);
+        if let Some((px, py)) = self.drag {
+            self.yaw -= (x - px) as f32 * std::f32::consts::TAU;
+            self.pitch = (self.pitch + (y - py) as f32 * std::f32::consts::PI).clamp(-0.5, 1.48);
             self.drag = Some((x, y));
         }
     }
@@ -241,8 +205,36 @@ impl Show {
     }
 
     pub fn zoom(&mut self, amount: f32) {
-        self.distance =
-            (self.distance * (-amount).exp()).clamp(self.radius * 0.11, self.radius * 9.0);
-        self.show_camera = false;
+        self.way = None;
+        self.distance = (self.distance * (-amount).exp()).clamp(4.5, 90.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn castles_change_behind_clouded_glass() {
+        let mut s = Show::default();
+        s.key("s");
+        for step in 0..130 {
+            s.run(1.0 / 60.0);
+            if step == 58 {
+                assert!(s.frame().castle == 0 && s.frame().clear < 0.05);
+            }
+        }
+        assert_eq!((s.castle, s.frame().clear), (1, 1.0));
+        assert_eq!(s.music, "dark_castle");
+    }
+
+    #[test]
+    fn goes_in_and_out() {
+        let mut s = Show::default();
+        for inside in [true, false] {
+            s.key(" ");
+            (0..120).for_each(|_| s.run(1.0 / 60.0));
+            assert_eq!(s.frame().inside, inside);
+        }
     }
 }
