@@ -56,8 +56,8 @@ make box-of-smoke box-of-smoke/target/devtest/native-s.png 840:768:150:0
 crop=in_w:in_h
 shot toy-soldier 3 2.1 0.05 1
 shot crystal-ball 5 0 0 0
-shot bugs 5 0 0 0
-shot wolfman 8 0.8 -0.3 1
+shot bugs 113 0 0 0
+shot wolfman 8 0.8 -0.3 6
 shot squid 5 0 0 0
 shot chameleon 8 0.8 -0.3 1
 shot tidepool 5 0 0 0
