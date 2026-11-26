@@ -1,4 +1,4 @@
-//! Checks the demo's own files load through the strict ATB readers.
+//! Checks the demo's own files load through the strict readers.
 use racing::data::Files;
 use std::path::PathBuf;
 
@@ -14,12 +14,13 @@ fn data() -> Option<PathBuf> {
 }
 
 #[test]
-fn real_assets_load() {
+fn scene_reads() {
     let Some(dir) = data() else { return };
     let files = Files::from_path(&dir).expect("need the demo's files");
-    files.check().unwrap();
-    let scene = atb::Scene::load(&files).unwrap();
-    assert!(!scene.dict.is_empty() || !scene.meshes.is_empty() || !scene.textures.is_empty());
+    let bof = atb::Bof::parse(files.get("race.bof").unwrap()).unwrap();
+    for name in ["track_noroad", "sgi_indy", "mg_indy", "nin_indy", "vp_indy"] {
+        assert!(bof.find(name).is_some(), "{name}");
+    }
 }
 
 #[test]

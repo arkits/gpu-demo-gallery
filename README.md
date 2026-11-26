@@ -1,6 +1,8 @@
 # Racing
 
-A port of 3dfx's "Racing" ATB demo (1997) to current systems: browsers (WebGPU, or WebGL2), macOS, and Windows. Written in Rust with wgpu. The ATB racing scene, reconstructed from the race.bof name table.
+Indy cars lapping a speedway at 70 units a second along the lanes `race.exe` keeps in its data, wheels turning and steering, with the demo's five camera views.
+
+A port of 3dfx's "Racing" demo (1997) to current systems: browsers (WebGPU, or WebGL2), macOS, and Windows. Written in Rust with wgpu.
 
 Play it: https://racing-port.pages.dev
 
@@ -13,11 +15,14 @@ The demo's files are 3dfx's and are not in this repository. Put its `data` folde
 
 | Input | Action |
 |---|---|
-| w | Wireframe |
-| p | Pause spin |
-| t | Next texture |
-| Drag | Turn camera |
-| Scroll | Move in / out |
+| 1 | Rear view |
+| 2 | Chase |
+| 3 | Follow |
+| 4 | Track cameras |
+| 5 | Front |
+| - / + | Slower / faster |
+| f | Fog |
+| w / t | Wireframe / textures |
 | Enter, Esc | Full screen, quit (native) |
 
 How the original works: [docs/ENGINE.md](docs/ENGINE.md).

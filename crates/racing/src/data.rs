@@ -15,15 +15,6 @@ const MAGIC: &[u8; 8] = b"DEMOPAK1";
 #[derive(Default)]
 pub struct Files(BTreeMap<String, Vec<u8>>);
 
-impl atb::Source for Files {
-    fn names(&self) -> Vec<String> {
-        self.0.keys().cloned().collect()
-    }
-    fn get(&self, name: &str) -> Option<&[u8]> {
-        self.0.get(name).map(Vec::as_slice)
-    }
-}
-
 impl Files {
     /// Keeps only files the demo can use, by their names without directories.
     pub fn insert(&mut self, name: &str, data: Vec<u8>) {
