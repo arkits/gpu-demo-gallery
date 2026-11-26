@@ -1,39 +1,39 @@
-# BOF / BOFM (observed)
+# BOF (BOFM): ATB scene files
 
-Status: **Observed, not documented in ATBRT package**. The name-table framing
-below is confirmed against every staged ATB demo and a working reader in
-`demoroom/crates/atb/src/bof.rs`. The object graph after the dict is still open.
+Status: **Decoded.** Read from the loaders in the ATB demo programs
+(`boftoats.c`; `wiz.exe` `0x414620` and `0x411440`) and checked by a strict
+reader, `crates/atb/src/bof.rs` in the ATB ports, that reads every staged
+`.BOF` to its last byte. An earlier version of this page described a little-
+endian dictionary count and a byte-length name table followed by memory
+dumps; that was a misreading of the same bytes and is withdrawn.
 
-## Evidence
+`atsLoad` (`0x414620`) checks `BOFM`
+and version 2, then reads objects until an id of 0 (`0x411440`): each is
+its id (counting up from 1), its class name as a counted string, then the
+class's fields as that class's loader reads them (vtable slot 0x24). The
+stream is big-endian and unpadded. References between objects are ids,
+turned into pointers after loading (slot 0x28).
 
-- ATB demo decompilations contain strings like `boftoats.c`,
-  `FILE I/O Error ... boftoats.c`, and demo file names such as `demoroom.bof`,
-  `race.bof`, `wiz.bof`. Example demoroom functions:
-  `.rea3dfx/demoroom/functions/0x401ed0.c`, `0x411660.c`, `0x4081f0.c`.
-- Byte validation across all staged packages: `BOFM` magic, a `Dict` tag at
-  0x10, and a dict whose entry counts match the demos — Demoroom 38, Wizards 17,
-  Valley-of-Ra 9, Racing 7, Grand Bleu 2, Flip 1, plus every Grand Bleu model
-  BOF (1 each). Names always start with `helpscreen` and include texture files
-  (`0000.3DF` …) and object names (`demolite`, `start`, `track_noroad`, …).
+| Class | Fields (after the parent's) |
+|---|---|
+| Node | two words (a draw mask among them), name, bounding sphere |
+| Group | version 1, a 16-bit child count, child ids |
+| Frame | version 1, a word, a 4x4 matrix (row vectors) |
+| Seq | version 1, bounce, counted, seconds a child, offset, repeats |
+| LOD | version 0, centre, ranges (`0x416050` picks the child whose range is the largest below the eye's distance) |
+| Anim | version 1, current frame, frame count, id of the matrices (an `Object` block of frames × children × 16 floats) |
+| Shape | version 1, (material, geometry) pairs |
+| Image | `AtrImg`: Glide format, size, mip levels, file name, texels, and a 256-entry table for palette/YIQ formats |
+| Texture | version 2, a handle, image ids |
+| Material | `atrMaterial`: 79 words of Glide state (one of them a byte) |
+| TriSet | `atrTriSet`: strips of up to 62 vertices of 16 floats, triangles packed as three bytes in a word, and optionally a light-map picture per triangle |
+| CMesh | `atmCmesh`: a collision mesh |
+| Object | an opaque block of words |
 
-## Confirmed name-table layout
+Every staged `.BOF` reads to its last byte. Earlier notes called the object
+graph a memory dump with baked pointers; it is not.
 
-- `BOFM` magic, then three big-endian version words (e.g. `2, 1, 5`).
-- `Dict` tag at offset 0x10.
-- A **little-endian** u32 entry count at `Dict + 12` (0x1c): `26 00 00 00` = 38.
-- From `Dict + 16` (0x20): one record per entry — `[u8 len][name incl NUL]`
-  with a small fixed trailer (an id word; exact semantics unresolved). Names
-  are printable ASCII with a NUL terminator; the length includes the NUL.
-- Everything after the name table is the scene/object graph: raw memory dumps
-  with baked pointers (`cdcdcdcd` MSVC debug-heap fill is visible in related
-  `.daf` dumps), not yet decoded.
+A vertex's 16 floats are position, normal, texture coordinates, then a
+colour (rgb or rgba); the other slots hold second and third texture
+coordinates where a material asks for them.
 
-## Notes
-
-- The staged ATBRT original package does not include a BOF format specification.
-- BOF appears to be an ATB scene/object database used by ATB demos. `[I]` Demo
-  loaders select a loader by extension and dispatch through BOF parsing code
-  (`FUN_004081f0`); the byte-level object schema still needs reader RE.
-- The `crates/atb` reader verifies magic, finds `Dict`, bounds-checks the count
-  and every name length, and exposes only the validated name table. It refuses
-  to fabricate a scene. Encrypted/compressed or variant BOFs would be rejected.
