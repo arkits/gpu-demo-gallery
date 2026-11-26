@@ -51,6 +51,11 @@ impl Camera {
             Vec4::new(0.0, 0.0, -r * n, 0.0),
         )
     }
+    /// What the shaders need to turn depth back into eye distance.
+    pub fn depth(&self) -> [f32; 4] {
+        let (n, far) = (self.near, self.far.min(self.near * 1.0e5));
+        [n, far / (far - n), 0.0, 0.0]
+    }
     pub fn eye(&self) -> Vec3 {
         self.frame.w_axis.truncate()
     }
@@ -414,6 +419,7 @@ pub fn draw(
 ) -> usize {
     let view = frame.camera.view();
     let vp = frame.camera.projection(aspect) * view;
+    gl.depth = frame.camera.depth();
     let projector = frame.lights.iter().find(|l| l.kind == 4);
     let needs_maps = items.iter().any(|i| {
         let next = bof.material(i.material).map_or(0, |m| m.next_pass());
