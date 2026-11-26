@@ -1,5 +1,5 @@
 // Drives the web build in headless Chrome: webtest.mjs <url> <out dir> <command> [gpu]
-//   show   start, sound, action, drag, resize
+//   show   start, sound, an action, slow motion, drag, resize
 //   still  four moments, for comparison with native frames
 import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
@@ -57,9 +57,18 @@ const commands = {
     const f = await frames(3000);
     check(f.fps > 35, `scene: ${f.fps.toFixed(0)} fps, worst frame ${f.worst.toFixed(0)} ms`);
     const music = await page.evaluate(() => window.demo.sound());
-    check(music.looping === "breathloop8" && music.level > 0.0005, `music plays: ${JSON.stringify(music)}`);
+    check(music.playing["wolf 47b lr"] && music.level > 0.0005, `music and the script's sounds play: ${JSON.stringify(music)}`);
+    // The breath in progress ends, then the howl comes.
     await page.click('#modes [data-key="3"]');
+    await page.waitForFunction(() => "howling 3" in window.demo.sound().playing, null, { timeout: 5000 }).catch(() => {});
+    const howl = await page.evaluate(() => window.demo.sound());
+    check("howling 3" in howl.playing, `he howls: ${JSON.stringify(howl)}`);
     await shot("action");
+    await page.click("#slow");
+    await page.waitForTimeout(300);
+    const slow = await page.evaluate(() => [document.getElementById("slow").ariaPressed, window.demo.sound()]);
+    check(slow[0] === "true" && !slow[1].playing["wolf 47b lr"], `slow motion, without music: ${JSON.stringify(slow)}`);
+    await page.click("#slow");
     await shot("before");
     await page.mouse.move(300, 300); await page.mouse.down(); await page.mouse.move(600, 260, { steps: 20 });
     await page.mouse.up();
@@ -73,7 +82,7 @@ const commands = {
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "fits a phone");
   },
   async still() {
-    for (const [name, query] of [["a", "time=5"], ["b", "time=8&yaw=0.8&pitch=-0.3&action=1"], ["c", "time=3&yaw=1.57"], ["d", "time=2&yaw=4&pitch=0.7"]]) {
+    for (const [name, query] of [["a", "time=5"], ["b", "time=8&yaw=0.8&pitch=-0.3&key=6"], ["c", "time=3&yaw=1.57"], ["d", "time=2&yaw=4&pitch=0.7"]]) {
       await page.goto(`${url}?${query}`);
       await page.waitForFunction(() => document.documentElement.dataset.done, null, { timeout: 90000 });
       await page.waitForTimeout(150);

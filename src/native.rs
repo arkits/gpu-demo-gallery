@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 use wolfman::data::Files;
-use wolfman::show::Cue;
+use wolfman::show::{Action, Cue};
 use wolfman::{Error, Player};
 
 #[derive(Default)]
@@ -168,8 +169,8 @@ fn wav(d: &[u8]) -> Option<SamplesBuffer> {
 struct Sound {
     dir: PathBuf,
     device: MixerDeviceSink,
-    music: Option<rodio::Player>,
-    effect: Option<rodio::Player>,
+    /// By name, with how loud they should be.
+    players: HashMap<&'static str, (rodio::Player, f32)>,
     muted: bool,
 }
 
@@ -185,14 +186,25 @@ impl Sound {
         Some(Self {
             dir,
             device,
-            music: None,
-            effect: None,
+            players: HashMap::new(),
             muted: false,
         })
     }
 
-    fn play(&mut self, cue: Cue) {
-        let name = cue.name;
+    fn cue(&mut self, cue: Cue) {
+        match cue.action {
+            Action::Repeat => self.play(cue.name, 1.0, true),
+            Action::Once => self.play(cue.name, 1.0, false),
+            Action::Stop => _ = self.players.remove(cue.name),
+            Action::Rate(rate) => {
+                if let Some((player, _)) = self.players.get(cue.name) {
+                    player.set_speed(rate);
+                }
+            }
+        }
+    }
+
+    fn play(&mut self, name: &'static str, gain: f32, repeat: bool) {
         let filename = format!("{name}.wav");
         let file = std::fs::read_dir(&self.dir)
             .ok()
@@ -209,20 +221,18 @@ impl Sound {
             return eprintln!("cannot play {name}.wav");
         };
         let player = rodio::Player::connect_new(self.device.mixer());
-        player.set_volume(if self.muted { 0.0 } else { 1.0 });
-        if cue.repeat {
-            player.append(buffer.repeat_infinite());
-            self.music = Some(player);
-        } else {
-            player.append(buffer);
-            self.effect = Some(player);
+        player.set_volume(if self.muted { 0.0 } else { gain });
+        match repeat {
+            true => player.append(buffer.repeat_infinite()),
+            false => player.append(buffer),
         }
+        self.players.insert(name, (player, gain));
     }
 
     fn mute(&mut self) {
         self.muted = !self.muted;
-        for p in self.music.iter().chain(&self.effect) {
-            p.set_volume(if self.muted { 0.0 } else { 1.0 });
+        for (player, gain) in self.players.values() {
+            player.set_volume(if self.muted { 0.0 } else { *gain });
         }
     }
 }
@@ -276,7 +286,7 @@ impl Shell {
         let drawn = player.frame(now);
         for cue in player.show.take_cues() {
             if let Some(s) = &mut self.sound {
-                s.play(cue);
+                s.cue(cue);
             }
         }
         if drawn {

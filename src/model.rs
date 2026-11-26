@@ -1,85 +1,121 @@
-//! Resolve the scene tree into rigid meshes, materials, and animated transforms.
-use bytemuck::{Pod, Zeroable};
-use glam::{EulerRot, Mat4, Vec3, Vec4};
+//! Reads the scene tree: nodes, geometry, textures, shapes and their passes.
+use std::collections::HashMap;
+
+use glam::{EulerRot, Mat4, Vec3};
 
 use crate::anim::Channel;
-use crate::tree::Node;
+use crate::pass::{Light, Pass, Resources, Stream};
+use crate::tree::{Node, Value};
 use crate::{
     Error,
     data::Files,
-    demo::{DEMO, Demo},
+    demo::{self, DIALECT, Dialect},
 };
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct Vertex {
-    pub pos: [f32; 3],
-    pub normal: [f32; 3],
-    pub uv: [f32; 2],
-    pub uv2: [f32; 2],
+/// Values and how many belong to a vertex.
+#[derive(Debug, Clone, Default)]
+pub struct Array {
+    pub width: usize,
+    pub values: Vec<f32>,
 }
 
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Lit,
-    Textured,
-    Bump,
-    Reflect,
-    Metal,
-    Water,
-    Cutout,
-    Lightmap,
-    Fur,
+/// A mesh. Each kind of stream can come in several versions.
+#[derive(Default)]
+pub struct Geometry {
+    pub name: String,
+    pub coords: Vec<Array>,
+    pub normals: Vec<Array>,
+    pub colors: Vec<Array>,
+    pub tex_coords: Vec<Array>,
+    pub data: Vec<Array>,
+    pub indices: Vec<u32>,
+    pub tube: Option<Tube>,
+}
+
+impl Geometry {
+    pub fn count(&self) -> usize {
+        self.coords.first().map_or(0, |a| a.values.len() / 3)
+    }
+
+    /// Vertices with the given streams side by side, four numbers each.
+    pub fn interleave(&self, streams: &[Stream]) -> Vec<[f32; 4]> {
+        let find = |s: &Stream| {
+            let (list, i) = match *s {
+                Stream::Coords(i) => (&self.coords, i),
+                Stream::Normals(i) => (&self.normals, i),
+                Stream::Colors(i) => (&self.colors, i),
+                Stream::TexCoords(i) => (&self.tex_coords, i),
+                Stream::Data(i) => (&self.data, i),
+            };
+            // Only one version is in the file of those that clips replace.
+            match s {
+                Stream::Coords(_) | Stream::Normals(_) => list.get(i).or(list.first()),
+                _ => list.get(i),
+            }
+        };
+        let arrays: Vec<_> = streams.iter().map(find).collect();
+        let mut out = Vec::with_capacity(self.count() * streams.len());
+        for v in 0..self.count() {
+            for a in &arrays {
+                let mut x = [0.0, 0.0, 0.0, 1.0];
+                if let Some(a) = a
+                    && let Some(row) = a.values.get(v * a.width..(v + 1) * a.width)
+                {
+                    x[..a.width].copy_from_slice(row);
+                }
+                out.push(x);
+            }
+        }
+        out
+    }
+
+    /// Leads a tube along other points.
+    pub fn follow(&mut self, points: Vec<Vec3>) {
+        if let Some(mut tube) = self.tube.take() {
+            tube.points = points;
+            tube.build(self);
+            self.tube = Some(tube);
+        }
+    }
+
+    pub fn points(&self) -> impl Iterator<Item = Vec3> {
+        self.coords
+            .iter()
+            .take(1)
+            .flat_map(|a| a.values.chunks_exact(3).map(Vec3::from_slice))
+    }
+}
+
+/// Stands for the file of shadow maps.
+pub const SHADOW_MAP: &str = "#shadow";
+
+#[derive(Clone)]
+pub struct Texture {
+    pub name: String,
+    pub file: String,
+    pub cube: bool,
+    /// Depths from a light. The program makes them.
+    pub shadow: bool,
+    pub repeat: [bool; 2],
 }
 
 pub struct Shape {
     pub name: String,
-    pub geometry: String,
-    pub node: usize,
-    pub kind: Kind,
-    pub textures: [Option<String>; 2],
-    pub cube: Option<String>,
-    pub diffuse: Vec4,
-    pub ambient: Vec4,
-    pub vertices: Vec<Vertex>,
-    pub indices: Vec<u32>,
-    pub skin: Option<Skin>,
-    pub fur: Vec<String>,
-    pub fur_depth: f32,
+    pub geometry: usize,
+    /// Groups are drawn in this order.
+    pub order: u32,
+    /// Which of several looks this is.
+    pub variant: Option<usize>,
+    pub passes: Vec<Pass>,
+    pub fur: Option<Fur>,
 }
 
-pub struct Skin {
-    bones: Vec<usize>,
-    inverse_bind: Vec<Mat4>,
-    weights: Vec<[(usize, f32); 4]>,
-}
-
-impl Skin {
-    pub fn deform(&self, vertices: &mut [Vertex], pose: &[Mat4]) {
-        let matrices: Vec<_> = self
-            .bones
-            .iter()
-            .zip(&self.inverse_bind)
-            .map(|(&bone, &rest)| pose[bone] * rest)
-            .collect();
-        for (vertex, weights) in vertices.iter_mut().zip(&self.weights) {
-            let source = Vec3::from(vertex.pos);
-            let normal = Vec3::from(vertex.normal);
-            let (p, n) =
-                weights
-                    .iter()
-                    .fold((Vec3::ZERO, Vec3::ZERO), |(p, n), &(index, weight)| {
-                        let m = matrices[index];
-                        (
-                            p + weight * m.transform_point3(source),
-                            n + weight * m.transform_vector3(normal),
-                        )
-                    });
-            vertex.pos = p.to_array();
-            vertex.normal = n.normalize_or_zero().to_array();
-        }
-    }
+/// Shells drawn around a shape.
+pub struct Fur {
+    pub pass: Pass,
+    pub textures: Vec<usize>,
+    pub depth: f32,
+    pub scale: [f32; 4],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -92,7 +128,7 @@ struct Fields {
 #[derive(Debug, Clone)]
 pub struct Transform {
     pub name: String,
-    parent: Option<usize>,
+    pub parent: Option<usize>,
     joint: bool,
     matrix: Option<Mat4>,
     rest: Fields,
@@ -108,8 +144,12 @@ pub struct Transform {
 #[derive(Default)]
 pub struct Model {
     pub nodes: Vec<Transform>,
+    pub geometries: Vec<Geometry>,
+    pub textures: Vec<Texture>,
+    pub lights: Vec<Light>,
     pub shapes: Vec<Shape>,
-    pub environment: Option<String>,
+    /// The sky's cube map.
+    pub environment: Option<usize>,
     pub animations: Vec<Animation>,
 }
 
@@ -181,142 +221,296 @@ fn triangles(kind: u32, indices: &[u32], out: &mut Vec<u32>) -> Result<(), Error
     Ok(())
 }
 
-fn named<'a>(nodes: &'a [Node], name: &str) -> Option<&'a Node> {
-    nodes
+fn arrays(g: &Node, field: &str) -> Result<Vec<Array>, Error> {
+    g.nodes(field)
         .iter()
-        .find(|n| n.name.trim().eq_ignore_ascii_case(name.trim()))
-}
-
-fn array(node: &Node) -> &[f32] {
-    node.node("data").map_or(&[], |n| n.floats("value"))
-}
-
-struct Geometry {
-    vertices: Vec<Vertex>,
-    indices: Vec<u32>,
+        .map(|n| {
+            // An empty one keeps its place in the list.
+            let Some(data) = n.node("data") else {
+                return Ok(Array::default());
+            };
+            let width = match data.kind {
+                "Vec2fArray" => 2,
+                "Vec3fArray" => 3,
+                "Vec4fArray" => 4,
+                "FloatArray" | "Vec1fArray" => 1,
+                kind => return Err(format!("unsupported vertex stream {kind}").into()),
+            };
+            Ok(Array {
+                width,
+                values: data.floats("value").to_vec(),
+            })
+        })
+        .collect()
 }
 
 fn indexed(g: &Node) -> Result<Geometry, Error> {
-    let stream = |field| g.nodes(field).first().map_or(&[][..], array);
-    let pos = stream("coords");
-    let normal = stream("normals");
-    let mut uv = g
-        .nodes("texCoords")
-        .iter()
-        .filter(|n| n.node("data").is_some_and(|d| d.kind == "Vec2fArray"))
-        .map(array);
-    let uv0 = uv.next().unwrap_or(&[]);
-    let uv1 = uv.next().unwrap_or(uv0);
-    let count = pos.len() / 3;
+    let mut out = Geometry {
+        name: g.name.clone(),
+        coords: arrays(g, "coords")?,
+        normals: arrays(g, "normals")?,
+        colors: arrays(g, "colors")?,
+        tex_coords: arrays(g, "texCoords")?,
+        data: arrays(g, "data")?,
+        ..Default::default()
+    };
+    let count = out.count();
+    let lists = [
+        &out.coords,
+        &out.normals,
+        &out.colors,
+        &out.tex_coords,
+        &out.data,
+    ];
     if count == 0
-        || normal.len() != pos.len()
-        || [uv0, uv1]
+        || out.coords[0].width != 3
+        || lists
             .iter()
-            .any(|v| !v.is_empty() && v.len() != count * 2)
+            .flat_map(|l| l.iter())
+            .any(|a| a.values.len() != count * a.width)
     {
         return Err("inconsistent vertex streams".into());
     }
-    let mut indices = Vec::new();
     for i in g.nodes("indices") {
-        triangles(i.int("primType"), i.ints("indices"), &mut indices)?;
+        triangles(i.int("primType"), i.ints("indices"), &mut out.indices)?;
     }
-    if indices.is_empty() || indices.iter().any(|&i| i as usize >= count) {
+    if out.indices.is_empty() || out.indices.iter().any(|&i| i as usize >= count) {
         return Err("invalid vertex indices".into());
     }
-    let uv_at = |v: &[f32], i| v.get(i..i + 2).map_or([0.0; 2], |a| [a[0], a[1]]);
-    let vertices = (0..count)
-        .map(|i| Vertex {
-            pos: [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]],
-            normal: [normal[i * 3], normal[i * 3 + 1], normal[i * 3 + 2]],
-            uv: uv_at(uv0, i * 2),
-            uv2: uv_at(uv1, i * 2),
-        })
-        .collect();
-    Ok(Geometry { vertices, indices })
+    Ok(out)
 }
 
-fn heightfield(g: &Node, files: &Files) -> Result<Geometry, Error> {
+fn height_field(g: &Node, files: &Files) -> Result<Geometry, Error> {
     let source = files.resolve(&crate::data::asset_name(g.text("heightImage")))?;
     let ((width, height), pixels) = crate::scene::rgba(files, &source)?;
-    let mut dimensions = Vec3::from(
+    let dimensions = Vec3::from(
         g.vec("dimensions")
             .ok_or("height field requires dimensions")?,
     );
-    let water = DEMO == Demo::Tidepool && g.name.starts_with("grid_");
-    if water {
-        dimensions.x = 88.0;
-        dimensions.z = 88.0;
-    }
-    let mut repeat = g
+    let repeats: Vec<[f32; 2]> = g
         .floats("textureRepeat")
-        .chunks_exact(if DEMO == Demo::Tidepool { 3 } else { 2 });
-    let repeats = [repeat.next(), repeat.next()];
-    let uv = |i: usize, x: f32, y: f32| match repeats[i] {
-        Some(v) => [x * v[0], y * v[1]],
-        None => [x, y],
-    };
+        .chunks_exact(if DIALECT == Dialect::Third { 3 } else { 2 })
+        .map(|v| [v[0], v[1]])
+        .collect();
+    // The two numbers are integers in the file.
     let raw = g.floats("tesselation");
-    let number = |i: usize| raw.get(i).map_or(64, |x| x.to_bits().clamp(2, 256)) as usize;
+    let number = |i: usize| raw.get(i).map_or(64, |x| x.to_bits().clamp(2, 512)) as usize;
     let (cols, rows) = (number(0), number(1));
-    let mut vertices = Vec::with_capacity(cols * rows);
     let height_at = |x: f32, y: f32| {
-        if water {
-            return 0.0;
-        }
         let i = (x.clamp(0.0, 1.0) * (width - 1) as f32).round() as usize;
         let j = (y.clamp(0.0, 1.0) * (height - 1) as f32).round() as usize;
         f32::from(pixels[(j * width as usize + i) * 4]) * dimensions.y / 255.0
     };
-    let dx = 1.0 / (cols - 1) as f32;
-    let dy = 1.0 / (rows - 1) as f32;
-    for row in 0..rows {
-        for col in 0..cols {
-            let (x, y) = (col as f32 * dx, row as f32 * dy);
-            let tangent = Vec3::new(
-                2.0 * dx * dimensions.x,
-                height_at(x + dx, y) - height_at(x - dx, y),
-                0.0,
-            );
-            let bitangent = Vec3::new(
-                0.0,
-                height_at(x, y + dy) - height_at(x, y - dy),
-                2.0 * dy * dimensions.z,
-            );
-            vertices.push(Vertex {
-                pos: [
-                    (x - 0.5) * dimensions.x,
-                    height_at(x, y),
-                    (y - 0.5) * dimensions.z,
-                ],
-                normal: bitangent.cross(tangent).normalize_or_zero().to_array(),
-                uv: uv(0, x, y),
-                uv2: uv(1, x, y),
-            });
+    let (dx, dy) = (1.0 / (cols - 1) as f32, 1.0 / (rows - 1) as f32);
+    let mut out = Geometry {
+        name: g.name.clone(),
+        tex_coords: vec![
+            Array {
+                width: 2,
+                values: Vec::new()
+            };
+            repeats.len().max(1)
+        ],
+        ..Default::default()
+    };
+    let (mut coords, mut normals) = (Vec::new(), Vec::new());
+    for (row, col) in (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))) {
+        let (x, y) = (col as f32 * dx, row as f32 * dy);
+        let tangent = Vec3::new(
+            2.0 * dx * dimensions.x,
+            height_at(x + dx, y) - height_at(x - dx, y),
+            0.0,
+        );
+        let bitangent = Vec3::new(
+            0.0,
+            height_at(x, y + dy) - height_at(x, y - dy),
+            2.0 * dy * dimensions.z,
+        );
+        coords.extend([
+            (x - 0.5) * dimensions.x,
+            height_at(x, y),
+            (y - 0.5) * dimensions.z,
+        ]);
+        normals.extend(bitangent.cross(tangent).normalize_or_zero().to_array());
+        for (i, list) in out.tex_coords.iter_mut().enumerate() {
+            let [u, v] = repeats.get(i).copied().unwrap_or([1.0; 2]);
+            list.values.extend([x * u, y * v]);
         }
     }
-    let mut indices = Vec::with_capacity((cols - 1) * (rows - 1) * 6);
-    for row in 0..rows - 1 {
-        for col in 0..cols - 1 {
-            let a = (row * cols + col) as u32;
-            let c = a + cols as u32;
-            indices.extend([a, c, a + 1, a + 1, c, c + 1]);
-        }
+    for (row, col) in (0..rows - 1).flat_map(|r| (0..cols - 1).map(move |c| (r, c))) {
+        let a = (row * cols + col) as u32;
+        let c = a + cols as u32;
+        out.indices.extend([a, c, a + 1, a + 1, c, c + 1]);
     }
-    Ok(Geometry { vertices, indices })
+    out.coords = vec![Array {
+        width: 3,
+        values: coords,
+    }];
+    out.normals = vec![Array {
+        width: 3,
+        values: normals,
+    }];
+    Ok(out)
 }
 
-fn texture(files: &Files, node: &Node) -> Result<String, Error> {
-    files.resolve(&crate::data::asset_name(node.text("filename")))
+/// A tube along a uniform cubic B-spline (0x4aca00 in the Squid's viewer).
+#[derive(Debug, Clone)]
+pub struct Tube {
+    pub points: Vec<Vec3>,
+    rings: usize,
+    sides: usize,
+    radius: f32,
+    /// Factors of the radius along the tube.
+    radii: Vec<f32>,
 }
 
-struct Resources<'a> {
-    root: &'a Node,
-    files: &'a Files,
-    rest: &'a [Mat4],
+impl Tube {
+    fn read(n: &Node) -> Result<Self, Error> {
+        let tube = Self {
+            points: n
+                .floats("controlPts")
+                .chunks_exact(3)
+                .map(Vec3::from_slice)
+                .collect(),
+            rings: n.int("subDivisions") as usize,
+            sides: n.int("tubeSides") as usize,
+            radius: n.float("tubeRadius"),
+            radii: n.floats("tubeRadii").to_vec(),
+        };
+        if tube.points.len() < 2 || tube.rings < 2 || tube.sides < 3 {
+            return Err("bad curve".into());
+        }
+        Ok(tube)
+    }
+
+    /// Both ends count as three points.
+    fn point(&self, i: usize) -> Vec3 {
+        self.points[i.saturating_sub(2).min(self.points.len() - 1)]
+    }
+
+    fn segment(&self, t: f32) -> (usize, f32) {
+        let s = t * (self.points.len() + 1) as f32;
+        (s as usize, s.fract())
+    }
+
+    fn position(&self, t: f32) -> Vec3 {
+        let (i, u) = self.segment(t);
+        let (u2, u3, v) = (u * u, u * u * u, 1.0 - u);
+        (self.point(i) * (v * v * v)
+            + self.point(i + 1) * (3.0 * u3 - 6.0 * u2 + 4.0)
+            + self.point(i + 2) * (3.0 * u + 3.0 * u2 - 3.0 * u3 + 1.0)
+            + self.point(i + 3) * u3)
+            / 6.0
+    }
+
+    fn tangent(&self, t: f32) -> Vec3 {
+        let (i, u) = self.segment(t);
+        let n = self.points.len();
+        if i == 0 {
+            return self.points[1] - self.points[0];
+        }
+        if i >= n {
+            return self.points[n - 1] - self.points[n.saturating_sub(3)];
+        }
+        let v = 1.0 - u;
+        self.point(i) * (-0.5 * v * v)
+            + self.point(i + 1) * (1.5 * u * u - 2.0 * u)
+            + self.point(i + 2) * (0.5 + u - 1.5 * u * u)
+            + self.point(i + 3) * (0.5 * u * u)
+    }
+
+    fn width(&self, t: f32) -> f32 {
+        let Some(last) = self.radii.len().checked_sub(1) else {
+            return 1.0;
+        };
+        let s = t * last as f32;
+        let i = (s as usize).min(last);
+        let next = self.radii[(i + 1).min(last)];
+        self.radii[i] + (next - self.radii[i]) * s.fract()
+    }
+
+    /// Rings of vertices, the first of each repeated at its end.
+    fn build(&self, g: &mut Geometry) {
+        let array = |width| Array {
+            width,
+            values: Vec::new(),
+        };
+        let (mut coords, mut normals, mut uv, mut along) = (array(3), array(3), array(2), array(4));
+        let mut up = Vec3::Y;
+        for ring in 0..self.rings {
+            let t = ring as f32 / (self.rings - 1) as f32;
+            let center = self.position(t);
+            let tangent = self.tangent(t).normalize_or(Vec3::Z);
+            let right = up.cross(tangent).normalize_or(Vec3::X);
+            up = tangent.cross(right).normalize_or(Vec3::Y);
+            let radius = self.radius * self.width(t);
+            for side in 0..=self.sides {
+                let v = side as f32 / self.sides as f32;
+                let (sin, cos) = (v * std::f32::consts::TAU).sin_cos();
+                let normal = up * cos + right * sin;
+                coords.values.extend((center + normal * radius).to_array());
+                normals.values.extend(normal.to_array());
+                uv.values.extend([t, v]);
+                along.values.extend(tangent.extend(1.0).to_array());
+            }
+        }
+        g.coords = vec![coords];
+        g.normals = vec![normals];
+        g.tex_coords = vec![uv, along];
+    }
+
+    fn geometry(self, name: &str) -> Geometry {
+        let mut out = Geometry {
+            name: name.to_owned(),
+            ..Default::default()
+        };
+        self.build(&mut out);
+        let across = self.sides as u32 + 1;
+        for ring in 0..self.rings as u32 - 1 {
+            for side in 0..across - 1 {
+                let a = ring * across + side;
+                let b = a + across;
+                out.indices.extend([a, b, a + 1, a + 1, b, b + 1]);
+            }
+        }
+        out.tube = Some(self);
+        out
+    }
+}
+
+/// Finds nodes by name, ignoring case, the way scenes refer to them.
+struct Names(HashMap<String, usize>);
+
+impl Names {
+    fn new<'a>(names: impl Iterator<Item = &'a str>) -> Self {
+        let mut out = HashMap::new();
+        for (i, n) in names.enumerate() {
+            out.entry(n.trim().to_ascii_lowercase()).or_insert(i);
+        }
+        Self(out)
+    }
+
+    fn get(&self, name: &str) -> Option<usize> {
+        self.0.get(&name.trim().to_ascii_lowercase()).copied()
+    }
+}
+
+/// What a shape has from the groups around it.
+#[derive(Clone, Copy, Default)]
+struct Place {
+    node: usize,
+    order: u32,
+    variant: Option<usize>,
+}
+
+struct Reader<'a> {
+    resources: Resources<'a>,
+    geometries: Names,
 }
 
 impl Model {
-    pub fn new(root: &Node, files: &Files) -> Result<Self, Error> {
+    /// `shared` is the scene whose textures and lights this one can name too.
+    pub fn new(root: &Node, files: &Files, shared: Option<&Model>) -> Result<Self, Error> {
         let mut model = Self::default();
         model
             .nodes
@@ -324,25 +518,76 @@ impl Model {
         for node in root.nodes("transforms") {
             model.walk_transforms(node, None);
         }
+        for t in root.nodes("textures") {
+            let shadow = t.kind == "ShadowTexture";
+            let file = match t.text("filename") {
+                _ if shadow => SHADOW_MAP.to_owned(),
+                "" => continue,
+                name => files.resolve(&crate::data::asset_name(name))?,
+            };
+            model.textures.push(Texture {
+                name: t.name.clone(),
+                file,
+                cube: t.kind == "CubicTexture",
+                shadow,
+                repeat: [t.int("wrapU") != 0, t.int("wrapV") != 0],
+            });
+        }
+        if let Some(shared) = shared {
+            model.textures.extend(shared.textures.iter().cloned());
+        }
+        for g in root.nodes("geometries") {
+            let geometry = match g.kind {
+                "IndexedFaceSet" => indexed(g),
+                "HeightField" => height_field(g, files),
+                "Curve" => Tube::read(g).map(|t| t.geometry(&g.name)),
+                _ => continue,
+            };
+            model
+                .geometries
+                .push(geometry.map_err(|e| format!("{}: {e}", g.name))?);
+        }
+        let nodes = Names::new(model.nodes.iter().map(|n| n.name.as_str()));
+        let find = |name: &str| nodes.get(name).filter(|&i| i > 0);
+        model.lights = root
+            .nodes("lights")
+            .iter()
+            .filter_map(|l| Light::read(l, find))
+            .collect();
+        if let Some(shared) = shared {
+            // Nodes are not shared, so these must not move.
+            let free = shared.lights.iter().filter(|l| l.node.is_none());
+            model.lights.extend(free.cloned());
+        }
+        let textures = Names::new(model.textures.iter().map(|t| t.name.as_str()));
+        let kinds: Vec<_> = model.textures.iter().map(|t| (t.cube, t.shadow)).collect();
+        let texture = |name: &str| textures.get(name).map(|i| (i, kinds[i].0, kinds[i].1));
+        let program = |name: &str| files.text(&crate::data::asset_name(name));
         for background in root.nodes("backgrounds") {
             if let Some(settings) = background.node("renderSettings") {
                 model.environment = settings
                     .texts("textures")
                     .iter()
-                    .filter_map(|name| named(root.nodes("textures"), name))
-                    .find(|t| t.kind == "CubicTexture")
-                    .map(|t| texture(files, t))
-                    .transpose()?;
+                    .filter_map(|name| texture(name))
+                    .find(|t| t.1)
+                    .map(|t| t.0);
             }
         }
-        let rest = model.pose(None, 0.0);
-        let resources = Resources {
-            root,
-            files,
-            rest: &rest,
+        let lights = model.lights.clone();
+        let reader = Reader {
+            resources: Resources {
+                root,
+                spares: if DIALECT == Dialect::First { 8 } else { 16 },
+                lights: &lights,
+                program: &program,
+                find: &find,
+                texture: &texture,
+            },
+            geometries: Names::new(model.geometries.iter().map(|g| g.name.as_str())),
         };
         for group in root.nodes("renderGroups") {
-            model.walk_shapes(&resources, group, 0)?;
+            let place = Place::default();
+            model.walk_shapes(&reader, group, place)?;
         }
         model.read_animations(root)?;
         Ok(model)
@@ -352,7 +597,7 @@ impl Model {
         self.animations = root
             .nodes("animations")
             .iter()
-            .map(|node| Animation::new(self, crate::anim::read(node)?))
+            .map(|node| Ok::<_, Error>(Animation::new(self, crate::anim::read(node)?)))
             .collect::<Result<_, _>>()?;
         Ok(())
     }
@@ -365,216 +610,98 @@ impl Model {
         }
     }
 
-    fn walk_shapes(
-        &mut self,
-        resources: &Resources<'_>,
-        node: &Node,
-        inherited: usize,
-    ) -> Result<(), Error> {
-        let transform = self
-            .find(node.text("transform"))
-            .filter(|&i| i > 0)
-            .unwrap_or(inherited);
+    fn walk_shapes(&mut self, reader: &Reader<'_>, node: &Node, at: Place) -> Result<(), Error> {
+        let mut at = at;
+        if let Some(i) = (reader.resources.find)(node.text("transform")) {
+            at.node = i;
+        }
         match node.kind {
-            "Shape" | "FurShape" => {
-                let passes = node.nodes("renderSettings");
-                let settings = if node.name.starts_with("pGroundShape") && DEMO == Demo::Bugs {
-                    passes.get(1).or(passes.first())
-                } else {
-                    passes.first().or_else(|| node.node("renderSettings"))
-                };
-                if let Some(settings) = settings {
-                    for name in node.texts("geometries") {
-                        if let Some(shape) = self
-                            .shape(resources, node, settings, name, transform)
-                            .map_err(|e| format!("{}: {e}", node.name))?
-                        {
-                            self.shapes.push(shape);
-                        }
-                    }
-                }
-            }
+            "Shape" | "FurShape" => self
+                .read_shape(reader, node, at)
+                .map_err(|e| format!("{}: {e}", node.name))?,
             "LodShape" => {
-                if let Some(first) = node.nodes("children").first() {
-                    self.walk_shapes(resources, first, inherited)?;
+                for (i, child) in node.nodes("children").iter().enumerate() {
+                    at.variant = Some(i);
+                    self.walk_shapes(reader, child, at)?;
                 }
             }
-            _ => {
+            kind => {
+                if kind == "SortingGroup" {
+                    at.order = node.int("sortSet");
+                }
                 for child in node.nodes("children").iter().chain(node.nodes("shapes")) {
-                    self.walk_shapes(resources, child, transform)?;
+                    self.walk_shapes(reader, child, at)?;
                 }
             }
         }
         Ok(())
     }
 
-    fn shape(
-        &self,
-        resources: &Resources<'_>,
-        node: &Node,
-        settings: &Node,
-        name: &str,
-        transform: usize,
-    ) -> Result<Option<Shape>, Error> {
-        let Resources { root, files, rest } = *resources;
-        let Some(g) = named(root.nodes("geometries"), name) else {
-            return Ok(None);
-        };
-        let shader = settings.text("pixelShader").to_ascii_lowercase();
-        if g.kind == "Curve" || shader.contains("depthreplace") || node.name.contains("caustics") {
-            return Ok(None);
+    fn read_shape(&mut self, reader: &Reader<'_>, node: &Node, at: Place) -> Result<(), Error> {
+        let r = &reader.resources;
+        if node.texts("geometries").is_empty() {
+            // The program makes the mesh. It is filled in before it is drawn.
+            self.geometries.push(Geometry::default());
+            let passes = node
+                .nodes("renderSettings")
+                .iter()
+                .map(|s| Pass::read(s, at.node, r));
+            self.shapes.push(Shape {
+                name: node.name.clone(),
+                geometry: self.geometries.len() - 1,
+                order: at.order,
+                variant: at.variant,
+                passes: passes.collect::<Result<_, _>>()?,
+                fur: None,
+            });
         }
-        if DEMO == Demo::Tidepool
-            && (node.name.contains("_<1>") && node.name.starts_with("Water")
-                || node.name.starts_with("Water_plane_poly")
-                || node.name == "Rocky_plane_polyShape_SHAPE_0"
-                || node.name.contains("Cave_<1>")
-                || shader == "decal_alphamap")
-        {
-            return Ok(None);
-        }
-        let pass_transform = self
-            .find(settings.text("modelTransform"))
-            .filter(|&i| i > 0);
-        let index = pass_transform.unwrap_or(transform);
-        let material = named(root.nodes("materials"), settings.text("material"));
-        let textures = root.nodes("textures");
-        let maps: Vec<_> = settings
-            .texts("textures")
-            .iter()
-            .filter_map(|name| named(textures, name))
-            .filter(|n| !n.text("filename").is_empty())
-            .collect();
-        let cube = maps
-            .iter()
-            .find(|n| n.kind == "CubicTexture")
-            .map(|n| texture(files, n))
-            .transpose()?;
-        let mut color = maps.iter().copied().filter(|n| {
-            n.kind == "2DTexture"
-                && !n.text("filename").to_ascii_lowercase().ends_with(".ifl")
-                && !n.name.to_ascii_lowercase().contains("phong")
-        });
-        let water = DEMO == Demo::Tidepool && node.name.starts_with("Water");
-        let bump = shader.contains("colormapbumpmap")
-            || shader == "bugshader"
-            || shader == "groundshader2";
-        let kind = match (color.clone().count(), cube.is_some()) {
-            _ if water => Kind::Water,
-            (n, _) if bump && n >= 2 => Kind::Bump,
-            (0, true) => Kind::Metal,
-            (_, true) => Kind::Reflect,
-            (0, false) => Kind::Lit,
-            (_, _) if shader.contains("lightmap") => Kind::Lightmap,
-            (_, _)
-                if shader.contains("alpha") || node.name.to_ascii_lowercase().contains("leaf") =>
-            {
-                Kind::Cutout
-            }
-            _ => Kind::Textured,
-        };
-        let [mut a, mut b] = [color.next(), color.next()];
-        if a.is_some_and(|n| n.name.to_ascii_lowercase().contains("bump")) && kind == Kind::Bump {
-            std::mem::swap(&mut a, &mut b);
-        }
-        let images = [
-            a.map(|t| texture(files, t)).transpose()?,
-            b.map(|t| texture(files, t)).transpose()?,
-        ];
-        let cube = if water && cube.is_none() {
-            named(textures, "reflectionTexture")
-                .map(|n| texture(files, n))
-                .transpose()?
-        } else {
-            cube
-        };
-        let Geometry { vertices, indices } = if g.kind == "HeightField" {
-            heightfield(g, files)?
-        } else {
-            indexed(g)?
-        };
-        let skin = self.skin(settings, g, rest, vertices.len())?;
-        let fur = node
-            .texts("furTextures")
-            .iter()
-            .filter_map(|n| named(textures, n))
-            .map(|t| texture(files, t))
-            .collect::<Result<Vec<_>, _>>()?;
-        let value = |name, default| {
-            material
-                .and_then(|m| m.vec::<4>(name))
-                .map_or(default, Vec4::from)
-        };
-        Ok(Some(Shape {
-            name: node.name.clone(),
-            geometry: g.name.clone(),
-            node: if skin.is_some() { 0 } else { index },
-            kind,
-            textures: images,
-            cube,
-            diffuse: value("diffuseColor", Vec4::ONE),
-            ambient: value("ambientColor", Vec4::ZERO),
-            vertices,
-            indices,
-            skin,
-            fur,
-            fur_depth: node.float("furDepth"),
-        }))
-    }
-
-    fn skin(
-        &self,
-        settings: &Node,
-        g: &Node,
-        rest: &[Mat4],
-        count: usize,
-    ) -> Result<Option<Skin>, Error> {
-        let names = settings.texts("spareTransforms");
-        let data = g.nodes("data");
-        let Some(stream) = data.first() else {
-            return Ok(None);
-        };
-        let values = array(stream);
-        if names.len() < 2 || values.len() < count || !values.len().is_multiple_of(count) {
-            return Ok(None);
-        }
-        let width = values.len() / count;
-        if width > 4 || values.iter().any(|&x| !(0.0..=1.01).contains(&x)) {
-            return Ok(None);
-        }
-        let bones = names
-            .iter()
-            .map(|n| self.find(n).ok_or_else(|| format!("missing bone {n}")))
-            .collect::<Result<Vec<_>, _>>()?;
-        let lookup = data.get(1).map_or(&[][..], array);
-        let indexed = lookup.len() == values.len();
-        let weights = values
-            .chunks_exact(width)
-            .enumerate()
-            .map(|(i, row)| {
-                let mut out = [(0, 0.0); 4];
-                let total = row.iter().sum::<f32>();
-                if total < 1e-6 {
-                    out[0].1 = 1.0;
-                    return out;
-                }
-                for (k, &w) in row.iter().enumerate() {
-                    let index = if indexed {
-                        ((lookup[i * width + k] / 4.0).round() as isize).max(0) as usize
-                    } else {
-                        k
-                    };
-                    out[k] = (index.min(bones.len() - 1), w / total);
-                }
-                out
+        // Fur shapes have one pass where others have a list.
+        let one = node.node("renderSettings").into_iter();
+        let settings: Vec<_> = node.nodes("renderSettings").iter().chain(one).collect();
+        let swaps = demo::SWAPS.iter().filter(|s| s.shape == node.name);
+        let swapped: Vec<Node> = swaps
+            .filter_map(|s| {
+                let mut own = (*settings.first()?).clone();
+                own.set("vertexProgram", Value::Text(s.program.to_owned()));
+                own.set("pixelShader", Value::Text(s.shader.to_owned()));
+                let names = s.textures.iter().map(|t| (*t).to_owned());
+                own.set("textures", Value::Texts(names.collect()));
+                Some(own)
             })
             .collect();
-        let inverse_bind = bones.iter().map(|&i| rest[i].inverse()).collect();
-        Ok(Some(Skin {
-            bones,
-            inverse_bind,
-            weights,
-        }))
+        let settings: Vec<_> = settings.into_iter().chain(&swapped).collect();
+        for geometry in node
+            .texts("geometries")
+            .iter()
+            .filter_map(|n| reader.geometries.get(n))
+        {
+            let passes = settings
+                .iter()
+                .map(|s| Pass::read(s, at.node, r))
+                .collect::<Result<Vec<_>, _>>()?;
+            let fur = match node.node("furRenderSettings") {
+                Some(s) => Some(Fur {
+                    pass: Pass::read(s, at.node, r)?,
+                    textures: node
+                        .texts("furTextures")
+                        .iter()
+                        .filter_map(|n| (r.texture)(n).map(|t| t.0))
+                        .collect(),
+                    depth: node.float("furDepth"),
+                    scale: node.vec::<4>("furScale").unwrap_or([1.0; 4]),
+                }),
+                None => None,
+            };
+            self.shapes.push(Shape {
+                name: node.name.clone(),
+                geometry,
+                order: at.order,
+                variant: at.variant,
+                passes,
+                fur,
+            });
+        }
+        Ok(())
     }
 
     pub fn find(&self, name: &str) -> Option<usize> {
@@ -583,10 +710,28 @@ impl Model {
             .position(|n| n.name.trim().eq_ignore_ascii_case(name.trim()))
     }
 
-    /// World transforms of all nodes at a time.
-    pub fn pose(&self, anim: Option<&Animation>, ms: f64) -> Vec<Mat4> {
+    /// World transforms of all nodes without animation.
+    pub fn rest(&self) -> Vec<Mat4> {
+        self.pose([])
+    }
+
+    /// World transforms of all nodes, with animations at their times.
+    pub fn pose<'a>(
+        &self,
+        animations: impl IntoIterator<Item = (&'a Animation, f64)>,
+    ) -> Vec<Mat4> {
+        self.compose(&self.fields(animations))
+    }
+
+    fn fields<'a>(
+        &self,
+        animations: impl IntoIterator<Item = (&'a Animation, f64)>,
+    ) -> Vec<Fields> {
         let mut fields: Vec<Fields> = self.nodes.iter().map(|n| n.rest).collect();
-        for (node, channel) in anim.iter().flat_map(|a| &a.0) {
+        let channels = animations
+            .into_iter()
+            .flat_map(|(a, ms)| a.0.iter().map(move |c| (c, ms)));
+        for ((node, channel), ms) in channels {
             let f = &mut fields[*node];
             let v = match channel.field.as_str() {
                 "rotation" => &mut f.rotation,
@@ -594,26 +739,63 @@ impl Model {
                 _ => &mut f.translation,
             };
             for (i, c) in channel.curves.iter().enumerate() {
-                if let Some(x) = c.as_ref().and_then(|c| c.at(ms)) {
-                    v[i] = x;
+                if let Some(c) = c {
+                    v[i] = c.at(ms);
                 }
             }
         }
+        fields
+    }
+
+    fn compose(&self, fields: &[Fields]) -> Vec<Mat4> {
         let mut out: Vec<Mat4> = Vec::with_capacity(fields.len());
         // Parents come before their children.
         for (n, f) in self.nodes.iter().zip(fields) {
-            let m = n.matrix(f);
+            let m = n.matrix(*f);
             out.push(n.parent.map_or(m, |p| out[p] * m));
         }
         out
     }
 
-    pub fn bounds(&self) -> (Vec3, Vec3) {
-        let transforms = self.pose(None, 0.0);
-        let points = self.shapes.iter().flat_map(|s| {
-            s.vertices
-                .iter()
-                .map(|v| transforms[s.node].transform_point3(v.pos.into()))
+    /// Moves the control points of tubes. Returns the geometries that changed.
+    pub fn bend(&mut self, ms: f64) -> Vec<usize> {
+        let mut changed = Vec::new();
+        for a in &self.animations {
+            for (geometry, channel) in &a.1 {
+                let Some(tube) = &mut self.geometries[*geometry].tube else {
+                    continue;
+                };
+                let Some(point) = tube.points.get_mut(channel.index) else {
+                    continue;
+                };
+                for (i, c) in channel.curves.iter().enumerate() {
+                    if let Some(c) = c {
+                        point[i] = c.at(ms);
+                    }
+                }
+                if !changed.contains(geometry) {
+                    changed.push(*geometry);
+                }
+            }
+        }
+        for &i in &changed {
+            let g = &mut self.geometries[i];
+            if let Some(tube) = g.tube.take() {
+                tube.build(g);
+                g.tube = Some(tube);
+            }
+        }
+        changed
+    }
+
+    /// The box around the shapes a filter picks, at rest.
+    pub fn bounds(&self, pick: impl Fn(&Shape) -> bool) -> (Vec3, Vec3) {
+        let world = self.rest();
+        let points = self.shapes.iter().filter(|s| pick(s)).flat_map(|s| {
+            let m = world[s.passes.first().map_or(0, |p| p.node)];
+            self.geometries[s.geometry]
+                .points()
+                .map(move |p| m.transform_point3(p))
         });
         points.fold(
             (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
@@ -622,22 +804,29 @@ impl Model {
     }
 }
 
-/// Channels and the nodes they move.
-pub struct Animation(Vec<(usize, Channel)>);
+/// Channels and the nodes they move, and those that move points of geometries.
+pub struct Animation(Vec<(usize, Channel)>, Vec<(usize, Channel)>);
 
 impl Animation {
-    pub fn new(model: &Model, channels: Vec<Channel>) -> Result<Self, Error> {
-        Ok(Self(
-            channels
-                .into_iter()
-                .filter_map(|c| match c.field.as_str() {
-                    "rotation" | "scale" | "translation" => {
-                        model.find(&c.node).map(|node| (node, c))
+    pub fn new(model: &Model, channels: Vec<Channel>) -> Self {
+        let mut out = Self(Vec::new(), Vec::new());
+        for c in channels {
+            match c.field.as_str() {
+                "rotation" | "scale" | "translation" => {
+                    if let Some(node) = model.find(&c.node) {
+                        out.0.push((node, c));
                     }
-                    _ => None,
-                })
-                .collect(),
-        ))
+                }
+                "controlPts" => {
+                    let name = c.node.trim();
+                    if let Some(i) = model.geometries.iter().position(|g| g.name.trim() == name) {
+                        out.1.push((i, c));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
     }
 }
 
@@ -659,5 +848,25 @@ mod tests {
             * glam::Mat3::from_rotation_y(2.0)
             * glam::Mat3::from_rotation_x(1.0);
         assert!((v - w * Vec3::Y).length() < 1e-5);
+    }
+
+    #[test]
+    fn tubes_face_outward() {
+        let tube = Tube {
+            points: vec![Vec3::ZERO, Vec3::Z, Vec3::Z * 2.0, Vec3::Z * 3.0],
+            rings: 5,
+            sides: 8,
+            radius: 0.5,
+            radii: vec![1.0],
+        };
+        assert!((tube.position(0.0) - Vec3::ZERO).length() < 1e-5);
+        assert!((tube.position(1.0) - Vec3::Z * 3.0).length() < 1e-5);
+        let g = tube.geometry("");
+        let at = |i: u32| Vec3::from_slice(&g.coords[0].values[i as usize * 3..]);
+        let out = |i: u32| Vec3::from_slice(&g.normals[0].values[i as usize * 3..]);
+        for t in g.indices.chunks_exact(3) {
+            let face = (at(t[1]) - at(t[0])).cross(at(t[2]) - at(t[0]));
+            assert!(face.length() < 1e-6 || face.dot(out(t[0])) > 0.0);
+        }
     }
 }

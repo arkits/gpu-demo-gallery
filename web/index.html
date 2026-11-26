@@ -29,9 +29,10 @@
 </style>
 <!-- Cloudflare Pages adds its analytics script to an explicit body. -->
 <body>
-<canvas id="view" tabindex="0" aria-label="Toy soldiers marching on a tabletop"></canvas>
+<canvas id="view" tabindex="0" aria-label="A werewolf on a night street"></canvas>
 <div id="modes" hidden>
-  <button data-key="3">Howl</button><button data-key="-">Less fur</button><button data-key="+">More fur</button><button data-key="p">Pause</button><button data-key="Home">Reset view</button>
+  <button data-key="1">Breathe</button><button data-key="2">Scratch</button><button data-key="3">Howl</button><button data-key="4">Walk</button><button data-key="5">Sidestep</button><button data-key="6">Run</button>
+  <button data-key="-">Less fur</button><button data-key="+">More fur</button><button data-key="o" id="slow" aria-pressed="false">Slow motion</button><button data-key="p" id="pause" aria-pressed="false">Pause</button><button data-key="Home">Reset view</button>
   <button id="mute" aria-pressed="false">Mute</button>
 </div>
 <main id="start">
@@ -40,7 +41,8 @@
   <label id="choose">Choose demo folder <input id="folder" type="file" webkitdirectory></label>
   <p id="need">Needs the unpacked files of NVIDIA's demo. They stay on this computer.</p>
   <p>A werewolf with layered fur and a bone-driven animation.</p>
-  <p>Drag to orbit and scroll or pinch to zoom. <kbd>3</kbd> howl · <kbd>P</kbd> pause · <kbd>M</kbd> mute · <kbd>Enter</kbd> full screen</p>
+  <p>He goes through his routine until you pick an action, which follows what he is doing. Drag to orbit and scroll or pinch to zoom.</p>
+  <p><kbd>1</kbd>–<kbd>6</kbd> breathe, scratch, howl, walk, sidestep, run · <kbd>+</kbd> <kbd>−</kbd> fur layers · <kbd>[</kbd> <kbd>]</kbd> fur length · <kbd>O</kbd> slow motion · <kbd>P</kbd> pause · <kbd>M</kbd> mute · <kbd>Enter</kbd> full screen</p>
   <p>NVIDIA's “Wolfman” demo, 2002.</p>
   <progress id="progress" hidden></progress>
   <p id="status" role="status"></p>
@@ -57,38 +59,50 @@
     const s = window.devicePixelRatio || 1;
     return [Math.round(canvas.clientWidth * s), Math.round(canvas.clientHeight * s)];
   };
-  // ?time=&yaw=&pitch=&action=1 shows one still, for checking frames.
+  // ?time=&yaw=&pitch=&key=1..6 shows one still, for checking frames.
   const params = new URLSearchParams(location.search);
   const still = params.has("time");
   let files = null, player = null;
 
   const sound = {
-    sources: {}, buffers: {}, muted: false, loop: null, effect: null,
+    sources: {}, buffers: {}, playing: {}, muted: false,
     open() {
       this.context = new AudioContext();
       this.volume = this.context.createGain();
       this.meter = this.context.createAnalyser();
       this.volume.connect(this.meter).connect(this.context.destination);
-      for (const n of ["breathloop8", "howling 3"]) this.get(n);
+      for (const n of ["wolf 47b lr", "breathloop8", "scratching82", "howling 3", "brwalk 3", "2lwalk loop 3", "sideways 3b", "w2run 3", "brun loop 3", "brun2w 3", "w2b 3"]) this.get(n);
     },
     get(name) {
       return this.buffers[name] ??= (async () => {
         try {
           const own = this.sources[name];
-          const data = own ? await own.arrayBuffer() : await fetch(`./local/${name}.flac`).then((r) => r.ok ? r.arrayBuffer() : null);
+          const data = own ? await own.arrayBuffer() : await fetch(`./local/${encodeURIComponent(name)}.flac`).then((r) => r.ok ? r.arrayBuffer() : null);
           return data && await this.context.decodeAudioData(data);
         } catch { return null; } // The demo goes on without sound.
       })();
     },
     async cue(text) {
-      const loop = text.endsWith("*"), name = text.replace("*", ""), kind = loop ? "loop" : "effect";
-      this[kind]?.node?.stop();
-      const entry = this[kind] = { name };
+      // Names may have spaces.
+      const [action, value, ...rest] = text.split(" ");
+      const name = rest.join(" "), gain = Number(value);
+      if (action === "rate") {
+        const p = this.playing[name];
+        if (p) p.rate = gain;
+        if (p?.node) p.node.playbackRate.value = gain;
+        return;
+      }
+      this.playing[name]?.node?.stop();
+      delete this.playing[name];
+      if (action === "stop") return;
+      const volume = new GainNode(this.context, { gain });
+      const entry = this.playing[name] = { volume, gain, rate: 1, repeat: action === "repeat" };
       const buffer = await this.get(name);
       // Another cue may have come while this one was loading.
-      if (!buffer || this[kind] !== entry) return;
-      entry.node = new AudioBufferSourceNode(this.context, { buffer, loop });
-      entry.node.connect(this.volume);
+      if (!buffer || this.playing[name] !== entry) return;
+      entry.node = new AudioBufferSourceNode(this.context, { buffer, loop: entry.repeat, playbackRate: entry.rate });
+      entry.node.connect(volume).connect(this.volume);
+      entry.node.onended = () => { if (this.playing[name] === entry) delete this.playing[name]; };
       entry.node.start();
     },
     mute() {
@@ -99,7 +113,8 @@
     state() {
       const d = new Float32Array(this.meter.fftSize);
       this.meter.getFloatTimeDomainData(d);
-      return { looping: this.loop?.node && this.loop.name, level: Math.max(...d.map(Math.abs)) };
+      const playing = Object.entries(this.playing).filter(([, p]) => p.node).map(([name, p]) => [name, p.gain]);
+      return { playing: Object.fromEntries(playing), level: Math.max(...d.map(Math.abs)), state: this.context.state };
     },
   };
 
@@ -136,7 +151,7 @@
   function run() {
     let last = size().join(), n = 0;
     const number = (k) => Number(params.get(k) ?? 0);
-    if (still) player.freeze(number("time"), number("yaw"), number("pitch"), number("action") === 1);
+    if (still) player.freeze(number("time"), number("yaw"), number("pitch"), number("key"));
     const tick = (now) => {
       const [w, h] = size();
       if (`${w},${h}` !== last) {
@@ -165,17 +180,25 @@
     wake();
     document.addEventListener("visibilitychange", () => document.hidden ? sound.context?.suspend() : sound.context?.resume());
 
+    const show = () => {
+      $("pause").setAttribute("aria-pressed", player.paused());
+      $("slow").setAttribute("aria-pressed", player.slow());
+    };
     addEventListener("keydown", (e) => {
+      // Held keys would queue the same action again and again.
+      if (e.repeat) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "Enter" && e.target.tagName !== "BUTTON") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
       else if (e.key === " " && e.target.tagName === "BUTTON") return;
       else if (e.key === "m" || e.key === "M") sound.mute();
       else if (!player.key(e.key)) return;
+      show();
       e.preventDefault();
     });
     for (const b of $("modes").children) b.addEventListener("click", () => {
       if (b.id === "mute") sound.mute();
       else player.key(b.dataset.key);
+      show();
       canvas.focus();
     });
 
@@ -240,15 +263,15 @@
   // Content served with the page: scripts/serve.py locally, or a bundled deployment.
   const mb = (n) => (n / 1e6).toFixed(1);
   try {
-    const manifest = await fetch("./local/assets.json").catch(() => null);
+    const manifest = await fetch("./local/assets.json", { cache: "no-store" }).catch(() => null);
     if (manifest?.ok && manifest.headers.get("content-type")?.includes("json")) {
-      const { files: names, size: total } = await manifest.json();
+      const { files: names, size: total, version } = await manifest.json();
       for (const id of ["choose", "need"]) $(id).hidden = true;
       $("progress").hidden = false;
       const parts = [];
       let done = 0;
       for (const name of names) {
-        const r = await fetch(`./local/${encodeURIComponent(name)}`);
+        const r = await fetch(`./local/${encodeURIComponent(name)}?v=${version}`);
         if (!r.ok || !r.body) throw new Error(`Asset download failed (${r.status})`);
         for (const reader = r.body.getReader(); ; ) {
           const { done: end, value } = await reader.read();

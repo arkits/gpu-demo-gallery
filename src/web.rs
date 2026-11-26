@@ -3,6 +3,7 @@ use web_sys::HtmlCanvasElement;
 
 use crate::Player;
 use crate::data::Files;
+use crate::show::Action;
 
 #[wasm_bindgen(start)]
 fn init() {
@@ -66,24 +67,31 @@ impl WebPlayer {
     pub fn key(&mut self, key: &str) -> bool {
         self.0.show.key(key)
     }
-    /// Sounds to start: a file name without extension, with "*" if it repeats.
+    pub fn paused(&self) -> bool {
+        self.0.show.paused
+    }
+    pub fn slow(&self) -> bool {
+        self.0.show.slow
+    }
+    /// What sounds do: a word, a number, and a file name without extension.
     pub fn cues(&mut self) -> Vec<String> {
         self.0
             .show
             .take_cues()
             .into_iter()
             .map(|cue| {
-                if cue.repeat {
-                    format!("{}*", cue.name)
-                } else {
-                    cue.name.to_owned()
-                }
+                let (action, value) = match cue.action {
+                    Action::Repeat => ("repeat", 1.0),
+                    Action::Once => ("once", 1.0),
+                    Action::Stop => ("stop", 0.0),
+                    Action::Rate(rate) => ("rate", rate),
+                };
+                format!("{action} {value} {}", cue.name)
             })
             .collect()
     }
-    /// Shows one moment, for checking frames.
-    pub fn freeze(&mut self, seconds: f64, yaw: f64, pitch: f64, action: bool) {
-        self.0.show.freeze(seconds, yaw, pitch, action);
+    pub fn freeze(&mut self, seconds: f64, yaw: f64, pitch: f64, key: usize) {
+        self.0.show.freeze(seconds, yaw, pitch, key);
     }
     /// Positions are fractions of the canvas, from its top left.
     pub fn press(&mut self, x: f64, y: f64) {
