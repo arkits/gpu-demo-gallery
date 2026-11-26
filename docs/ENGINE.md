@@ -99,6 +99,13 @@ Lambert's law; a specular term uses the material's shininess word. [I] for
 the specular exponent's exact use. Vertex-coloured materials take the
 colour slots instead.
 
+Depth is Glide's w-buffer with a less-or-equal test (`grDepthBufferMode(2)`,
+`grDepthBufferFunction(3)`; `race.exe` `0x42cb90`): 16 bits holding the eye
+distance as a float with a 4-bit exponent and a 12-bit mantissa. Decals that
+lie on a car's body round to the same value and, drawn later, win. The port's
+shaders write that same value as the fragment's depth; a finer depth buffer
+made the decals flicker.
+
 The camera (`rcamera.c`): horizontal field of view 60 degrees by default,
 near 1, far 65535, looking along its frame's z with y up; the view is the
 inverse of its frame (`0x41e480`).
