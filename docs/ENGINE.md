@@ -8,15 +8,24 @@ Each animal is a `.BOF` whose root is a `Seq` of 30 or 40 poses
 (`flipper.exe` loads them in `0x401ba0`); the program sets the pose itself,
 and the port plays them at 30 a second. [I]
 
+With water reflections on, its default (`0x401020`), every shape is changed
+after loading (`0x4039a0`): a material with a texture becomes preset 1, the
+texture alone, unlit, and gets a second pass that multiplies the water light
+over it (`0x401330`: preset 0x10d, `light1.3df`, coordinates 0.012 a unit of
+world x and z, `0x4467a0`). The light's offset is ten times the cosine of a
+phase that gains 0.01 a frame (`0x401860`). Untextured parts stay lit by
+ambient 0.3 and a (0.7, 0.7, 0.8) light along +x. Fog is (0.1, 0.1, 0.4)
+from 350 to 900. The files' own textured materials (diffuse 0, 1, 1) are
+never used as they are.
+
 ### Not ported yet
 
 - The terrain, built from `t_terr_5.ppm` and four height-banded textures
   (`0x40aa70`), the plants and corals.
-- The water light multiplied over everything (`light1.3df`).
 - The animals' paths, schools, the automatic cameras and gravity.
 - The soundtrack.
 
-The camera distance, light and fog colour here are the port's own. [I]
+The camera distance and the clear colour (the fog's) are the port's own. [I]
 
 ## The ATB engine (shared by the ATB ports)
 

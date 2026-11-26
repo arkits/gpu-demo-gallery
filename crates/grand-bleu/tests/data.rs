@@ -17,7 +17,11 @@ fn data() -> Option<PathBuf> {
 fn every_animal_reads() {
     let Some(dir) = data() else { return };
     let files = Files::from_path(&dir).expect("need the demo's files");
-    for f in grand_bleu::demo::FILES {
+    atb::read_texture_3df(files.get("light1.3df").unwrap()).unwrap();
+    for f in grand_bleu::demo::FILES
+        .iter()
+        .filter(|f| f.ends_with(".bof"))
+    {
         let bof = atb::Bof::parse(files.get(f).unwrap()).unwrap_or_else(|e| panic!("{f}: {e}"));
         assert!(!bof.dict.is_empty(), "{f}");
     }
