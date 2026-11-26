@@ -108,6 +108,9 @@ dependencies = [
 [[package]]
 name = "atb"
 version = "0.1.0"
+dependencies = [
+ "glam",
+]
 
 [[package]]
 name = "atomic-waker"

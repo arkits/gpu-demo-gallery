@@ -1,354 +1,457 @@
-//! Valley of Ra — rendered from the demo's own ATB assets.
-//!
-//! Loads every `.BOF` name table, `.3DS` mesh and `.3DF` texture in the folder
-//! through `crates/atb`'s strict readers, then draws the real meshes (or a
-//! reconstructed frame when the BOF object graph is opaque) textured with the
-//! demo's own `.3DF` images. See `docs/ENGINE.md`.
-use glam::{Mat4, Vec3, Vec4};
+//! Valley of Ra: Anubis and Nefertiti fight before a pyramid. `fight.exe`
+//! loads the nine scene parts of `fight.bof` (`0x4018a0`), plays each
+//! fighter's moves as frame ranges of one long animation (`0x401ff0`),
+//! keeps the camera on the two (`0x401a70`, `0x401bb0`) and draws shadows,
+//! reflection, fighters, backdrop and scene (`0x401410`). See
+//! `docs/ENGINE.md`.
+use atb::bof::Object;
+use atb::{Bof, Item, View};
+use glam::{Mat4, Vec3};
 
 use crate::Error;
 use crate::data::Files;
-use crate::gl::{
-    Depth, Gl, Gpu, Sampling, State, Surface, TextureId, Vertex, from_opengl, look_at, perspective,
-};
-use crate::image::Image;
+use crate::gl::{Gl, Gpu};
+use crate::pe::Pe;
+use crate::render::{self, Camera, Fog, Frame, Light, Pictures, look_at};
 
 pub const SHADER: &str = include_str!("../shaders/demo.wgsl");
-pub const PROGRAMS: &[&str] = &["plain", "textured", "lit"];
-pub const BUTTONS: &[(&str, &str)] = &[("w", "Wireframe"), ("p", "Pause"), ("t", "Next texture")];
+pub const PROGRAMS: &[&str] = &["plain", "textured", "glide"];
+pub const BUTTONS: &[(&str, &str)] = &[
+    ("ArrowUp", "Anubis jump"),
+    ("8", "Anubis punch"),
+    ("9", "Anubis high kick"),
+    ("6", "Anubis low kick"),
+    ("7", "Anubis block"),
+    ("w", "Nefertiti jump"),
+    ("i", "Nefertiti punch"),
+    ("o", "Nefertiti high kick"),
+    ("l", "Nefertiti low kick"),
+    ("u", "Nefertiti block"),
+    ("f", "Fog"),
+];
 
-/// All ATB assets the port may load; `data.rs` keeps these from the folder/pack.
-pub const FILES: &[&str] = &["fight.bof"];
+/// `fight.exe` is read for the two move tables; nothing else of it.
+pub const FILES: &[&str] = &["fight.bof", "fight.exe"];
 pub const PARTS: &[(&str, usize, usize)] = &[];
 pub const SOUNDS: &[&str] = &[];
 
-const PLAIN: usize = 0;
-const LIT: usize = 2;
-/// Clamp + no mips: many ATB textures are non-square / non-power-of-two, which
-/// must not use repeat addressing with generated mips (WebGL2 parity).
-const TEX: Sampling = Sampling {
-    clamp: [true; 2],
-    mips: false,
-    linear: true,
-    anisotropy: 1,
-};
+const RATE: f64 = 60.0;
 
-struct Tri {
-    p: [Vec3; 3],
-    uv: [[f32; 2]; 3],
-    color: [f32; 4],
-    tex: Option<usize>,
+/// Input slots `0x401ff0` reads: jump, forward, back, block, low kick,
+/// high kick, punch.
+#[derive(Clone, Copy, Default)]
+struct Pad([bool; 12]);
+
+struct Fighter {
+    anim: u32,
+    shadow: u32,
+    /// Children of the animation, and the one whose x is the fighter's step.
+    count: usize,
+    horizontal: usize,
+    /// The upper body the camera follows (`0x4019c0`).
+    body: usize,
+    /// Twelve moves of (first, contact, last) frames (`0x45c1c8`, `0x45c268`).
+    moves: Vec<[u32; 3]>,
+    state: usize,
+    frame: u32,
+    x: f32,
+    pad: Pad,
+    last: Pad,
 }
 
-pub struct Demo {
-    textures: Vec<TextureId>,
-    tris: Vec<Tri>,
-    center: Vec3,
-    scale: f32,
-    dict_len: usize,
-    mesh_count: usize,
-    tex_count: usize,
-    current: usize,
-    time: f64,
-    paused: bool,
-    wireframe: bool,
-    yaw: f32,
-    pitch: f32,
-    dist: f32,
-    held: Option<(f64, f64, u8)>,
-    drag: (f32, f32),
-}
-
-impl Demo {
-    pub fn new(gpu: &Gpu, gl: &mut Gl, files: &Files) -> Result<Self, Error> {
-        // `Files` implements atb::Source, so every ATB asset is parsed here.
-        let scene = atb::Scene::load(files)?;
-        if scene.dict.is_empty() && scene.meshes.is_empty() && scene.textures.is_empty() {
-            return Err("no ATB assets found".into());
+impl Fighter {
+    fn new(
+        bof: &Bof,
+        pe: &Pe,
+        anim: u32,
+        shadow: u32,
+        who: char,
+        table: u32,
+        x: f32,
+    ) -> Result<Self, Error> {
+        let Some(Object::Anim(a)) = bof.get(anim) else {
+            return Err("fighter is not an animation".into());
+        };
+        let child = |name: String| {
+            a.names
+                .iter()
+                .position(|n| n.as_deref() == Some(name.as_str()))
+                .ok_or_else(|| format!("fight.bof has no {name}"))
+        };
+        let horizontal = child(format!("{who}-HORZNTL"))?;
+        let body = child(format!("{who}-Body-T"))?;
+        let moves = (0..12)
+            .map(|i| {
+                let at = table + i * 12;
+                Ok([pe.word(at)?, pe.word(at + 4)?, pe.word(at + 8)?])
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        if moves
+            .iter()
+            .any(|m| m[0] > m[2] || u32::from(a.fields.1) <= m[2])
+        {
+            return Err("fight.exe move table out of range".into());
         }
-
-        // Upload every real .3DF base mip as a texture.
-        let mut textures = Vec::new();
-        for (_, tex) in &scene.textures {
-            let base = tex.base();
-            let image = Image {
-                width: base.width,
-                height: base.height,
-                rgba: base.rgba.clone(),
-            };
-            textures.push(gl.texture(gpu, &image, TEX));
-        }
-        let ntex = textures.len();
-
-        // Build triangles from all real .3DS meshes.
-        let mut tris = Vec::new();
-        let mut lo = Vec3::splat(f32::MAX);
-        let mut hi = Vec3::splat(f32::MIN);
-        let mut mesh_count = 0;
-        for (_, scene3ds) in &scene.meshes {
-            for mesh in &scene3ds.meshes {
-                if mesh.faces.is_empty() {
-                    continue;
-                }
-                mesh_count += 1;
-                for &[a, b, c] in &mesh.faces {
-                    let (ia, ib, ic) = (a as usize, b as usize, c as usize);
-                    if ia >= mesh.vertices.len()
-                        || ib >= mesh.vertices.len()
-                        || ic >= mesh.vertices.len()
-                    {
-                        continue;
-                    }
-                    let (pa, pb, pc) = (
-                        Vec3::from(mesh.vertices[ia]),
-                        Vec3::from(mesh.vertices[ib]),
-                        Vec3::from(mesh.vertices[ic]),
-                    );
-                    for p in [pa, pb, pc] {
-                        lo = lo.min(p);
-                        hi = hi.max(p);
-                    }
-                    let uv = |i: usize| {
-                        mesh.texcoords
-                            .get(i)
-                            .map(|t| [t[0], t[1]])
-                            .unwrap_or([0.0, 0.0])
-                    };
-                    let n = (pb - pa).cross(pc - pa).normalize_or_zero();
-                    let light = (n.dot(Vec3::new(0.4, 0.8, 0.3).normalize()).abs() * 0.6 + 0.4)
-                        .clamp(0.0, 1.0);
-                    tris.push(Tri {
-                        p: [pa, pb, pc],
-                        uv: [uv(ia), uv(ib), uv(ic)],
-                        color: [light, light, light, 1.0],
-                        tex: (ntex > 0).then_some(0),
-                    });
-                }
-            }
-        }
-
-        // Some ATB demos ship only a .BOF whose object graph is opaque, or only
-        // movie frames with no geometry. Draw a reconstructed panel grid derived
-        // from the real name table / texture names, each panel showing a demo
-        // texture (as documented in ENGINE.md).
-        if tris.is_empty() {
-            let mut panels: Vec<String> = scene.dict.clone();
-            if panels.is_empty() {
-                panels = scene.textures.iter().map(|(n, _)| n.clone()).collect();
-            }
-            if panels.is_empty() {
-                panels.push("scene".into());
-            }
-            panels.truncate(64);
-            let n = panels.len();
-            let cols = (n as f32).sqrt().ceil().max(1.0);
-            let rows = (n as f32 / cols).ceil().max(1.0);
-            for (i, _) in panels.iter().enumerate() {
-                let x = (i % cols as usize) as f32 - cols * 0.5;
-                let y = (i / cols as usize) as f32 - rows * 0.5;
-                let o = Vec3::new(x * 1.2, y * 1.2, 0.0);
-                let (pa, pb, pc, pd) = (
-                    o + Vec3::new(-0.5, -0.5, 0.0),
-                    o + Vec3::new(0.5, -0.5, 0.0),
-                    o + Vec3::new(0.5, 0.5, 0.0),
-                    o + Vec3::new(-0.5, 0.5, 0.0),
-                );
-                let shade = 0.55 + 0.45 * (i as f32 / n as f32);
-                let tex = (ntex > 0).then(|| i % ntex);
-                push_quad(
-                    &mut tris,
-                    pa,
-                    pb,
-                    pc,
-                    pd,
-                    [shade, shade * 0.85, 0.7, 1.0],
-                    tex,
-                );
-            }
-            lo = Vec3::new(-cols, -rows, -1.0);
-            hi = Vec3::new(cols, rows, 1.0);
-            mesh_count = n;
-        }
-
-        let center = (lo + hi) * 0.5;
-        let extent = (hi - lo).max_element().max(1.0);
-        let scale = 2.0 / extent;
-
         Ok(Self {
-            textures,
-            tris,
-            center,
-            scale,
-            dict_len: scene.dict.len(),
-            mesh_count,
-            tex_count: scene.textures.len(),
-            current: 0,
-            time: 0.0,
-            paused: false,
-            wireframe: false,
-            yaw: 0.6,
-            pitch: 0.25,
-            dist: 3.2,
-            held: None,
-            drag: (0.0, 0.0),
+            anim,
+            shadow,
+            count: a.group.children.len(),
+            horizontal,
+            body,
+            frame: moves[0][0],
+            moves,
+            state: 0,
+            x,
+            pad: Pad::default(),
+            last: Pad::default(),
         })
     }
 
-    pub fn step(&mut self, dt: f64) {
-        if !self.paused {
-            self.time += dt;
+    /// The step child's position at a frame.
+    fn step(&self, bof: &Bof, frame: u32) -> Vec3 {
+        self.child(bof, frame, self.horizontal)
+    }
+
+    fn child(&self, bof: &Bof, frame: u32, child: usize) -> Vec3 {
+        let Some(Object::Anim(a)) = bof.get(self.anim) else {
+            return Vec3::ZERO;
+        };
+        let Some(Object::Raw(raw)) = bof.get(a.fields.2) else {
+            return Vec3::ZERO;
+        };
+        let at = (frame as usize * self.count + child) * 64 + 48;
+        let f = |o: usize| {
+            raw.get(at + o..at + o + 4)
+                .map_or(0.0, |b| f32::from_be_bytes(b.try_into().unwrap()))
+        };
+        Vec3::new(f(0), f(4), f(8))
+    }
+
+    /// One frame of the move machine (`0x401ff0`). Moves 1, 2 and 6 start
+    /// on a fresh press the other fighter is not also making; 7 walks, 8
+    /// jumps, 11 holds a block.
+    fn tick(&mut self, bof: &Bof, other: Pad) {
+        let p = self.pad.0;
+        let fresh = |i: usize| p[i] && !self.last.0[i] && !other.0[i];
+        let m = self.moves[self.state];
+        let travel = |s: &Self, from: u32, to: u32| s.step(bof, to).x - s.step(bof, from).x;
+        let mut go = None;
+        match self.state {
+            0 | 7 if fresh(11) => go = Some(1),
+            0 | 7 if fresh(10) => go = Some(2),
+            0 | 7 if fresh(8) => go = Some(6),
+            0 if p[2] || p[3] => go = Some(7),
+            0 if p[6] => go = Some(11),
+            0 if p[0] => go = Some(8),
+            7 if p[0] => go = Some(8),
+            0 => {
+                self.frame += 1;
+                if self.frame > m[2] {
+                    self.frame = m[0];
+                }
+            }
+            1..=6 => {
+                self.frame += 1;
+                if self.frame > m[2] {
+                    go = Some(0);
+                }
+            }
+            7 if p[2] => {
+                // The step's travel is banked when the walk cycle wraps.
+                self.frame += 1;
+                if self.frame > m[2] {
+                    self.x += travel(self, m[0], m[2]);
+                    self.frame = m[0];
+                }
+            }
+            7 if p[3] => {
+                if self.frame <= m[0] {
+                    self.x += travel(self, m[2], m[0]);
+                    self.frame = m[2];
+                } else {
+                    self.frame -= 1;
+                }
+            }
+            7 => {
+                self.x += travel(self, m[0], self.frame);
+                go = Some(0);
+            }
+            8 => {
+                self.frame += 1;
+                if self.frame > m[2] {
+                    self.x += travel(self, m[0], m[2]);
+                    go = Some(0);
+                }
+            }
+            11 => {
+                if p[6] {
+                    if self.frame < m[2] {
+                        self.frame += 1;
+                    }
+                } else if self.frame > m[0] {
+                    self.frame -= 1;
+                } else {
+                    go = Some(0);
+                }
+            }
+            _ => go = Some(0),
         }
-        if let Some((_, _, pb)) = self.held
-            && pb & 1 != 0
-        {
-            let drag = std::mem::take(&mut self.drag);
-            self.yaw += drag.0.to_radians();
-            self.pitch = (self.pitch + drag.1.to_radians()).clamp(-1.2, 1.2);
+        if let Some(state) = go {
+            self.state = state;
+            self.frame = self.moves[state][0];
+        }
+        self.x = self.x.clamp(-130.0, 100.0);
+        self.last = self.pad;
+    }
+
+    /// Where the upper body is.
+    fn world(&self, bof: &Bof) -> Vec3 {
+        let s = self.child(bof, self.frame, self.body);
+        Vec3::new(self.x + s.x, s.y, s.z)
+    }
+}
+
+/// A critically damped follower: `0x401a70` and `0x401bb0` keep a velocity,
+/// pull it toward the goal and damp it each frame.
+#[derive(Clone, Copy, Default)]
+struct Spring {
+    at: Vec3,
+    speed: Vec3,
+}
+
+impl Spring {
+    fn pull(&mut self, goal: Vec3, k: f32, damp: f32) {
+        self.speed = (self.speed + (goal - self.at) * k) * damp;
+        self.at += self.speed;
+    }
+}
+
+pub struct Demo {
+    bof: Bof,
+    parts: [u32; 4],
+    fighters: [Fighter; 2],
+    pictures: Pictures,
+    target: Spring,
+    eye: Spring,
+    fog: bool,
+    wireframe: bool,
+    due: f64,
+    frames: u64,
+}
+
+impl Demo {
+    pub fn new(_gpu: &Gpu, _gl: &mut Gl, files: &Files) -> Result<Self, Error> {
+        let bof = Bof::parse(files.get("fight.bof")?)?;
+        let pe = Pe::new(files.get("fight.exe")?)?;
+        let find = |n: &str| bof.find(n).ok_or_else(|| format!("fight.bof has no {n}"));
+        let anubis = Fighter::new(
+            &bof,
+            &pe,
+            find("an_moves")?,
+            find("an_moves_shadow")?,
+            'M',
+            0x45c1c8,
+            -50.0,
+        )?;
+        let nefertiti = Fighter::new(
+            &bof,
+            &pe,
+            find("nef_moves")?,
+            find("nef_moves_shadow")?,
+            'W',
+            0x45c268,
+            -27.0,
+        )?;
+        Ok(Self {
+            parts: [
+                find("refl")?,
+                find("top")?,
+                find("background")?,
+                find("scene")?,
+            ],
+            fighters: [anubis, nefertiti],
+            bof,
+            pictures: Pictures::default(),
+            target: Spring::default(),
+            eye: Spring::default(),
+            fog: false,
+            wireframe: false,
+            due: 0.0,
+            frames: 0,
+        })
+    }
+
+    fn tick(&mut self) {
+        let [a, b] = &mut self.fighters;
+        let (pa, pb) = (a.pad, b.pad);
+        b.tick(&self.bof, pa);
+        a.tick(&self.bof, pb);
+        // The camera looks between them, ten below their middle, and stands
+        // off by seven times their separation (`0x401a70`, `0x401bb0`).
+        let (wa, wb) = (a.world(&self.bof), b.world(&self.bof));
+        let mid = (wa + wb) * 0.5;
+        self.target
+            .pull(Vec3::new(mid.x, mid.y - 10.0, mid.z), 0.09, 0.7);
+        let low = mid.y - 5.0;
+        let mut up = 30.0 - self.target.at.y;
+        if self.target.at.y < 30.0 {
+            up *= 15.0;
+        }
+        let eye = Vec3::new(
+            (wa.y - low) * 7.0 + mid.x - 10.0,
+            up + 30.0,
+            (wb.x - mid.x) * 7.0 + mid.z,
+        );
+        self.eye.pull(eye, 0.1, 0.55);
+        self.frames += 1;
+    }
+
+    pub fn step(&mut self, dt: f64) {
+        self.due = (self.due + dt * RATE).min(8.0);
+        while self.due >= 1.0 {
+            self.due -= 1.0;
+            self.tick();
         }
     }
 
     pub fn freeze(&mut self, seconds: f64, keys: &str) {
         for k in keys.chars() {
-            self.key(&k.to_string(), true);
+            let k = k.to_string();
+            self.key(&k, true);
+            self.tick();
+            self.key(&k, false);
         }
-        self.time = seconds;
+        for _ in 0..(seconds * RATE).round() as usize {
+            self.tick();
+        }
     }
 
     pub fn key(&mut self, key: &str, down: bool) -> bool {
-        if !down {
-            return matches!(key, "w" | "W" | "p" | "P" | "t" | "T");
-        }
-        match key {
-            "w" | "W" => self.wireframe = !self.wireframe,
-            "p" | "P" => self.paused = !self.paused,
-            "t" | "T" if !self.textures.is_empty() => {
-                self.current = (self.current + 1) % self.textures.len()
+        // The README's keys: Anubis on the arrows and keypad, Nefertiti on
+        // letters.
+        let (who, slot) = match key {
+            "ArrowUp" => (0, 0),
+            "ArrowRight" => (0, 2),
+            "ArrowLeft" => (0, 3),
+            "7" => (0, 6),
+            "6" => (0, 8),
+            "9" => (0, 10),
+            "8" => (0, 11),
+            "w" | "W" => (1, 0),
+            "a" | "A" => (1, 2),
+            "s" | "S" => (1, 3),
+            "u" | "U" => (1, 6),
+            "l" | "L" => (1, 8),
+            "o" | "O" => (1, 10),
+            "i" | "I" => (1, 11),
+            "f" | "F" => {
+                if down {
+                    self.fog = !self.fog;
+                }
+                return true;
+            }
+            "x" | "X" => {
+                if down {
+                    self.wireframe = !self.wireframe;
+                }
+                return true;
             }
             _ => return false,
-        }
+        };
+        self.fighters[who].pad.0[slot] = down;
         true
     }
 
-    pub fn pointer(&mut self, x: f64, y: f64, buttons: u8) {
-        if buttons & 1 != 0 {
-            if let Some((px, py, pb)) = self.held
-                && pb & 1 != 0
-            {
-                self.drag.0 += ((x - px) * 160.0) as f32;
-                self.drag.1 += ((y - py) * 120.0) as f32;
-            }
-            self.held = Some((x, y, buttons));
-        } else {
-            self.held = None;
-        }
-    }
+    pub fn pointer(&mut self, _x: f64, _y: f64, _buttons: u8) {}
 
-    pub fn wheel(&mut self, amount: f64) {
-        self.dist = (self.dist - amount as f32 * 1.5).clamp(1.5, 8.0);
-    }
+    pub fn wheel(&mut self, _amount: f64) {}
 
     pub fn cues(&mut self) -> Vec<String> {
         Vec::new()
     }
 
     pub fn report(&self) -> String {
+        let [a, b] = &self.fighters;
         format!(
-            "dict {} meshes {} tex {} frame {} wire {} t {:.2}",
-            self.dict_len, self.mesh_count, self.tex_count, self.current, self.wireframe, self.time,
+            "anubis {} {} x {:.0} nefertiti {} {} x {:.0} frame {}",
+            a.state, a.frame, a.x, b.state, b.frame, b.x, self.frames
         )
     }
 
-    pub fn draw(&mut self, _gpu: &Gpu, gl: &mut Gl, (w, h): (u32, u32)) {
+    pub fn draw(&mut self, gpu: &Gpu, gl: &mut Gl, (w, h): (u32, u32)) {
         let aspect = w.max(1) as f32 / h.max(1) as f32;
-        let proj = from_opengl(perspective(55.0, aspect, 0.05, 50.0));
-        let eye = Vec3::new(
-            self.yaw.sin() * self.pitch.cos(),
-            self.pitch.sin(),
-            self.yaw.cos() * self.pitch.cos(),
-        ) * self.dist;
-        let view = look_at(eye, Vec3::ZERO, Vec3::Y);
-        let zup = Mat4::from_cols(
-            Vec4::new(1.0, 0.0, 0.0, 0.0),
-            Vec4::new(0.0, 0.0, -1.0, 0.0),
-            Vec4::new(0.0, 1.0, 0.0, 0.0),
-            Vec4::new(0.0, 0.0, 0.0, 1.0),
-        );
-        let spin = Mat4::from_rotation_y(if self.paused {
-            0.0
-        } else {
-            self.time as f32 * 0.15
-        });
-        let model = spin
-            * zup
-            * Mat4::from_scale(Vec3::splat(self.scale))
-            * Mat4::from_translation(-self.center);
-        let vp = proj * view * model;
-
-        gl.begin([0.03, 0.04, 0.06, 1.0]);
-
-        let groups = self.textures.len().max(1);
-        for g in 0..groups {
-            let mut verts = Vec::new();
-            for t in &self.tris {
-                let base = t.tex.unwrap_or(0);
-                let idx = (base + self.current) % groups;
-                if idx != g {
-                    continue;
-                }
-                for i in 0..3 {
-                    verts.push(
-                        Vertex::new(vp * t.p[i].extend(1.0), t.color).uv(0, t.uv[i][0], t.uv[i][1]),
-                    );
-                }
-            }
-            if verts.is_empty() {
-                continue;
-            }
-            let tex = self.textures.get(g).copied().unwrap_or(0);
-            gl.draw(
-                State::new(LIT).depth(Depth::Less(true)),
-                &Surface::textures(&[tex]),
-                &verts,
+        // 40 degrees, far 5000 (`0x401170`).
+        let mut camera = Camera::new(look_at(self.target.at, self.eye.at, Vec3::Y));
+        camera.fov = 0.698_131_7;
+        camera.far = 5000.0;
+        let eye = camera.eye();
+        let frames: Vec<(u32, usize)> = self
+            .fighters
+            .iter()
+            .flat_map(|f| [(f.anim, f.frame as usize), (f.shadow, f.frame as usize)])
+            .collect();
+        let pick = move |id: u32| frames.iter().find(|&&(a, _)| a == id).map(|&(_, f)| f);
+        let walk = |root: u32, shift: f32, out: &mut Vec<Item>| {
+            let mut part = Vec::new();
+            atb::walk(
+                &self.bof,
+                root,
+                &View {
+                    eye,
+                    frame: &pick,
+                    ..View::default()
+                },
+                &mut part,
             );
-        }
-
-        if self.wireframe {
-            let mut lines = Vec::with_capacity(self.tris.len() * 6);
-            for t in &self.tris {
-                let q: Vec<Vertex> = (0..3)
-                    .map(|i| Vertex::new(vp * t.p[i].extend(1.0), [1.0, 1.0, 1.0, 1.0]))
-                    .collect();
-                lines.extend([q[0], q[1], q[1], q[2], q[2], q[0]]);
+            for mut i in part {
+                i.matrix = Mat4::from_translation(Vec3::new(shift, 0.0, 0.0)) * i.matrix;
+                out.push(i);
             }
-            gl.draw(
-                State::new(PLAIN).depth(Depth::LessEqual(false)).lines(),
-                &Surface::default(),
-                &lines,
+        };
+        // Shadows, reflection, top and fighters, under a white light along
+        // +x (a frame turned a quarter about y).
+        let mut lit = Vec::new();
+        for f in &self.fighters {
+            walk(f.shadow, f.x, &mut lit);
+        }
+        walk(self.parts[0], 0.0, &mut lit);
+        walk(self.parts[1], 0.0, &mut lit);
+        for f in &self.fighters {
+            walk(f.anim, f.x, &mut lit);
+        }
+        walk(self.parts[3], 0.0, &mut lit);
+        // The backdrop under a white ambient light alone.
+        let mut back = Vec::new();
+        walk(self.parts[2], 0.0, &mut back);
+        let fog = self.fog.then_some(Fog {
+            near: 320.0,
+            far: 400.0,
+            color: [0.5; 3],
+        });
+        let key = [Light::directional(Vec3::ONE, Vec3::X)];
+        let flat = [Light::ambient(Vec3::ONE)];
+        gl.begin([0.0, 0.0, 0.0, 1.0]);
+        for (items, lights) in [(&lit, &key[..]), (&back, &flat[..])] {
+            let frame = Frame {
+                camera,
+                lights,
+                fog,
+                texture_image: &|_| None,
+                extra: &[],
+                pass: None,
+                wireframe: self.wireframe,
+                textures: true,
+                bilinear: true,
+            };
+            render::draw(
+                gpu,
+                gl,
+                &mut self.pictures,
+                &self.bof,
+                items,
+                &frame,
+                aspect,
             );
         }
     }
-}
-
-fn push_quad(
-    tris: &mut Vec<Tri>,
-    a: Vec3,
-    b: Vec3,
-    c: Vec3,
-    d: Vec3,
-    color: [f32; 4],
-    tex: Option<usize>,
-) {
-    let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-    tris.push(Tri {
-        p: [a, b, c],
-        uv: [uv[0], uv[1], uv[2]],
-        color,
-        tex,
-    });
-    tris.push(Tri {
-        p: [a, c, d],
-        uv: [uv[0], uv[2], uv[3]],
-        color,
-        tex,
-    });
 }

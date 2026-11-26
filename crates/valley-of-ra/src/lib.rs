@@ -3,7 +3,9 @@ pub mod data;
 pub mod demo;
 pub mod gl;
 pub mod image;
+pub mod pe;
 mod player;
+pub mod render;
 #[cfg(target_arch = "wasm32")]
 mod web;
 
