@@ -333,6 +333,9 @@ pub struct Gl {
     groups: HashMap<([TextureId; 4], TextureId), wgpu::BindGroup>,
     vertices: Vec<Vertex>,
     params: Vec<u8>,
+    /// The camera's near plane and far / (far - near), which every draw gets as its last
+    /// numbers, for the depth the shaders write.
+    pub depth: [f32; 4],
     passes: Vec<Pass>,
     vertex_buffer: Option<wgpu::Buffer>,
     uniform: Option<(wgpu::Buffer, wgpu::BindGroup)>,
@@ -411,6 +414,7 @@ impl Gl {
             groups: HashMap::new(),
             vertices: Vec::new(),
             params: Vec::new(),
+            depth: [0.0; 4],
             passes: Vec::new(),
             vertex_buffer: None,
             uniform: None,
@@ -574,8 +578,10 @@ impl Gl {
             return;
         }
         let params = self.params.len() as u32;
+        let mut numbers = surface.params;
+        numbers[PARAMS - 1] = self.depth;
         self.params
-            .extend_from_slice(bytemuck::cast_slice(&surface.params));
+            .extend_from_slice(bytemuck::cast_slice(&numbers));
         self.params
             .resize(self.params.len().next_multiple_of(SLOT as usize), 0);
         let call = Call {
