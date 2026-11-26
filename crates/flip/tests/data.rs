@@ -14,12 +14,33 @@ fn data() -> Option<PathBuf> {
 }
 
 #[test]
-fn real_assets_load() {
+fn every_model_converts() {
     let Some(dir) = data() else { return };
     let files = Files::from_path(&dir).expect("need the demo's files");
     files.check().unwrap();
-    let scene = atb::Scene::load(&files).unwrap();
-    assert!(!scene.dict.is_empty() || !scene.meshes.is_empty() || !scene.textures.is_empty());
+    for name in [
+        "a_moves.3ds",
+        "atat.3ds",
+        "dragon.3ds",
+        "ludwig.3ds",
+        "skell.3ds",
+        "hind24h.3ds",
+    ] {
+        let scene = atb::read_mesh_3ds(files.get(name).unwrap()).unwrap();
+        let (bof, root) = atb::tds::to_bof(&scene, &|_| None);
+        let mut items = Vec::new();
+        atb::walk(&bof, root, &atb::View::default(), &mut items);
+        assert!(!items.is_empty(), "{name}");
+    }
+    for name in ["martini.vq", "vw.vq"] {
+        let text = std::str::from_utf8(files.get(name).unwrap()).unwrap();
+        let chrome = atb::Rgba {
+            width: 1,
+            height: 1,
+            rgba: vec![255; 4],
+        };
+        atb::tds::vq_to_bof(text, chrome).unwrap();
+    }
 }
 
 #[test]
