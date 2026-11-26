@@ -198,7 +198,7 @@
   // Content served with the page: scripts/serve.py locally, or a bundled deployment.
   const mb = (n) => (n / 1e6).toFixed(1);
   try {
-    const r = await fetch("./local/demoroom.xz").catch(() => null);
+    const r = await fetch("./local/demoroom.xz?v=2").catch(() => null);
     // Some hosts answer unknown paths with a page.
     if (r?.ok && !r.headers.get("content-type")?.includes("text/html")) {
       for (const id of ["choose", "need"]) $(id).hidden = true;
