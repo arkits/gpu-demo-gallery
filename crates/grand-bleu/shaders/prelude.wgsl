@@ -40,12 +40,35 @@ fn vs(i: In) -> V {
     return o;
 }
 
+// Glide's w-buffer (`grDepthBufferMode(GR_DEPTHBUFFER_WBUFFER)`), which the ATB programs
+// use with `GR_CMP_LEQUAL`: 16 bits, the eye distance w as a float with a 4-bit exponent
+// and a 12-bit mantissa. Surfaces in one plane, such as decals, round to the same value
+// and the later one wins; a finer depth buffer lets them flicker. params[31] has the
+// camera's near plane and far / (far - near); without them depth is left as it is.
+struct Out {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
+fn glide_out(color: vec4<f32>, clip: vec4<f32>) -> Out {
+    let d = params.v[31];
+    if d.x <= 0.0 {
+        return Out(color, clip.z);
+    }
+    let w = d.y * d.x / max(d.y - clip.z, 1e-12);
+    if w < 1.0 {
+        return Out(color, 0.0);
+    }
+    let e = min(floor(log2(w)), 15.0);
+    let m = min(floor((w / exp2(e) - 1.0) * 4096.0), 4095.0);
+    return Out(color, (e * 4096.0 + m + 0.5) / 65536.0);
+}
+
 // The color alone, and times the first picture.
 @fragment
-fn plain(i: V) -> @location(0) vec4<f32> {
-    return i.color;
+fn plain(i: V) -> Out {
+    return glide_out(i.color, i.clip);
 }
 @fragment
-fn textured(i: V) -> @location(0) vec4<f32> {
-    return i.color * textureSample(t0, s0, i.uv0.xy);
+fn textured(i: V) -> Out {
+    return glide_out(i.color * textureSample(t0, s0, i.uv0.xy), i.clip);
 }
