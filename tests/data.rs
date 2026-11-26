@@ -1,5 +1,6 @@
-//! Validate the assets when the corresponding extracted demo is available.
-use tidepool::{data::Files, demo};
+//! Validates the assets when the extracted demo is available.
+use tidepool::{data::Files, demo, stage::Stage};
+use wgpu::naga;
 
 #[test]
 fn assets_parse_and_round_trip() {
@@ -15,24 +16,40 @@ fn assets_parse_and_round_trip() {
             "{path}"
         );
     }
-    for file in demo::MODELS {
-        let model = files.model(file).unwrap();
+    let mut models = files.models().unwrap();
+    // Nothing reads the picture's alpha, which is never written.
+    for pass in models
+        .iter()
+        .flat_map(|m| &m.shapes)
+        .flat_map(|s| &s.passes)
+    {
+        let reads = |n: u32| (8..=10).contains(&n);
+        assert!(pass.state.blend.is_none_or(|(s, d)| !reads(s) && !reads(d)));
+    }
+    for (model, file) in models.iter().zip(demo::MODELS) {
         assert!(!model.shapes.is_empty(), "{file}");
-        let (min, max) = model.bounds();
-        assert!(
-            min.is_finite() && max.is_finite() && min.cmple(max).all(),
-            "{file}"
-        );
-        for clip in &model.animations {
-            for ms in (0..15_000).step_by(17) {
-                assert!(
-                    model
-                        .pose(Some(clip), f64::from(ms))
-                        .iter()
-                        .all(|m| m.is_finite()),
-                    "{file} at {ms}"
-                );
-            }
+        for ms in (0..40_000).step_by(170) {
+            let times = model.animations.iter().map(|a| (a, f64::from(ms)));
+            assert!(
+                model.pose(times).iter().all(|m| m.is_finite()),
+                "{file} at {ms}"
+            );
         }
     }
+    // Every program of every pass is valid.
+    Stage::new(&files, &mut models).unwrap();
+    let mut seen = std::collections::HashSet::new();
+    for shape in models.iter().flat_map(|m| &m.shapes) {
+        for pass in &shape.passes {
+            if !seen.insert(&pass.wgsl) {
+                continue;
+            }
+            let module = naga::front::wgsl::parse_str(&pass.wgsl)
+                .unwrap_or_else(|e| panic!("{}: {}", shape.name, e.emit_to_string(&pass.wgsl)));
+            naga::valid::Validator::new(Default::default(), Default::default())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", shape.name));
+        }
+    }
+    assert!(seen.len() > 1);
 }

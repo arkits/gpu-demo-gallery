@@ -14,7 +14,7 @@ scripts/dev.sh all       # native, WebGPU and WebGL2 checks
 scripts/dev.sh package   # macOS app and Windows executable
 ```
 
-Z toggles the water motion and plays a drop. Drag to orbit and scroll or pinch to zoom. P pauses, Home resets the view,
+Click the water, or press S, to drop a drip into it. Z toggles Z-correct bump mapping. Drag to orbit and scroll or pinch to zoom. P pauses, Home resets the view,
 L toggles the NVIDIA logo, M mutes, and Enter toggles full screen.
 
 See [engine notes](docs/ENGINE.md) and [development](docs/DEVELOPMENT.md).

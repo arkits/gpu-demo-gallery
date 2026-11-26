@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::Error;
+use crate::demo::Dialect;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Type {
@@ -345,7 +346,7 @@ const KINDS: Schema = &[
         "CombinerExpr",
         &[
             ("operator", Int),
-            ("outputScale", Float),
+            ("outputScale", Int),
             ("outputBias", Int),
             ("dest0", Int),
             ("dest1", Int),
@@ -413,7 +414,7 @@ const KINDS: Schema = &[
         &[
             ("alphaTestEnabled", Bool),
             ("alphaTestFunc", Int),
-            ("alphaTestRef", Float),
+            ("alphaTestRef", Int),
         ],
     ),
     (
@@ -763,7 +764,7 @@ const TIDEPOOL: Schema = &[(
         ("heightImage", Str),
         ("dimensions", Vector(3)),
         ("textureRepeat", Vectors(3)),
-        ("tessellation", Vector(2)),
+        ("tesselation", Vector(2)),
     ],
 )];
 
@@ -774,6 +775,9 @@ impl Node {
             name: String::new(),
             fields: BTreeMap::new(),
         }
+    }
+    pub fn set(&mut self, field: &'static str, value: Value) {
+        self.fields.insert(field, value);
     }
     fn get(&self, field: &str) -> Option<&Value> {
         self.fields.get(field)
@@ -962,10 +966,10 @@ impl<'a> Bytes<'a> {
 
 /// Reads a whole `.nmb` file; every byte must be understood.
 pub fn read_binary(data: &[u8]) -> Result<Node, Error> {
-    let schema = match crate::demo::DEMO {
-        crate::demo::Demo::Chameleon | crate::demo::Demo::Zoltar => OLD,
-        crate::demo::Demo::Tidepool => TIDEPOOL,
-        _ => &[],
+    let schema = match crate::demo::DIALECT {
+        Dialect::First => OLD,
+        Dialect::Third => TIDEPOOL,
+        Dialect::Second => &[],
     };
     let mut b = Bytes {
         data,

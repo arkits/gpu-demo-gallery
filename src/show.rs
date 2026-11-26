@@ -1,6 +1,6 @@
 //! Time, camera and input shared by native and web builds.
-use crate::demo::{self, DEMO, Demo};
-use glam::{Mat4, Vec3};
+use crate::demo;
+use glam::{Mat4, Vec2, Vec3};
 
 #[derive(Clone, Copy)]
 pub struct Cue {
@@ -8,76 +8,105 @@ pub struct Cue {
     pub repeat: bool,
 }
 
+/// Something that touches the water.
+#[derive(Debug, Clone, Copy)]
+pub struct Touch {
+    /// When, in seconds.
+    pub time: f32,
+    pub at: Vec2,
+    pub radius: f32,
+    pub strength: f32,
+}
+
 pub struct Show {
     time: f64,
     last_wall: Option<f64>,
-    center: Vec3,
-    radius: f32,
     yaw: f32,
     pitch: f32,
     distance: f32,
     drag: Option<(f64, f64)>,
+    /// How far the pointer went since it was pressed.
+    moved: f64,
     cues: Vec<Cue>,
-    item: usize,
-    started: f64,
-    steering: Vec3,
-    ripple: bool,
-    layers: u32,
-    depth_vision: bool,
-    forthcoming_voice: Option<(f64, &'static str)>,
+    touches: Vec<Touch>,
+    drips: u32,
+    z_correct: bool,
     pub paused: bool,
     pub logo: bool,
 }
 
 pub struct Frame {
     pub seconds: f32,
-    pub local: f32,
+    /// All so far, in order.
+    pub touches: Vec<Touch>,
+    pub z_correct: bool,
     pub view: Mat4,
-    pub item: usize,
-    pub steering: Vec3,
-    pub ripple: bool,
-    pub layers: u32,
-    pub depth_vision: bool,
+    pub fov: f32,
+    pub near: f32,
+    pub far: f32,
     pub logo: bool,
 }
 
-impl Show {
-    pub fn new(center: Vec3, radius: f32) -> Self {
-        let (yaw, pitch, distance) = Self::home(radius);
+const HOME: (f32, f32, f32) = (-0.75, 0.34, 19.0);
+const CENTER: Vec3 = Vec3::new(0.0, 1.2, 0.0);
+const FOV: f32 = 0.8;
+/// Seconds between drips, and what remains to be drawn of old ones.
+const DRIPS: f64 = 1.6;
+
+impl Default for Show {
+    fn default() -> Self {
         Self {
             time: 0.0,
             last_wall: None,
-            center,
-            radius,
-            yaw,
-            pitch,
-            distance,
+            yaw: HOME.0,
+            pitch: HOME.1,
+            distance: HOME.2,
             drag: None,
+            moved: 0.0,
             cues: vec![Cue {
                 name: demo::INITIAL_MUSIC,
                 repeat: true,
             }],
-            item: 0,
-            started: 0.0,
-            steering: Vec3::ZERO,
-            ripple: true,
-            layers: 8,
-            depth_vision: false,
-            forthcoming_voice: None,
+            touches: Vec::new(),
+            drips: 0,
+            z_correct: true,
             paused: false,
             logo: true,
         }
     }
+}
 
-    fn home(radius: f32) -> (f32, f32, f32) {
-        match DEMO {
-            Demo::Bugs => (0.28, 0.32, radius * 2.2),
-            Demo::Wolfman => (-1.9, 0.13, radius * 3.45),
-            Demo::Squid => (0.52, 0.14, radius * 2.4),
-            Demo::Chameleon => (-0.30, 0.23, radius * 2.75),
-            Demo::Tidepool => (-0.58, 0.42, radius * 2.5),
-            Demo::Zoltar => (0.08, 0.06, radius * 3.4),
+impl Show {
+    /// Drips from the cave's roof that fell until now.
+    fn drip(&mut self, quiet: bool) {
+        while f64::from(self.drips) * DRIPS <= self.time {
+            let i = self.drips as f32;
+            // Golden angles keep them apart.
+            let angle = i * 2.399_963;
+            let radius = 4.0 + 13.0 * ((i * 0.618_034) % 1.0);
+            self.touches.push(Touch {
+                time: (f64::from(self.drips) * DRIPS) as f32,
+                at: Vec2::from_angle(angle) * radius,
+                radius: 0.9,
+                strength: 0.16,
+            });
+            self.drips += 1;
+            if !quiet && self.drips.is_multiple_of(5) {
+                self.cues.push(Cue {
+                    name: demo::DRIP,
+                    repeat: false,
+                });
+            }
         }
+    }
+
+    fn touch(&mut self, at: Vec2, radius: f32, strength: f32) {
+        self.touches.push(Touch {
+            time: self.time as f32,
+            at,
+            radius,
+            strength,
+        });
     }
 
     pub fn advance(&mut self, wall: f64) {
@@ -87,35 +116,31 @@ impl Show {
             .map_or(0.0, |last| (wall - last).clamp(0.0, 0.1));
         if !self.paused {
             self.time += dt;
-            if self
-                .forthcoming_voice
-                .is_some_and(|(time, _)| self.time >= time)
-                && let Some((_, name)) = self.forthcoming_voice.take()
-            {
-                self.cues.push(Cue {
-                    name,
-                    repeat: false,
-                });
-            }
+            self.drip(false);
         }
+        // The water has long had the old ones.
+        let old = self.touches.len().saturating_sub(256);
+        self.touches.drain(..old);
     }
 
-    pub fn frame(&self) -> Frame {
+    fn eye(&self) -> Vec3 {
         let orbit = Vec3::new(
             self.yaw.sin() * self.pitch.cos(),
             self.pitch.sin(),
             self.yaw.cos() * self.pitch.cos(),
         );
-        let eye = self.center + self.distance * orbit;
+        CENTER + self.distance * orbit
+    }
+
+    pub fn frame(&self) -> Frame {
         Frame {
             seconds: self.time as f32,
-            local: (self.time - self.started).max(0.0) as f32,
-            view: glam::camera::rh::view::look_at_mat4(eye, self.center, Vec3::Y),
-            item: self.item,
-            steering: self.steering,
-            ripple: self.ripple,
-            layers: self.layers,
-            depth_vision: self.depth_vision,
+            touches: self.touches.clone(),
+            z_correct: self.z_correct,
+            view: glam::camera::rh::view::look_at_mat4(self.eye(), CENTER, Vec3::Y),
+            fov: FOV,
+            near: 0.5,
+            far: 300.0,
             logo: self.logo,
         }
     }
@@ -126,107 +151,85 @@ impl Show {
 
     pub fn key(&mut self, key: &str) -> bool {
         match key {
-            "p" | "P" => self.paused = !self.paused,
+            " " | "p" | "P" => self.paused = !self.paused,
             "l" | "L" => self.logo = !self.logo,
-            "Home" => {
-                (self.yaw, self.pitch, self.distance) = Self::home(self.radius);
-                self.steering = Vec3::ZERO;
-            }
-            " " | "s" | "S" if DEMO == Demo::Zoltar => {
-                self.item = (self.item + 1) % demo::CLIPS.len().max(1);
-                self.started = self.time;
-                if let Some(name) = demo::CLIPS
-                    .get(self.item)
-                    .and_then(|n| n.strip_suffix(".nmb"))
-                {
-                    let delay = match name {
-                        "greetings" => 0.95,
-                        "pleasure" => 2.05,
-                        "bigman" => 1.9,
-                        "getahead" | "approach" => 1.3,
-                        "psst" => 2.3,
-                        "yawn" => 1.75,
-                        _ => 1.5,
-                    };
-                    self.forthcoming_voice = Some((self.time + delay, name));
-                }
-            }
-            " " if DEMO == Demo::Chameleon => self.paused = !self.paused,
-            "s" | "S" if DEMO == Demo::Chameleon => self.item = (self.item + 1) % 5,
-            "z" | "Z" | "s" | "S" if DEMO == Demo::Tidepool => {
-                self.ripple = !self.ripple;
-                self.started = self.time;
+            "Home" => (self.yaw, self.pitch, self.distance) = HOME,
+            "z" | "Z" => self.z_correct = !self.z_correct,
+            "s" | "S" => {
+                let angle = self.time as f32 * 2.1;
+                self.touch(Vec2::from_angle(angle) * 8.0, 2.2, 0.5);
                 self.cues.push(Cue {
-                    name: "tpdrip3",
+                    name: demo::DRIP,
                     repeat: false,
                 });
             }
-            "1" | "2" | "3" | "4" | "5" | "6" if DEMO == Demo::Wolfman => {
-                self.item = (key.as_bytes()[0] - b'1') as usize;
-                self.started = self.time;
-                if self.item == 2 {
-                    self.cues.push(Cue {
-                        name: "howling 3",
-                        repeat: false,
-                    });
-                }
-            }
-            "+" | "=" if DEMO == Demo::Wolfman => self.layers = (self.layers + 1).min(8),
-            "-" if DEMO == Demo::Wolfman => self.layers = self.layers.saturating_sub(1),
-            "ArrowLeft" if DEMO == Demo::Squid => self.steering.x -= self.radius * 0.035,
-            "ArrowRight" if DEMO == Demo::Squid => self.steering.x += self.radius * 0.035,
-            "ArrowUp" if DEMO == Demo::Squid => self.steering.z -= self.radius * 0.035,
-            "ArrowDown" if DEMO == Demo::Squid => self.steering.z += self.radius * 0.035,
-            "s" | "S" if DEMO == Demo::Squid => {
-                self.steering.z -= self.radius * 0.1;
-                self.cues.push(Cue {
-                    name: "speedup",
-                    repeat: false,
-                });
-            }
-            "d" | "D" if DEMO == Demo::Bugs => self.depth_vision = !self.depth_vision,
-            "s" | "S" if DEMO == Demo::Bugs => {
-                self.item ^= 1;
-                self.cues.push(Cue {
-                    name: "bug_screech1",
-                    repeat: false,
-                });
-            }
-            " " => self.paused = !self.paused,
             _ => return false,
         }
         true
     }
 
     pub fn freeze(&mut self, seconds: f64, yaw: f64, pitch: f64, action: bool) {
-        self.time = seconds;
-        self.yaw += yaw as f32;
-        self.pitch = (self.pitch + pitch as f32).clamp(-1.3, 1.42);
-        self.paused = true;
+        self.time = (seconds - 0.7).max(0.0);
+        self.drip(true);
         if action {
-            self.key(if DEMO == Demo::Wolfman { "3" } else { "s" });
-            self.started = 0.0;
+            self.key("s");
         }
+        self.time = seconds;
+        self.drip(true);
+        self.yaw += yaw as f32;
+        self.pitch = (self.pitch + pitch as f32).clamp(0.12, 1.42);
+        self.paused = true;
+    }
+
+    /// Where a point of the window is on the water.
+    fn on_water(&self, x: f64, y: f64) -> Option<Vec2> {
+        let view = self.frame().view.inverse();
+        // The window's shape is not known here, so only near the middle is this right [I].
+        let half = (FOV * 0.5).tan();
+        let direction = Vec3::new(
+            (x as f32 * 2.0 - 1.0) * half * 1.5,
+            (1.0 - y as f32 * 2.0) * half,
+            -1.0,
+        );
+        let d = view.transform_vector3(direction);
+        let eye = self.eye();
+        let t = -eye.y / d.y;
+        (t > 0.0).then(|| {
+            let p = eye + d * t;
+            Vec2::new(p.x, p.z)
+        })
     }
 
     pub fn press(&mut self, x: f64, y: f64) {
         self.drag = Some((x, y));
+        self.moved = 0.0;
     }
 
     pub fn motion(&mut self, x: f64, y: f64) {
         if let Some((px, py)) = self.drag {
-            self.yaw += (x - px) as f32 * std::f32::consts::TAU;
-            self.pitch = (self.pitch + (y - py) as f32 * std::f32::consts::PI).clamp(-1.3, 1.42);
+            self.moved += (x - px).abs() + (y - py).abs();
+            self.yaw -= (x - px) as f32 * std::f32::consts::TAU;
+            self.pitch = (self.pitch + (y - py) as f32 * std::f32::consts::PI).clamp(0.12, 1.42);
             self.drag = Some((x, y));
         }
     }
 
+    /// A click without a drag touches the water.
     pub fn release(&mut self) {
-        self.drag = None;
+        if let Some((x, y)) = self.drag.take()
+            && self.moved < 0.01
+            && let Some(at) = self.on_water(x, y).filter(|p| p.length() < 30.0)
+        {
+            self.touch(at, 1.3, 0.35);
+            self.cues.push(Cue {
+                name: demo::DRIP,
+                repeat: false,
+            });
+        }
     }
 
     pub fn zoom(&mut self, amount: f32) {
-        self.distance =
-            (self.distance * (-amount).exp()).clamp(self.radius * 0.25, self.radius * 9.0);
+        // Inside the cave.
+        self.distance = (self.distance * (-amount).exp()).clamp(9.0, 36.0);
     }
 }
