@@ -61,17 +61,17 @@ shot wolfman 8 0.8 -0.3 1
 shot squid 5 0 0 0
 shot chameleon 8 0.8 -0.3 1
 shot tidepool 5 0 0 0
-shot zoltar 5 0 0 0
+shot zoltar 5 0 0 1
 shot dawn 28 0 0 -
 crop=in_w:in_h
-shot surf 6 dw
+shot surf 4 ''
 shot sixty-hertz 8 4r
-shot demoroom 5 w
-shot atb-tv 5 t
-shot flip 5 t
-shot grand-bleu 5 t
-shot racing 5 w
-shot valley-of-ra 5 w
-shot wizards-tower 5 t
+shot demoroom 1 nnnnnn
+shot atb-tv 3 ''
+shot flip 1 3
+shot grand-bleu 1 ''
+shot racing 5 ''
+shot valley-of-ra 0.3 o
+shot wizards-tower 1 2
 echo '<!doctype html><title>Not found</title><p>Not found.' > dist/404.html
 ls -l dist/img
