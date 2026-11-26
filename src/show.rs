@@ -1,5 +1,6 @@
 //! Time, camera and input shared by native and web builds.
-use crate::demo::{self, DEMO, Demo};
+use crate::demo;
+use crate::stage::Skins;
 use glam::{Mat4, Vec3};
 
 #[derive(Clone, Copy)]
@@ -12,72 +13,52 @@ pub struct Show {
     time: f64,
     last_wall: Option<f64>,
     center: Vec3,
-    radius: f32,
     yaw: f32,
     pitch: f32,
     distance: f32,
     drag: Option<(f64, f64)>,
     cues: Vec<Cue>,
-    item: usize,
-    started: f64,
-    steering: Vec3,
-    ripple: bool,
-    layers: u32,
-    depth_vision: bool,
-    forthcoming_voice: Option<(f64, &'static str)>,
+    shown: usize,
     pub paused: bool,
     pub logo: bool,
 }
 
 pub struct Frame {
-    pub seconds: f32,
-    pub local: f32,
+    pub ms: f64,
+    pub skins: Skins,
     pub view: Mat4,
-    pub item: usize,
-    pub steering: Vec3,
-    pub ripple: bool,
-    pub layers: u32,
-    pub depth_vision: bool,
+    pub fov: f32,
+    pub near: f32,
+    pub far: f32,
     pub logo: bool,
 }
 
+/// Yaw, pitch and distance. The viewer starts 25 away and allows 10 to 80 (0x4029d0).
+const HOME: (f32, f32, f32) = (-0.3, 0.23, 25.0);
+const DISTANCES: (f32, f32) = (10.0, 80.0);
+
 impl Show {
-    pub fn new(center: Vec3, radius: f32) -> Self {
-        let (yaw, pitch, distance) = Self::home(radius);
+    pub fn new(center: Vec3) -> Self {
         Self {
             time: 0.0,
             last_wall: None,
             center,
-            radius,
-            yaw,
-            pitch,
-            distance,
+            yaw: HOME.0,
+            pitch: HOME.1,
+            distance: HOME.2,
             drag: None,
             cues: vec![Cue {
                 name: demo::INITIAL_MUSIC,
                 repeat: true,
             }],
-            item: 0,
-            started: 0.0,
-            steering: Vec3::ZERO,
-            ripple: true,
-            layers: 8,
-            depth_vision: false,
-            forthcoming_voice: None,
+            shown: 0,
             paused: false,
             logo: true,
         }
     }
 
-    fn home(radius: f32) -> (f32, f32, f32) {
-        match DEMO {
-            Demo::Bugs => (0.28, 0.32, radius * 2.2),
-            Demo::Wolfman => (-1.9, 0.13, radius * 3.45),
-            Demo::Squid => (0.52, 0.14, radius * 2.4),
-            Demo::Chameleon => (-0.30, 0.23, radius * 2.75),
-            Demo::Tidepool => (-0.58, 0.42, radius * 2.5),
-            Demo::Zoltar => (0.08, 0.06, radius * 3.4),
-        }
+    fn skins(&self) -> Skins {
+        Skins::at(self.time * 1000.0)
     }
 
     pub fn advance(&mut self, wall: f64) {
@@ -85,18 +66,17 @@ impl Show {
             .last_wall
             .replace(wall)
             .map_or(0.0, |last| (wall - last).clamp(0.0, 0.1));
-        if !self.paused {
-            self.time += dt;
-            if self
-                .forthcoming_voice
-                .is_some_and(|(time, _)| self.time >= time)
-                && let Some((_, name)) = self.forthcoming_voice.take()
-            {
-                self.cues.push(Cue {
-                    name,
-                    repeat: false,
-                });
-            }
+        if self.paused {
+            return;
+        }
+        self.time += dt;
+        let now = self.skins().new;
+        if now != self.shown {
+            self.shown = now;
+            self.cues.push(Cue {
+                name: demo::CHANGE,
+                repeat: false,
+            });
         }
     }
 
@@ -108,14 +88,13 @@ impl Show {
         );
         let eye = self.center + self.distance * orbit;
         Frame {
-            seconds: self.time as f32,
-            local: (self.time - self.started).max(0.0) as f32,
+            ms: self.time * 1000.0,
+            skins: self.skins(),
             view: glam::camera::rh::view::look_at_mat4(eye, self.center, Vec3::Y),
-            item: self.item,
-            steering: self.steering,
-            ripple: self.ripple,
-            layers: self.layers,
-            depth_vision: self.depth_vision,
+            fov: 0.95,
+            // Leaves fade by these (0x4029d0).
+            near: 1.0,
+            far: 100.0,
             logo: self.logo,
         }
     }
@@ -126,73 +105,14 @@ impl Show {
 
     pub fn key(&mut self, key: &str) -> bool {
         match key {
-            "p" | "P" => self.paused = !self.paused,
+            " " | "p" | "P" => self.paused = !self.paused,
             "l" | "L" => self.logo = !self.logo,
-            "Home" => {
-                (self.yaw, self.pitch, self.distance) = Self::home(self.radius);
-                self.steering = Vec3::ZERO;
+            "Home" => (self.yaw, self.pitch, self.distance) = HOME,
+            // On to the next skin, at its start.
+            "s" | "S" => {
+                let turn = self.skins().turn;
+                self.time = ((turn + 1) as f64 * demo::PERIOD - demo::LEAD) / 1000.0;
             }
-            " " | "s" | "S" if DEMO == Demo::Zoltar => {
-                self.item = (self.item + 1) % demo::CLIPS.len().max(1);
-                self.started = self.time;
-                if let Some(name) = demo::CLIPS
-                    .get(self.item)
-                    .and_then(|n| n.strip_suffix(".nmb"))
-                {
-                    let delay = match name {
-                        "greetings" => 0.95,
-                        "pleasure" => 2.05,
-                        "bigman" => 1.9,
-                        "getahead" | "approach" => 1.3,
-                        "psst" => 2.3,
-                        "yawn" => 1.75,
-                        _ => 1.5,
-                    };
-                    self.forthcoming_voice = Some((self.time + delay, name));
-                }
-            }
-            " " if DEMO == Demo::Chameleon => self.paused = !self.paused,
-            "s" | "S" if DEMO == Demo::Chameleon => self.item = (self.item + 1) % 5,
-            "z" | "Z" | "s" | "S" if DEMO == Demo::Tidepool => {
-                self.ripple = !self.ripple;
-                self.started = self.time;
-                self.cues.push(Cue {
-                    name: "tpdrip3",
-                    repeat: false,
-                });
-            }
-            "1" | "2" | "3" | "4" | "5" | "6" if DEMO == Demo::Wolfman => {
-                self.item = (key.as_bytes()[0] - b'1') as usize;
-                self.started = self.time;
-                if self.item == 2 {
-                    self.cues.push(Cue {
-                        name: "howling 3",
-                        repeat: false,
-                    });
-                }
-            }
-            "+" | "=" if DEMO == Demo::Wolfman => self.layers = (self.layers + 1).min(8),
-            "-" if DEMO == Demo::Wolfman => self.layers = self.layers.saturating_sub(1),
-            "ArrowLeft" if DEMO == Demo::Squid => self.steering.x -= self.radius * 0.035,
-            "ArrowRight" if DEMO == Demo::Squid => self.steering.x += self.radius * 0.035,
-            "ArrowUp" if DEMO == Demo::Squid => self.steering.z -= self.radius * 0.035,
-            "ArrowDown" if DEMO == Demo::Squid => self.steering.z += self.radius * 0.035,
-            "s" | "S" if DEMO == Demo::Squid => {
-                self.steering.z -= self.radius * 0.1;
-                self.cues.push(Cue {
-                    name: "speedup",
-                    repeat: false,
-                });
-            }
-            "d" | "D" if DEMO == Demo::Bugs => self.depth_vision = !self.depth_vision,
-            "s" | "S" if DEMO == Demo::Bugs => {
-                self.item ^= 1;
-                self.cues.push(Cue {
-                    name: "bug_screech1",
-                    repeat: false,
-                });
-            }
-            " " => self.paused = !self.paused,
             _ => return false,
         }
         true
@@ -204,8 +124,8 @@ impl Show {
         self.pitch = (self.pitch + pitch as f32).clamp(-1.3, 1.42);
         self.paused = true;
         if action {
-            self.key(if DEMO == Demo::Wolfman { "3" } else { "s" });
-            self.started = 0.0;
+            self.key("s");
+            self.time += 1.5;
         }
     }
 
@@ -215,7 +135,7 @@ impl Show {
 
     pub fn motion(&mut self, x: f64, y: f64) {
         if let Some((px, py)) = self.drag {
-            self.yaw += (x - px) as f32 * std::f32::consts::TAU;
+            self.yaw -= (x - px) as f32 * std::f32::consts::TAU;
             self.pitch = (self.pitch + (y - py) as f32 * std::f32::consts::PI).clamp(-1.3, 1.42);
             self.drag = Some((x, y));
         }
@@ -226,7 +146,6 @@ impl Show {
     }
 
     pub fn zoom(&mut self, amount: f32) {
-        self.distance =
-            (self.distance * (-amount).exp()).clamp(self.radius * 0.25, self.radius * 9.0);
+        self.distance = (self.distance * (-amount).exp()).clamp(DISTANCES.0, DISTANCES.1);
     }
 }

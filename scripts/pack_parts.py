@@ -1,4 +1,5 @@
 """Make a manifest and split assets to fit Cloudflare Pages."""
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -16,5 +17,7 @@ if size > limit:
             files.append(part.name)
 out = archive.with_name("assets.json")
 temp = out.with_suffix(".tmp")
-temp.write_text(json.dumps({"size": size, "files": files}) + "\n")
+# Browsers keep the parts; a new archive must not be mixed with an old one.
+version = hashlib.sha256(archive.read_bytes()).hexdigest()[:12]
+temp.write_text(json.dumps({"size": size, "version": version, "files": files}) + "\n")
 temp.replace(out)
