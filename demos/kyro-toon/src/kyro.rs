@@ -711,3 +711,54 @@ pub fn fades(ini: &str) -> Vec<Fade> {
     }
     out
 }
+
+/// A light's tracks (16 bytes each, 0x420690): place, direction, colour, and whether on.
+#[derive(Debug, Clone, Default)]
+pub struct LightAnim {
+    pub position: Option<Track<Vec3>>,
+    pub direction: Option<Track<Vec3>>,
+    pub color: Option<Track<Vec3>>,
+    pub on: Option<Track<f32>>,
+}
+
+pub fn light_anims(exe: &Exe, table: u32, count: usize, frames: usize) -> Vec<LightAnim> {
+    if table == 0 {
+        return vec![LightAnim::default(); count];
+    }
+    (0..count as u32)
+        .map(|i| {
+            let a = table + 16 * i;
+            let w = |k: u32| exe.u32(a + 4 * k);
+            let v3 = |p| track(exe, p, 0, 0, frames, |q| exe.vec3(q), 12);
+            LightAnim {
+                position: v3(w(0)),
+                direction: v3(w(1)),
+                color: v3(w(2)),
+                on: track(exe, w(3), 0, 0, frames, |q| exe.f32(q), 4),
+            }
+        })
+        .collect()
+}
+
+impl LightSrc {
+    /// The light at a frame, with its tracks applied (callbacks 0x421150 to 0x421760).
+    pub fn at(&self, anim: &LightAnim, cur: i32, next: i32, t: f32) -> (LightSrc, bool) {
+        let mut l = self.clone();
+        let get = |tr: &Option<Track<Vec3>>| tr.as_ref().and_then(|tr| tr.at(cur, next, t));
+        if let Some(p) = get(&anim.position) {
+            l.position = p;
+        }
+        if let Some(d) = get(&anim.direction) {
+            l.direction = d;
+        }
+        if let Some(c) = get(&anim.color) {
+            l.color = c;
+        }
+        let on = anim
+            .on
+            .as_ref()
+            .and_then(|tr| tr.at(cur, next, t))
+            .is_none_or(|v| v == 1.0);
+        (l, on)
+    }
+}

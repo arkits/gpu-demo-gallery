@@ -1,0 +1,19 @@
+export const sound = null;
+export async function actions({ page, check, report, shot }) {
+  const first = await report();
+  check(first.startsWith("frame "), `reports the frame: ${first}`);
+  await page.waitForTimeout(1000);
+  const later = await report();
+  check(Number(later.match(/frame (\d+)/)[1]) > Number(first.match(/frame (\d+)/)[1]), `the animation goes on: ${later}`);
+  await page.keyboard.press(" ");
+  const a = await report();
+  await page.waitForTimeout(400);
+  check((await report()) === a, `space pauses: ${a}`);
+  await page.keyboard.press(" ");
+  await shot("window");
+  const before = await report();
+  await page.keyboard.press("ArrowLeft");
+  check((await report()).includes("window -0.01"), `arrows move the window: ${await report()}`);
+  await page.keyboard.press("a");
+  check((await report()).includes("bouncing"), "a bounces the window");
+}

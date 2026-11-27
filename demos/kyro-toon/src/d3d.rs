@@ -704,6 +704,48 @@ impl Device {
         self.add(gpu, &[image], mips, false)
     }
 
+    /// A picture with its smaller pictures given, largest first, as a texture loaded level by
+    /// level. Levels past the last are not made: sampling stops at it.
+    pub fn texture_levels(&mut self, gpu: &Gpu, levels: &[Image]) -> TextureId {
+        let first = &levels[0];
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: extent(first.width, first.height, 1),
+            mip_level_count: levels.len() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: COLOR,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (level, image) in levels.iter().enumerate() {
+            gpu.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &image.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(image.width * 4),
+                    rows_per_image: None,
+                },
+                extent(image.width, image.height, 1),
+            );
+        }
+        let view = texture.create_view(&Default::default());
+        self.textures.push(Texture {
+            texture,
+            view,
+            cube: false,
+            target: None,
+            size: (first.width, first.height),
+        });
+        self.textures.len() - 1
+    }
+
     /// Faces +X, -X, +Y, -Y, +Z, -Z.
     pub fn cube(&mut self, gpu: &Gpu, faces: &[Image; 6], mips: bool) -> TextureId {
         let faces: Vec<&Image> = faces.iter().collect();

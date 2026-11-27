@@ -309,6 +309,16 @@ impl Demo {
         dev.set_view(cam.view());
         dev.set_projection(cam.projection(w as f32 / h.max(1) as f32));
         set_states(dev);
+        // The one material of the framework (0x421b90): white, no emissive, power 0, specular
+        // from the material.
+        dev.set_material(d3d::Material {
+            diffuse: glam::Vec4::ONE,
+            ambient: glam::Vec4::ONE,
+            specular: glam::Vec4::ONE,
+            emissive: glam::Vec4::ZERO,
+            power: 0.0,
+        });
+        dev.set_render_state(d3d::SPECULARMATERIALSOURCE, 0);
         self.set_lights(dev);
         for p in &mut self.parts {
             p.pose = p.anim.pose(&p.mesh, cur, next, t);
