@@ -89,60 +89,88 @@ pub const DATA_ENV: &str = "MADMODMIKE_DATA";
 pub struct Take {
     pub name: &'static str,
     pub file: &'static str,
-    /// Seconds of animation, after which the take loops.
+    /// Master-timeline start in seconds (`args.txt` start frame at 30 fps;
+    /// the curves count from there). Takes without a storyboard slot use
+    /// their own curve start [I].
+    pub start: f64,
+    /// Seconds of animation, after which the take loops (`args.txt`
+    /// length; takes without a slot use their key span [I]).
     pub stop: f64,
+    /// The movie camera rig for this take (`args.txt` flag 6: `camera1`,
+    /// `camera2`, `cornerCam`); empty when the take animates none [I].
+    pub camera: &'static str,
 }
 
 pub const TAKES: &[Take] = &[
     Take {
-        name: "Bedroom",
+        name: "Intro",
         file: "models/scene2.nmb",
-        stop: 26.4,
+        start: 175.0 / 30.0,
+        stop: 20.5,
+        camera: "camera1",
     },
     Take {
-        name: "Workshop",
+        name: "Karate",
         file: "models/scene4.nmb",
-        stop: 30.0,
+        start: 793.0 / 30.0,
+        stop: 5.16666666667,
+        camera: "camera1",
     },
     Take {
         name: "Mermaid",
         file: "models/scene6.nmb",
-        stop: 24.0,
+        start: 28.4,
+        stop: 3.2,
+        camera: "",
     },
     Take {
-        name: "Lamp",
+        name: "Cutting open the case",
         file: "models/scene8.nmb",
-        stop: 22.0,
+        start: 1106.0 / 30.0,
+        stop: 9.95833333333,
+        camera: "camera1",
     },
     Take {
-        name: "Flames",
+        name: "Tooth fairy",
         file: "models/scene10.nmb",
-        stop: 20.0,
+        start: 0.0,
+        stop: 12.79166666667,
+        camera: "camera1",
     },
     Take {
-        name: "Sparks",
+        name: "Pulling computer apart",
         file: "models/scene12.nmb",
-        stop: 18.0,
+        start: 1788.0 / 30.0,
+        stop: 5.25,
+        camera: "camera2",
     },
     Take {
-        name: "Moon",
+        name: "Welding",
         file: "models/scene14.nmb",
-        stop: 28.0,
+        start: 1945.0 / 30.0,
+        stop: 2.875,
+        camera: "camera1",
     },
     Take {
         name: "Posters",
         file: "models/scene161820.nmb",
-        stop: 32.0,
+        start: 2.0 / 30.0,
+        stop: 21.41666666667,
+        camera: "camera1",
     },
     Take {
-        name: "Grinder",
+        name: "Flies away",
         file: "models/scene24.nmb",
-        stop: 26.0,
+        start: 1.0 / 30.0,
+        stop: 12.0,
+        camera: "cornerCam",
     },
     Take {
-        name: "Welder",
+        name: "Mermaid",
         file: "models/scene26.nmb",
-        stop: 26.0,
+        start: 0.0,
+        stop: 4.41666666667,
+        camera: "camera1",
     },
 ];
 

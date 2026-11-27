@@ -54,7 +54,10 @@ fn skin(weights: array<f32, 8>, joints: array<u32, 8>, position: vec3<f32>, norm
         }
     }
     if (wsum < 0.0001) {
-        return vec4<f32>(position, 1.0);
+        // No weights filed: rigidly carried by the single bone.
+        let m = bones[0];
+        p = m * vec4<f32>(position, 1.0);
+        n = (m * vec4<f32>(normal, 0.0)).xyz;
     }
     return vec4<f32>(p.xyz, 1.0);
 }
@@ -70,7 +73,8 @@ fn skin_normal(weights: array<f32, 8>, joints: array<u32, 8>, normal: vec3<f32>)
         }
     }
     if (wsum < 0.0001) {
-        return normal;
+        // Rigid carry, like the positions above.
+        return (bones[0] * vec4<f32>(normal, 0.0)).xyz;
     }
     return n;
 }
@@ -182,6 +186,20 @@ fn fs_hair(in: HairOut) -> @location(0) vec4<f32> {
     let white = uniforms.time.w;
     color = mix(color, vec3<f32>(1.0), white);
     return vec4<f32>(color, 0.85);
+}
+
+// The wet cornea layer: a transparent gloss over the textured eyeball.
+// The port has no cube maps, so the environment reflection that feeds it
+// in the original (`wetballEnvCube`) is an analytic highlight instead [I].
+@fragment
+fn fs_wetball(in: MeshOut) -> @location(0) vec4<f32> {
+    let normal = normalize(in.normal);
+    let view_dir = normalize(uniforms.eye.xyz - in.world);
+    let light_dir = normalize(vec3<f32>(0.4, 0.8, 0.45));
+    let half_dir = normalize(view_dir + light_dir);
+    let spec = pow(max(dot(normal, half_dir), 0.0), 60.0);
+    let alpha = 0.08 + 0.6 * spec;
+    return vec4<f32>(vec3<f32>(0.9, 0.95, 1.0) * (0.04 + spec), alpha);
 }
 
 // Menu buttons: NDC quads, textured like cards.

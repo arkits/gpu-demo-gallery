@@ -82,6 +82,7 @@ scripts/dev.sh all
 | Original programs | Port entry | Notes |
 |---|---|---|
 | `mike_*_MERMAID*.vp30` + `mike*.fp30`, `ROOM.fp30`, `IllumObjects.*` | `vs_main` / `fs_main` | skinned, bump-mapped, 4-light rig + ambient; env/shadow maps skipped |
+| `mike_wetball_*` | `fs_wetball` (`vs_main`) | transparent cornea gloss over the eyeball (analytic highlight; the port has no cube maps), alpha-blended |
 | `hair*.vp30` / `hair*.fp30`, `hair_black*` | `vs_hair` / `fs_hair` | camera-facing ribbons, Kajiya-ish streak |
 | `card1*`, `copytex`, menu quads | `fs_card` (`vs_main`) | textured overlay; runtime-placed cards skipped |
 | `particle_*`, `flames*`, `feedback*` | `vs_particle` / `fs_particle` | instanced billboards, smoke `.t3d` volumes |
