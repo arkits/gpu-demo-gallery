@@ -137,7 +137,14 @@ impl Gpu {
     /// Reads an RGBA8 texture back as tightly packed rows.
     pub fn read_rgba(&self, texture: &wgpu::Texture) -> Vec<u8> {
         let (w, h) = (texture.width(), texture.height());
-        let padded = (w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        // Half floats: 8 or 4 bytes a texel, shown as 0..1.
+        let halves = match texture.format() {
+            wgpu::TextureFormat::Rgba16Float => 4,
+            wgpu::TextureFormat::Rg16Float => 2,
+            _ => 0,
+        };
+        let texel = if halves > 0 { 2 * halves } else { 4 };
+        let padded = (w * texel).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
             size: u64::from(padded) * u64::from(h),
@@ -165,6 +172,28 @@ impl Gpu {
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("poll device");
         let data = buffer.slice(..).get_mapped_range().expect("mapped range");
+        if halves > 0 {
+            let unit = |b: &[u8]| {
+                let v = half_to_f32(u16::from_le_bytes([b[0], b[1]]));
+                (v.clamp(0.0, 1.0) * 255.0).round() as u8
+            };
+            return data
+                .chunks(padded as usize)
+                .flat_map(|r| {
+                    r[..(w * texel) as usize]
+                        .chunks_exact(texel as usize)
+                        .flat_map(|t| {
+                            let c: Vec<u8> = t.chunks_exact(2).map(unit).collect();
+                            [
+                                c[0],
+                                c[1],
+                                *c.get(2).unwrap_or(&0),
+                                *c.get(3).unwrap_or(&255),
+                            ]
+                        })
+                })
+                .collect();
+        }
         let mut rgba: Vec<u8> = data
             .chunks(padded as usize)
             .flat_map(|r| r[..w as usize * 4].to_vec())
@@ -179,6 +208,17 @@ impl Gpu {
             }
         }
         rgba
+    }
+}
+
+/// IEEE half to single.
+fn half_to_f32(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let (e, m) = (i32::from((h >> 10) & 31), f32::from(h & 1023));
+    sign * match e {
+        0 => m * 2f32.powi(-24),
+        31 => f32::INFINITY,
+        e => (1.0 + m / 1024.0) * 2f32.powi(e - 15),
     }
 }
 

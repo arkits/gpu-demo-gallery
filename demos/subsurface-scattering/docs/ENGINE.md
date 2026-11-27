@@ -12,7 +12,42 @@ constant arrays.
 
 The main render path uses the original material properties, skeletal and morph animation,
 multipass targets, scene lights, and camera cuts. The engine came from the The Assassin port
-with what Crowd and Subsurface Scattering need (below).
+with what Crowd, Subsurface Scattering and Toy Shop need (below).
+
+## Toy Shop
+
+Toy Shop's `SushiDX.exe` (SHA-1 95e5b3d1…) differs from the X800 one. It was decompiled with
+`rea-agents@6.10.1 decompile-all`, and missed functions one by one in Ghidra. Its Lua host
+functions were read off their registration (`push function; push name; push L; call`).
+
+- Scripts `#include` other scripts at any depth, use `f{...}` and `f"..."` calls, and build
+  tweaking panels (`UISlider` and the like), which are made and never shown.
+- Constants differ from The Assassin's: `BUFFER_FORMAT_1616` (12) is G16R16, two unsigned
+  16-bit channels, kept here as half floats that the shaders' output clamps to 0..1;
+  `AlignLeft` is 0, `AlignRight` 1, `AlignCenterX` 2.
+- `math.random` is Lua 5.0's on the C library's `rand()` (Microsoft's LCG, seeded with 1, then
+  by `math.randomseed`); its bounds are truncated to integers (`luaL_checkint`), so the
+  lightning's `math.random(-0.1, 0.1)` is always 0. `AppUpdate("RandomEvenDistribution")` takes
+  four new `rand()/32767` each time it is set and `RandomNormalDistribution` averages fifteen
+  (0x435990); both share that `rand()`. The droplet simulation seeds a droplet where the
+  random point falls.
+- `SetCurrentAnimationFrame(f)` sets the clock to (f − 1)/30 s (0x4a05b0); the taxi chapter
+  jumps to frame 2253, so its camera follows the script's clock.
+- `DrawShadowObjects(light, property, ...)` is `DrawObjects` with `ForceDraw`, culled to the
+  light (0x4a4110, 0x49bdb0). `GetReflectionPlane(n)` is mirror n's plane, negated
+  (0x4a2470). `IsCameraOnFlyPath` is false only for an interactive camera;
+  `GetCurrentCameraIndex` counts the fly path's camera first, then the `control` lines.
+- A texture without texels is another object's, matched by file name, format and kind: the
+  objects name the same file from different drives and folders.
+- `PointSpriteEnable` passes draw each particle as a square of `PSIZE` pixels in the viewport,
+  with texture coordinates 0..1 across it (the ripple seeds).
+- `EnableWireframeOverlay` first draws each object or scene part with the override shader's
+  `WireFrameZ` (0x49be90): its edges as lines, through the fixed function transform (there is no
+  vertex program), pulled 5 steps of a 24-bit depth buffer towards the eye.
+- Shaders: `float2(a.w, b.w) = v` assigns each part; `DefTexture` inside a pass; includes
+  without `.shl`; `modf`, `tex2Dgrad`, `cosh`.
+- Priming the droplet simulation takes 2400 passes in one frame; they are submitted 256 at a
+  time, since Metal gives up on longer command buffers.
 
 ## Subsurface Scattering
 

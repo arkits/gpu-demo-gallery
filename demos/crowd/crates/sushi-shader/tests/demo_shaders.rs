@@ -25,8 +25,11 @@ fn every_pass_becomes_valid_wgsl() {
         .filter(|n| n.ends_with(".ssh") && !n.contains("/global/"))
     {
         let dir = name.rsplit_once('/').unwrap().0;
+        // Toy Shop names some includes without `.shl`.
         let include = |n: &str| {
-            text(&format!("{dir}/{n}")).or_else(|| text(&format!("shaders/includes/{n}")))
+            [n.to_string(), format!("{n}.shl")].iter().find_map(|n| {
+                text(&format!("{dir}/{n}")).or_else(|| text(&format!("shaders/includes/{n}")))
+            })
         };
         let f = match parse(&text(name).unwrap(), &include) {
             Ok(f) => f,
@@ -100,10 +103,5 @@ fn every_pass_becomes_valid_wgsl() {
         );
     }
     assert!(files > 0 && passes > 0);
-    // The legacy Radeon 9700 wireframe variants contain fixed-function passes.
-    assert!(
-        bad.iter()
-            .all(|pass| pass.starts_with("shaders/ruby3/gwireframe.ssh ")
-                && pass.ends_with(": no vertex shader"))
-    );
+    assert!(bad.is_empty());
 }

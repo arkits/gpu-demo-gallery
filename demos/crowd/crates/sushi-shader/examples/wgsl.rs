@@ -13,8 +13,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(bytes.iter().map(|&c| c as char).collect::<String>())
     };
     let dir = name.rsplit_once('/').ok_or("the file needs its folder")?.0;
-    let include =
-        |n: &str| text(&format!("{dir}/{n}")).or_else(|| text(&format!("shaders/includes/{n}")));
+    let include = |n: &str| {
+        [n.to_string(), format!("{n}.shl")].iter().find_map(|n| {
+            text(&format!("{dir}/{n}")).or_else(|| text(&format!("shaders/includes/{n}")))
+        })
+    };
     let file = parse(&text(name).ok_or("no such file")?, &include)?;
     for s in file.shaders.iter().filter(|s| s.name == *shader) {
         for pass in &s.passes {

@@ -36,6 +36,9 @@ pub struct Input {
     pub ty: ElementType,
 }
 
+/// The uniform a point sprite program needs: viewport width, height, and their inverses.
+pub const POINT_SPRITE_VIEWPORT: &str = "$pointspriteviewport";
+
 /// A constant that the program reads, in registers from `at`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Uniform {
@@ -775,6 +778,26 @@ impl<'a> Emitter<'a> {
 
     /// Assigns to what `target` names.
     fn assign(&mut self, target: &Expr, value: Typed) -> Result<()> {
+        // Old HLSL takes `float2(a.w, b.w) = v;`: each part gets its share.
+        if let Expr::Make(ty, parts) = target {
+            let value = self.convert(value, ty)?;
+            let t = self.unique("t");
+            self.lines.push(format!("let {t} = {};", value.s));
+            let mut at = 0;
+            for part in parts {
+                let n = match self.expr(part)?.ty {
+                    Ty::Vec(_, n) => n as usize,
+                    _ => 1,
+                };
+                let share = match n {
+                    1 => format!("{t}.{}", C[at]),
+                    n => format!("{t}.{}", C[at..at + n].concat()),
+                };
+                self.assign(part, Typed::new(share, Ty::float(n as u32)))?;
+                at += n;
+            }
+            return Ok(());
+        }
         if let Expr::Member(inner, name) = target {
             let place = self.expr(inner)?;
             match &place.ty {
@@ -1030,7 +1053,7 @@ impl<'a> Emitter<'a> {
             .trim_start_matches("tex2D")
             .trim_start_matches("texCUBE");
         let made = match kind {
-            "" if args.len() == 4 => {
+            "" | "grad" if args.len() == 4 => {
                 let (dx, dy) = (self.expr(&args[2])?, self.expr(&args[3])?);
                 let c = self.convert(coord, &Ty::float(n))?;
                 let (dx, dy) = (
@@ -1179,6 +1202,14 @@ impl<'a> Emitter<'a> {
         if name.starts_with("tex2D") || name.starts_with("texCUBE") {
             return self.sample(name, args);
         }
+        // The whole part goes out; the signed fraction is returned.
+        if name == "modf" && args.len() == 2 {
+            let a = self.expr(&args[0])?;
+            let (v, n) = self.floats(vec![a])?;
+            let h = self.hold(&Typed::new(v[0].clone(), Ty::float(n)));
+            self.assign(&args[1], Typed::new(format!("trunc({h})"), Ty::float(n)))?;
+            return Ok(Typed::new(format!("({h} - trunc({h}))"), Ty::float(n)));
+        }
         if name == "sincos" {
             let a = self.expr(&args[0])?;
             let (v, n) = self.floats(vec![a])?;
@@ -1301,8 +1332,10 @@ impl<'a> Emitter<'a> {
             )),
             "log2" | "log" => same(format!("{name}(max(abs({all}), {}))", splat("1e-30", n))),
             "radians" | "degrees" | "sin" | "cos" | "tan" | "atan" | "exp" | "exp2" | "floor"
-            | "ceil" | "round" | "trunc" | "abs" | "sign" | "min" | "max" | "clamp" | "atan2"
-            | "step" | "reflect" | "fwidth" => same(format!("{name}({all})")),
+            | "sinh" | "cosh" | "tanh" | "ceil" | "round" | "trunc" | "abs" | "sign" | "min"
+            | "max" | "clamp" | "atan2" | "step" | "reflect" | "fwidth" => {
+                same(format!("{name}({all})"))
+            }
             "smoothstep" => {
                 let z = self.hold(&Typed::new(
                     format!(
@@ -1801,9 +1834,19 @@ fn declare_structs(s: &mut String, e: &Emitter) -> Result<()> {
 }
 
 /// Builds the module for `pass`.
+/// A pass without a vertex program has Direct3D's fixed function transform the position by
+/// the object's world, view and projection, which the engine gives as this.
+pub const FIXED_WVP: &str = "mFixedFunctionWVP";
+
 pub fn translate(pass: &Pass, setting: &Setting) -> Result<Module> {
-    let vs = hlsl::parse(pass.vs.as_deref().ok_or("no vertex shader")?)
-        .map_err(|e| format!("vertex: {e}"))?;
+    let fixed = format!(
+        "float4x4 {FIXED_WVP};\n\
+         struct VsInput {{ float4 pos : POSITION0; }};\n\
+         struct VsOutput {{ float4 pos : POSITION0; }};\n\
+         VsOutput main(VsInput i) {{ VsOutput o; o.pos = mul(i.pos, {FIXED_WVP}); return o; }}\n"
+    );
+    let vs =
+        hlsl::parse(pass.vs.as_deref().unwrap_or(&fixed)).map_err(|e| format!("vertex: {e}"))?;
     let ps = hlsl::parse(pass.ps.as_deref().ok_or("no pixel shader")?)
         .map_err(|e| format!("pixel: {e}"))?;
     let bias = |t: &str| {
@@ -1857,6 +1900,20 @@ pub fn translate(pass: &Pass, setting: &Setting) -> Result<Module> {
         ps_consts: pe.registers.max(1),
         ..Module::default()
     };
+    // Point sprites: the engine draws four vertices a point and the program moves them to
+    // the corners of a square of PSIZE pixels, given the viewport in one more register.
+    let sprite = (pass.point_sprite && outputs.iter().any(|l| l.semantic.0 == "psize"))
+        .then_some(m.vs_consts);
+    if let Some(at) = sprite {
+        m.vs.push(Uniform {
+            name: POINT_SPRITE_VIEWPORT.into(),
+            at,
+            registers: 1,
+            count: None,
+            default: Vec::new(),
+        });
+        m.vs_consts += 1;
+    }
     let used: BTreeSet<&(String, bool)> = ve.samplers.iter().chain(&pe.samplers).collect();
     for (name, cube) in used {
         if m.samplers.iter().any(|s| s.0 == *name) {
@@ -1977,7 +2034,12 @@ pub fn translate(pass: &Pass, setting: &Setting) -> Result<Module> {
         };
         let _ = writeln!(s, "  @location({k}) {c}t{k}: vec4<f32>,");
     }
-    s.push_str("};\n@vertex\nfn vs(i: In) -> V2F {\n  var v: V2F;\n");
+    s.push_str(match sprite {
+        Some(_) => {
+            "};\n@vertex\nfn vs(i: In, @builtin(vertex_index) vi: u32) -> V2F {\n  var v: V2F;\n"
+        }
+        None => "};\n@vertex\nfn vs(i: In) -> V2F {\n  var v: V2F;\n",
+    });
     let statics = |s: &mut String, e: &Emitter| {
         for (w, _) in e.statics.values() {
             let _ = writeln!(s, "  {w} = {w}_();");
@@ -2010,6 +2072,31 @@ pub fn translate(pass: &Pass, setting: &Setting) -> Result<Module> {
             Some(k) => drop(writeln!(s, "  v.t{k} = {wide};")),
             None if l.semantic.0 == "position" => drop(writeln!(s, "  v.pos = {wide};")),
             None => {}
+        }
+    }
+    // A depth bias in steps of a 24-bit buffer, which lines cannot have in the pipeline.
+    if pass.wireframe && pass.z_bias != 0.0 {
+        let _ = writeln!(
+            s,
+            "  v.pos.z = v.pos.z + {} * v.pos.w;",
+            number(f64::from(pass.z_bias) / 16_777_216.0)
+        );
+    }
+    if let Some(at) = sprite {
+        let size = outputs
+            .iter()
+            .find(|l| l.semantic.0 == "psize")
+            .map(|l| l.path.clone())
+            .unwrap_or_default();
+        // The corners in the order the engine writes them; (0, 0) is the top left.
+        let _ = writeln!(
+            s,
+            "  let uv = array(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 0.0))[vi % 4u];\n  \
+             v.pos = vec4<f32>(v.pos.xy + (vec2<f32>(uv.x, 1.0 - uv.y) * 2.0 - 1.0) * {size} * vc.c[{at}].zw * v.pos.w, v.pos.zw);"
+        );
+        // Texture coordinates become the sprite's own.
+        if let Some(k) = slots.keys().copied().find(|k| *k < 8) {
+            let _ = writeln!(s, "  v.t{k} = vec4<f32>(uv, v.t{k}.zw);");
         }
     }
     s.push_str("  return v;\n}\n");

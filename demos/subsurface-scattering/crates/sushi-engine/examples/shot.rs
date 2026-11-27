@@ -23,7 +23,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let ten = std::env::var_os("SUSHI_TEN_BIT").is_some();
     let gpu = pollster::block_on(Gpu::headless())?;
+    gpu.device
+        .on_uncaptured_error(std::sync::Arc::new(|e| eprintln!("gpu error: {e}")));
+    gpu.device
+        .set_device_lost_callback(|r, m| eprintln!("device lost: {r:?} {m}"));
     let mut demo = Demo::load(&gpu, &[&std::fs::read(data)?], ten)?;
+    if std::env::var_os("SUSHI_STEP").is_some() {
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        eprintln!("loaded");
+    }
     if chapter >= demo.chapters().len() {
         return Err("chapter does not exist".into());
     }
@@ -36,10 +44,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let targets = Targets::new(&gpu, SIZE.0, SIZE.1, ten);
     let mut overlay = Overlay::new(&gpu, targets.color.format());
     overlay.set_font(&gpu, demo.font());
+    // SUSHI_RUN=seconds draws the frames before too, at 30 a second, for effects that
+    // build on earlier frames (simulations on buffers).
+    if let Some(run) = std::env::var("SUSHI_RUN")
+        .ok()
+        .and_then(|r| r.parse::<f32>().ok())
+    {
+        let mut t = (time - run).max(0.0);
+        while t < time {
+            let mut enc = gpu.device.create_command_encoder(&Default::default());
+            demo.draw(&gpu, &mut enc, &targets, chapter, t, None);
+            gpu.queue.submit([enc.finish()]);
+            t += 1.0 / 30.0;
+        }
+    }
     let mut enc = gpu.device.create_command_encoder(&Default::default());
     let marks = demo.draw(&gpu, &mut enc, &targets, chapter, time, None);
     overlay.draw(&gpu, &mut enc, &targets, &marks, false, 1.0);
     gpu.queue.submit([enc.finish()]);
+    if std::env::var_os("SUSHI_STEP").is_some() {
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        eprintln!("drawn");
+    }
 
     if let Ok(names) = std::env::var("SUSHI_DUMP") {
         for n in names.split(',') {

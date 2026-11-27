@@ -201,6 +201,8 @@ enum Shape {
     Cylinder(Vec3, Vec3, f32, f32),
     Torus(Vec3, [f32; 3]),
     Plane(Vec3, Vec3),
+    /// Three corners.
+    Triangle([Vec3; 3]),
 }
 
 impl Shape {
@@ -218,6 +220,9 @@ impl Shape {
                 ["Radius1", "Radius2", "Radius3"].map(|r| n.number(r).unwrap_or(0.0)),
             ),
             "Plane" => Shape::Plane(center, v("Normal")),
+            "Triangle" => Shape::Triangle(
+                ["Point1", "Point2", "Point3"].map(|p| n.vector(p).map_or(Vec3::ZERO, Vec3::from)),
+            ),
             _ => return None,
         })
     }
@@ -241,6 +246,13 @@ impl Shape {
                 *c + out * (ring + s * b.cos()) + Vec3::Y * (s * b.sin())
             }
             Shape::Plane(c, _) => *c,
+            Shape::Triangle([a, b, c]) => {
+                let (mut u, mut v) = (r.next(), r.next());
+                if u + v > 1.0 {
+                    (u, v) = (1.0 - u, 1.0 - v);
+                }
+                *a + (*b - *a) * u + (*c - *a) * v
+            }
         }
     }
 

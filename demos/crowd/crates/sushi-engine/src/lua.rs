@@ -506,6 +506,14 @@ impl Parser {
     }
 
     fn args(&mut self) -> Result<Vec<Expr>> {
+        // `f{...}` and `f"..."` pass one table or string.
+        if self.is("{") {
+            return Ok(vec![self.table()?]);
+        }
+        if let Some(Tok::Text(t)) = self.peek().cloned() {
+            self.at += 1;
+            return Ok(vec![Expr::Value(Value::Text(t))]);
+        }
         self.expect("(")?;
         let mut v = Vec::new();
         while !self.eat(")") {
@@ -536,7 +544,7 @@ impl Parser {
             } else if self.eat(":") {
                 let n = self.name()?;
                 e = Expr::Method(Box::new(e), n, self.args()?);
-            } else if self.is("(") {
+            } else if self.is("(") || self.is("{") || matches!(self.peek(), Some(Tok::Text(_))) {
                 e = Expr::Call(Box::new(e), self.args()?);
             } else {
                 return Ok(e);
@@ -549,6 +557,26 @@ enum Flow {
     Go,
     Break,
     Return(Value),
+}
+
+thread_local! {
+    /// The C library's `rand()` state, shared by `math.random` and the engine's random
+    /// parameters as in the original: Microsoft's, which starts at 1.
+    static SEED: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
+}
+
+/// MSVC `rand()` (0x51d7b4 in Toy Shop): 0 to 32767.
+pub fn crt_rand() -> u32 {
+    SEED.with(|s| {
+        let next = s.get().wrapping_mul(214_013).wrapping_add(2_531_011);
+        s.set(next);
+        (next >> 16) & 0x7fff
+    })
+}
+
+/// MSVC `srand()`.
+pub fn crt_srand(seed: u32) {
+    SEED.with(|s| s.set(seed));
 }
 
 /// Global variables, which outlive a frame.
@@ -802,6 +830,11 @@ impl Run<'_> {
                     "math" | "table" | "AtiVector3" | "AtiVector4" | "AtiMatrix" => {
                         Value::Native(n.clone())
                     }
+                    // The original's tweaking panels: built, never shown.
+                    n if n.starts_with("UI") => Value::Native(n.into()),
+                    "ConnectSignal" | "ErrorLog" | "AtiVector3ToString" | "AtiVector4ToString" => {
+                        Value::Native(n.clone())
+                    }
                     n if self.host.has(n) => Value::Native(n.into()),
                     _ => Value::Nil,
                 }
@@ -816,7 +849,14 @@ impl Run<'_> {
                 }
             }
             Expr::Call(f, args) => {
+                let name = match &**f {
+                    Expr::Name(n) => Some(n.clone()),
+                    _ => None,
+                };
                 let f = self.expr(f)?;
+                if let (Value::Nil, Some(n)) = (&f, name) {
+                    return Err(format!("no function {n}"));
+                }
                 let args = args.iter().map(|a| self.expr(a)).collect::<Result<_>>()?;
                 self.invoke(&f, args)?
             }
@@ -892,6 +932,32 @@ impl Run<'_> {
             }
             Value::Native(n) => {
                 let n = n.clone();
+                let number = |i: usize| args.get(i).and_then(Value::number);
+                match &*n {
+                    // Lua 5.0's math library on the C `rand()`.
+                    "math.randomseed" => {
+                        crt_srand(number(0).unwrap_or(0.0) as i64 as u32);
+                        return Ok(Value::Nil);
+                    }
+                    "math.random" => {
+                        const MAX: f64 = 32767.0;
+                        let r = f64::from(crt_rand() % 32767) / MAX;
+                        // The bounds are C ints (`luaL_checkint`): truncated.
+                        let int = |v: f64| v.trunc();
+                        return Ok(Value::Number(match (number(0), number(1)) {
+                            (None, _) => r,
+                            (Some(m), None) => (r * int(m)).floor() + 1.0,
+                            (Some(m), Some(n)) => (r * (int(n) - int(m) + 1.0)).floor() + int(m),
+                        }));
+                    }
+                    "ConnectSignal" | "ErrorLog" => return Ok(Value::Nil),
+                    "AtiVector3ToString" | "AtiVector4ToString" => {
+                        return Ok(Value::Text(
+                            args.first().map(Value::show).unwrap_or_default().into(),
+                        ));
+                    }
+                    _ => {}
+                }
                 native(&n, &args).unwrap_or_else(|| self.host.call(&n, &args))
             }
             f => Err(format!("cannot call {f:?}")),
@@ -908,8 +974,13 @@ impl Run<'_> {
                     4,
                 )),
                 "AtiMatrix" => Ok(Value::Matrix(Mat4::IDENTITY)),
+                t if t.starts_with("UI") => Ok(Value::Native("UIWidget".into())),
                 t => Err(format!("cannot make {t}")),
             },
+            (Value::Native(t), m) if &**t == "UIWidget" => Ok(match m.starts_with("Get") {
+                true => Value::Number(0.0),
+                false => Value::Nil,
+            }),
             (Value::Vector(v, n), "Length") => {
                 let sum: f32 = v.borrow()[..*n].iter().map(|c| c * c).sum();
                 Ok(Value::Number(f64::from(sum.sqrt())))

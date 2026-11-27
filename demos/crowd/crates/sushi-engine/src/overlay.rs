@@ -18,7 +18,8 @@ pub enum Mark {
         viewport: [f32; 4],
         color: [f32; 3],
     },
-    /// `x` is the center and `y` the bottom of the first line; `size` its height.
+    /// `x` is the center (or with `align` the left or right end) and `y` the bottom of
+    /// the first line; `size` its height.
     Text {
         x: f32,
         y: f32,
@@ -26,6 +27,8 @@ pub enum Mark {
         color: [f32; 4],
         text: String,
         background: bool,
+        /// -1 left, 0 centered, 1 right.
+        align: i8,
     },
 }
 
@@ -317,13 +320,14 @@ impl Overlay {
                     color,
                     text,
                     background,
+                    align,
                 } => {
                     let Some(font) = &self.font else { continue };
                     for (row, line) in text.split('\n').enumerate() {
                         let glyphs: Vec<_> = line.chars().map(glyph).collect();
                         let screen = size / aspect;
                         let width = glyphs.iter().map(|(_, w)| w).sum::<f32>() * screen;
-                        let mut at = x - width * 0.5;
+                        let mut at = x - width * 0.5 * (1.0 + f32::from(*align));
                         let y = y - row as f32 * size;
                         if *background && width > 0.0 {
                             let bg = quad(at, at + width, y, y + size, [0.0, 0.0, 0.0, 0.35]);

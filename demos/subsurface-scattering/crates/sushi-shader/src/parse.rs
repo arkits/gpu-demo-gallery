@@ -183,6 +183,8 @@ pub struct Blend {
 #[derive(Debug, Clone)]
 pub struct Pass {
     pub name: String,
+    /// `PointSpriteEnable TRUE`: each vertex is a square of `PSIZE` pixels.
+    pub point_sprite: bool,
     pub stream_map: String,
     /// Included files and blocks of the vertex and pixel programs.
     parts: [Vec<(String, String)>; 2],
@@ -213,6 +215,7 @@ impl Default for Pass {
     fn default() -> Self {
         Self {
             name: String::new(),
+            point_sprite: false,
             stream_map: String::new(),
             parts: Default::default(),
             vs: None,
@@ -815,6 +818,12 @@ fn pass_body(f: &mut ShaderFile, p: &mut Pass, it: &mut Lines, include: &Include
 fn pass_statement(f: &ShaderFile, p: &mut Pass, k: &str, t: &[Tok]) -> Result<()> {
     match k {
         "SetStreamMap" => p.stream_map = word(t.get(1))?.into(),
+        "PointSpriteEnable" => p.point_sprite = boolean(word(t.get(1))?)?,
+        // Sampler settings for this pass only.
+        "DefTexture" => {
+            let name = word(t.get(1))?;
+            p.samplers.insert(name.into(), sampler(name, &t[2..])?);
+        }
         "SetTexture" => {
             // Stage or sampler, then the texture.
             let Ok(texture) = word(t.get(2)) else {
@@ -962,7 +971,6 @@ fn pass_statement(f: &ShaderFile, p: &mut Pass, k: &str, t: &[Tok]) -> Result<()
         | "SpecularEnable"
         | "RenderTarget"
         | "PointSize"
-        | "PointSpriteEnable"
         | "PointScaleEnable"
         | "PointScaleA"
         | "PointScaleB"

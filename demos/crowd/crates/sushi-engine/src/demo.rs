@@ -326,6 +326,8 @@ struct Context<'a> {
     prt: Option<&'a Prt<'a>>,
     center: Vec3,
     tile: [f32; 2],
+    /// Pixels of the viewport, for point sprites.
+    viewport: [f32; 2],
 }
 
 /// Light transfer of one draw, for `PrtCPCABuffer` sources other than `Presampled`.
@@ -383,6 +385,7 @@ impl<'a> Context<'a> {
             prt: None,
             center: Vec3::ZERO,
             tile: [1.0; 2],
+            viewport: [frame.window.0 as f32, frame.window.1 as f32],
         }
     }
 }
@@ -437,6 +440,18 @@ pub struct Demo {
     lens: Lens,
     fov: f32,
     pub settings: Settings,
+    /// Model, slot and key of textures that other objects bring.
+    pending_textures: Vec<(usize, usize, String)>,
+    /// Textures by file name, format and kind (see `base_key`).
+    by_base: HashMap<String, TextureId>,
+    /// The camera manager's index of the interactive camera in use, for the scripts.
+    pub camera_index: Option<usize>,
+    /// `EnableWireframeOverlay`, and the shader file of `SetOverrideWireframeShader`.
+    wireframe: bool,
+    wireframe_shader: Option<usize>,
+    /// Triangle indices of meshes, by buffer, and lines made from them.
+    mesh_indices: HashMap<usize, Rc<[u32]>>,
+    line_buffers: HashMap<usize, usize>,
     quad_buffers: HashMap<[u32; 8], usize>,
     quad_indices: usize,
     quad_layout: LayoutId,
@@ -623,6 +638,13 @@ impl Demo {
             lens,
             fov: settings.fov,
             settings,
+            pending_textures: Vec::new(),
+            by_base: HashMap::new(),
+            camera_index: None,
+            wireframe: false,
+            wireframe_shader: None,
+            mesh_indices: HashMap::new(),
+            line_buffers: HashMap::new(),
             quad_buffers: HashMap::new(),
             quad_indices: 0,
             quad_layout: 0,
@@ -698,8 +720,9 @@ impl Demo {
                 }
             }
             let jumps = scripts.iter().any(|s| {
-                demo.text(&format!("Scripts/{s}"))
-                    .is_some_and(|t| t.contains("SetCurrentTime"))
+                demo.text(&format!("Scripts/{s}")).is_some_and(|t| {
+                    t.contains("SetCurrentTime") || t.contains("SetCurrentAnimationFrame")
+                })
             });
             let mut chapter = Chapter {
                 title: c.title.clone(),
@@ -712,6 +735,12 @@ impl Demo {
             demo.chapters.push(chapter);
         }
         demo.load_pictures(gpu)?;
+        // Objects name the same file from different drives and folders.
+        for (model, slot, key) in std::mem::take(&mut demo.pending_textures) {
+            if let Some(&id) = demo.by_base.get(&key) {
+                demo.models[model].textures[slot] = Some(id);
+            }
+        }
         for f in &demo.shaders {
             for t in f.textures.iter().filter_map(|t| t.target.as_ref()) {
                 if t.starts_with('z') {
@@ -819,6 +848,59 @@ impl Demo {
         }
     }
 
+    /// With `EnableWireframeOverlay`, the edges of a draw in the override shader's
+    /// `WireFrameZ`, before the draw itself (0x49be90). The object's own values stay out.
+    fn emit_wire(
+        &mut self,
+        gpu: &Gpu,
+        key: &PipelineKey,
+        ctx: &Context,
+        geometry: (&[usize], usize, u32, u32),
+        calls: &mut Vec<DrawCall>,
+    ) {
+        let Some(file) = self.wireframe_shader.filter(|_| self.wireframe) else {
+            return;
+        };
+        let (vertices, triangles, start, count) = geometry;
+        let (Some(wire), Some(lines)) = (
+            self.variant(file, "WireFrameZ", 0),
+            self.line_buffer(gpu, triangles),
+        ) else {
+            return;
+        };
+        let wkey = (file, wire, 0, key.3, key.4, key.5, key.6);
+        let Some(id) = self.pipeline(gpu, wkey) else {
+            return;
+        };
+        let none = BTreeMap::new();
+        let mut plain = Context::new(ctx.eye, ctx.frame, ctx.time, &none);
+        (plain.bones, plain.slots) = (ctx.bones, ctx.slots);
+        self.emit(
+            gpu,
+            &wkey,
+            id,
+            &plain,
+            &|_: &str| None,
+            (vertices, lines, start * 2, count * 2),
+            calls,
+        );
+    }
+
+    /// The edges of a mesh's triangles as lines: six indices for each three.
+    fn line_buffer(&mut self, gpu: &Gpu, triangles: usize) -> Option<usize> {
+        if let Some(b) = self.line_buffers.get(&triangles) {
+            return Some(*b);
+        }
+        let t = self.mesh_indices.get(&triangles)?.clone();
+        let lines: Vec<u32> = t
+            .chunks_exact(3)
+            .flat_map(|c| [c[0], c[1], c[1], c[2], c[2], c[0]])
+            .collect();
+        let b = self.index_buffer(gpu, &lines);
+        self.line_buffers.insert(triangles, b);
+        Some(b)
+    }
+
     fn index_buffer(&mut self, gpu: &Gpu, indices: &[u32]) -> usize {
         if indices.iter().all(|i| *i < 0xffff) {
             let short: Vec<u16> = indices.iter().map(|i| *i as u16).collect();
@@ -850,13 +932,17 @@ impl Demo {
             .ok_or_else(|| format!("no shader {path}"))?;
         let include = |n: &str| {
             let n = n.replace('\\', "/");
-            [
-                format!("{dir}/{n}"),
-                format!("shaders/includes/{n}"),
-                format!("shaders/{n}"),
-            ]
-            .iter()
-            .find_map(|p| self.text(p))
+            // Toy Shop names some includes without their extension.
+            let names = [n.clone(), format!("{n}.shl")];
+            names.iter().find_map(|n| {
+                [
+                    format!("{dir}/{n}"),
+                    format!("shaders/includes/{n}"),
+                    format!("shaders/{n}"),
+                ]
+                .iter()
+                .find_map(|p| self.text(p))
+            })
         };
         // The blur divides by the sum of its weights, which is zero where everything is
         // exactly in focus. A weight of one step of the buffer's alpha is the least there is.
@@ -884,6 +970,7 @@ impl Demo {
             let file = t.name.replace('\\', "/");
             let file = file.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
             self.by_file.entry(file).or_insert(id);
+            self.by_base.entry(base_key(t)).or_insert(id);
         }
         Ok(id)
     }
@@ -974,6 +1061,8 @@ impl Demo {
                         .index_buffer_of(item.vertex_buffer)
                         .ok_or("missing index buffer")?;
                     let i = self.index_buffer(gpu, &g.chunk.indices[ib].1);
+                    self.mesh_indices
+                        .insert(i, g.chunk.indices[ib].1.clone().into());
                     made.insert((gi, item.vertex_buffer), (v, i));
                     (v, i)
                 }
@@ -1157,7 +1246,14 @@ impl Demo {
     }
 
     fn model(&mut self, gpu: &Gpu, o: &object::Object, a: &anim::Animation) -> Result<usize> {
-        let textures = o.textures.iter().map(|t| self.textures.find(t)).collect();
+        let textures: Vec<_> = o.textures.iter().map(|t| self.textures.find(t)).collect();
+        // A texture without its texels is another object's, which may come later.
+        for (i, t) in o.textures.iter().enumerate() {
+            if textures[i].is_none() && !t.name.is_empty() {
+                self.pending_textures
+                    .push((self.models.len(), i, base_key(t)));
+            }
+        }
         let mut meshes = Vec::new();
         // Meshes of an animation take the place of the object's own (0x4536f0).
         let source = match a.morph_meshes.is_empty() {
@@ -1195,7 +1291,11 @@ impl Demo {
             let ib: Vec<usize> = m
                 .index_buffers
                 .iter()
-                .map(|i| self.index_buffer(gpu, &i.indices))
+                .map(|i| {
+                    let b = self.index_buffer(gpu, &i.indices);
+                    self.mesh_indices.insert(b, i.indices.clone().into());
+                    b
+                })
                 .collect();
             let mut streams = Vec::new();
             for (k, a) in m.stream_arrays.iter().enumerate() {
@@ -1393,16 +1493,19 @@ impl Demo {
         for name in self.chapters[chapter].scripts.clone() {
             let mut state = std::mem::take(&mut self.state);
             let files = |n: &str, me: &Self| me.text(&format!("Scripts/{n}"));
+            // The script and whatever it includes, at any depth.
             let mut all = HashMap::new();
-            for n in [
-                "ShadowMapInclude.sds",
-                "TextureLightingInclude.sds",
-                "ShaderParams.sds",
-                name.as_str(),
-            ] {
-                if let Some(t) = files(n, self) {
-                    all.insert(n.to_string(), t);
+            let mut wanted = vec![name.clone()];
+            while let Some(n) = wanted.pop() {
+                if all.contains_key(&n) {
+                    continue;
                 }
+                let Some(t) = files(&n, self) else { continue };
+                wanted.extend(t.lines().filter_map(|l| {
+                    let n = l.trim().strip_prefix("#include")?;
+                    Some(n.trim().trim_matches('"').to_string())
+                }));
+                all.insert(n, t);
             }
             let mut host = Frame::new(self, gpu, None, state.global("shaderParam"));
             let done = state.load(&mut host, &name, &|n| all.get(n).cloned());
@@ -1628,7 +1731,14 @@ impl Demo {
                     .or_insert_with(|| DepthBuffer::new(gpu, key.1, key.2));
             }
         }
-        for step in &d.steps {
+        for (k, step) in d.steps.iter().enumerate() {
+            // Toy Shop primes its droplet simulation with 2400 passes in one frame; Metal
+            // loses the device on command buffers that long.
+            if k > 0 && k % 256 == 0 {
+                let full =
+                    std::mem::replace(enc, gpu.device.create_command_encoder(&Default::default()));
+                gpu.queue.submit([full.finish()]);
+            }
             let (to, clears, calls) = match step {
                 Step::Draw { to, clears, calls } => (to, clears, calls),
                 Step::Copy(from, to) => {
@@ -1958,6 +2068,13 @@ fn matrix_registers(m: Mat4) -> Vec<[f32; 4]> {
     m.transpose().to_cols_array_2d().to_vec()
 }
 
+/// A texture's file name without its folders, with its format and whether it is a cube.
+fn base_key(t: &sushi_formats::texture::Texture) -> String {
+    let file = t.name.replace('\\', "/");
+    let file = file.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+    format!("{file}|{:?}|{}", t.format(), t.is_cube())
+}
+
 /// The texture a sampler means. Sushi binds the registers of `sampler t[n]` to textures
 /// `t0`..; so a lone `sampler tSky` takes `tSky0` when there is no `tSky`.
 fn texture_alias(file: &ShaderFile, name: &str) -> String {
@@ -2209,6 +2326,25 @@ fn builtin(name: &str, args: &[String], ctx: &Context) -> Option<Vec<[f32; 4]>> 
                     / BEFORE,
                 0.0,
             )
+        }
+        // 0x435990 in Toy Shop: rand()/32767 for each of four, again at every use; the
+        // normal one averages fifteen.
+        "mfixedfunctionwvp" => matrix_registers(eye.view_proj * world(0)),
+        "randomevendistribution" => {
+            vec![std::array::from_fn(|_| lua::crt_rand() as f32 / 32767.0)]
+        }
+        "randomnormaldistribution" => {
+            let mut v = [0.0f32; 4];
+            for _ in 0..15 {
+                for c in &mut v {
+                    *c += lua::crt_rand() as f32 / 32767.0;
+                }
+            }
+            vec![v.map(|c| c / 15.0)]
+        }
+        wgsl::POINT_SPRITE_VIEWPORT => {
+            let [w, h] = ctx.viewport.map(|v| v.max(1.0));
+            vec![[w, h, w.recip(), h.recip()]]
         }
         "viewportsize" => {
             let (w, h) = (ctx.frame.window.0 as f32, ctx.frame.window.1 as f32);
@@ -2475,6 +2611,9 @@ const OBJECTS: u32 = 256;
 const SCENE: u32 = 512;
 const NOTHING: u32 = 1024;
 const KEEP: u32 = 2048;
+/// `DrawText` alignments; `AlignCenterX` is 0.
+const ALIGN_LEFT: u32 = 1;
+const ALIGN_RIGHT: u32 = 2;
 
 struct Frame<'a> {
     demo: &'a mut Demo,
@@ -2494,10 +2633,12 @@ impl<'a> Frame<'a> {
     }
 
     fn lights(&self) -> Vec<(usize, Light)> {
-        let Some(d) = &self.drawing else {
-            return Vec::new();
-        };
-        let id = d.lights.unwrap_or(d.scene);
+        // Scripts also run between drawings (to follow a chapter that jumps in time);
+        // the scene is then the first, as for a new drawing.
+        let id = self
+            .drawing
+            .as_ref()
+            .map_or(0, |d| d.lights.unwrap_or(d.scene));
         self.demo
             .scenes
             .get(id)
@@ -2559,12 +2700,19 @@ impl lua::Host for Frame<'_> {
         matches!(
             name,
             "CreateColorBuffer"
+                | "DrawShadowObjects"
+                | "GetCurrentCameraIndex"
+                | "IsCameraOnFlyPath"
+                | "GetCurrentWorldTime"
+                | "GetReflectionPlane"
+                | "EnableWireframeOverlay"
                 | "CreateRenderableCubemap"
                 | "CreateZBuffer"
                 | "GetScreenWidth"
                 | "GetScreenHeight"
                 | "GetCurrentTime"
                 | "SetCurrentTime"
+                | "SetCurrentAnimationFrame"
                 | "GetCurrentAnimationFrame"
                 | "GetCurrentCameraPosition"
                 | "IsManualCameraCurrent"
@@ -2631,6 +2779,10 @@ impl lua::Host for Frame<'_> {
             "BUFFER_FORMAT_RGBA" => 1,
             "BUFFER_FORMAT_16161616" => 2,
             "BUFFER_FORMAT_1010102" => 3,
+            // G16R16: two unsigned 16-bit channels (Toy Shop's water simulation).
+            "BUFFER_FORMAT_1616" => 4,
+            "AlignLeft" => ALIGN_LEFT,
+            "AlignRight" => ALIGN_RIGHT,
             "backBuffer" | "CubemapFacePosX" | "AlignCenterX" => 0,
             "AutoMipgen" => 1,
             "NoZBuffer" | "NoColorBuffer" | "noBuffer" | "noZBuffer" | "noColorBuffer" => u32::MAX,
@@ -2647,6 +2799,9 @@ impl lua::Host for Frame<'_> {
         };
         Ok(match method {
             "GetConeAngle" => Value::Number(l.cone.into()),
+            // 0x4a97a0 and 0x4a9f00 (Toy Shop): +0x2e and +0x5f of the light.
+            "GetIntensity" => Value::Number(l.intensity.into()),
+            "GetPosition" => Value::vector(l.position.extend(0.0).to_array(), 3),
             "GetViewProjectionMatrixForTexturing" => Value::Matrix(Light::texturing(
                 l.projection(f(0, 1.0), f(1, 10000.0), f(2, 1.0)) * l.view(),
             )),
@@ -2687,11 +2842,18 @@ impl lua::Host for Frame<'_> {
                 self.demo.show.script = f(0);
                 return Ok(Value::Nil);
             }
+            // Frames from 1 at 30 a second (0x4a05b0 in Toy Shop).
+            "SetCurrentAnimationFrame" => {
+                self.demo.show.script = (f(0) - 1.0) / 30.0;
+                return Ok(Value::Nil);
+            }
             "CreateColorBuffer" | "CreateRenderableCubemap" => {
                 let cube = name == "CreateRenderableCubemap";
                 let format = match n(if cube { 2 } else { 3 }) {
                     2 => DEEP_FORMAT,
                     3 => TEN_FORMAT,
+                    // Floats, clamped to 0..1 by the shaders' output as unorm would be.
+                    4 => wgpu::TextureFormat::Rg16Float,
                     _ => COLOR_FORMAT,
                 };
                 let size = (
@@ -2734,6 +2896,43 @@ impl lua::Host for Frame<'_> {
             }
             "IsManualCameraCurrent" => {
                 return Ok(Value::Bool(self.drawing.as_ref().is_some_and(|d| d.manual)));
+            }
+            // A global set while the fly path runs (0x4a8520 in Toy Shop).
+            "IsCameraOnFlyPath" => {
+                return Ok(Value::Bool(
+                    !self.drawing.as_ref().is_some_and(|d| d.manual),
+                ));
+            }
+            // The camera manager's index (0x4a84b0): the fly path's camera is first, then
+            // the `control` lines in order.
+            "GetCurrentCameraIndex" => {
+                let manual = self.drawing.as_ref().is_some_and(|d| d.manual);
+                return Ok(Value::Number(match (manual, self.demo.camera_index) {
+                    (true, Some(i)) => i as f64,
+                    (true, None) | (false, _) => 0.0,
+                }));
+            }
+            "GetCurrentWorldTime" => return Ok(Value::Number(self.demo.show.script.into())),
+            // The mirror's plane, negated (0x4a2470).
+            "GetReflectionPlane" => {
+                let number = n(0) as u32;
+                let scene = self.drawing.as_ref().map_or(0, |d| d.scene);
+                let plane = self.demo.scenes.get(scene).and_then(|s| {
+                    s.mirrors
+                        .iter()
+                        .find(|m| m.number == number)
+                        .map(|m| -m.plane)
+                });
+                return Ok(Value::vector(plane.unwrap_or(Vec4::ZERO).to_array(), 4));
+            }
+            // Only the Geometry chapters draw wireframes; 0x49ed70 sets the mode.
+            "EnableWireframeOverlay" => {
+                self.demo.wireframe = args.first().is_some_and(Value::truth);
+                return Ok(Value::Nil);
+            }
+            "SetOverrideWireframeShader" => {
+                self.demo.wireframe_shader = self.demo.shader(string(0)).ok();
+                return Ok(Value::Nil);
             }
             "GetCurrentCameraPosition" => {
                 return Ok(Value::vector(
@@ -2845,13 +3044,18 @@ impl lua::Host for Frame<'_> {
                 color: d.text_color,
                 text: string(2).into(),
                 background: args.get(4).is_some_and(Value::truth),
+                align: match n(3) as u32 {
+                    ALIGN_LEFT => -1,
+                    ALIGN_RIGHT => 1,
+                    _ => 0,
+                },
             }),
             "DrawOutlineAroundViewport" => d.marks.push(Mark::Outline {
                 viewport: d.area.viewport,
                 color: [f(0), f(1), f(2)],
             }),
-            "DrawScene" | "DrawObjects" | "DrawParticles" | "DrawReflections" | "DrawQuad"
-            | "DrawNonSceneQuad" => {
+            "DrawScene" | "DrawObjects" | "DrawShadowObjects" | "DrawParticles"
+            | "DrawReflections" | "DrawQuad" | "DrawNonSceneQuad" => {
                 self.sync(&mut d);
                 if name == "DrawReflections" && flags(2) & KEEP == 0 {
                     // The original begins with black (0x41a3e0).
@@ -2869,6 +3073,12 @@ impl lua::Host for Frame<'_> {
                     "DrawObjects" => {
                         self.demo
                             .draw_objects(self.gpu, &mut d, string(0), flags(1), false)
+                    }
+                    // The light, then as `DrawObjects` with `ForceDraw` (0x4a4110,
+                    // 0x49bdb0). The light only culls; its camera is already set.
+                    "DrawShadowObjects" => {
+                        self.demo
+                            .draw_objects(self.gpu, &mut d, string(1), flags(2) | FORCE, false)
                     }
                     "DrawParticles" => self.demo.draw_particles(self.gpu, &mut d, string(0)),
                     "DrawReflections" => self.demo.draw_reflection(
@@ -2943,6 +3153,15 @@ impl Demo {
                     d.eye.formats,
                     d.eye.depth_only,
                 );
+                if pass == 0 {
+                    self.emit_wire(
+                        gpu,
+                        &key,
+                        &ctx,
+                        (&[i.vertices], i.indices, i.start, i.count),
+                        &mut d.calls,
+                    );
+                }
                 if let Some(id) = self.pipeline(gpu, key) {
                     self.emit(
                         gpu,
@@ -3166,6 +3385,7 @@ impl Demo {
                                     prt: Some(&prt),
                                     center: model.center,
                                     tile: [1.0; 2],
+                                    viewport: [d.frame.window.0 as f32, d.frame.window.1 as f32],
                                 };
                                 let texture = |name: &str| {
                                     m.slots
@@ -3173,6 +3393,15 @@ impl Demo {
                                         .position(|n| n == name)
                                         .and_then(|i| textures[i])
                                 };
+                                if pass == 0 {
+                                    self.emit_wire(
+                                        gpu,
+                                        &key,
+                                        &ctx,
+                                        (&vertices, indices.unwrap(), a, b - a + 1),
+                                        &mut d.calls,
+                                    );
+                                }
                                 self.emit(
                                     gpu,
                                     &key,
@@ -3367,6 +3596,9 @@ impl Demo {
             let mut ctx = Context::new(&d.eye, &d.frame, d.frame.time - p.system.start, &params);
             ctx.params = &pparams;
             ctx.tile = p.system.tile;
+            let (w, h) = self.size_of(&d.eye.to);
+            let v = d.area.viewport;
+            ctx.viewport = [w as f32 * (v[2] - v[0]), h as f32 * (v[3] - v[1])];
             for pass in 0..self.shaders[p.shader].shaders[shader].passes.len() {
                 let key = (
                     p.shader,

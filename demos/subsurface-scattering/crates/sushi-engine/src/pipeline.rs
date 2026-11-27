@@ -77,7 +77,15 @@ impl Textures {
     }
 
     pub fn find(&self, t: &sushi_formats::texture::Texture) -> Option<TextureId> {
-        self.names.get(&Self::key(t)).copied()
+        self.find_key(&Self::key(t))
+    }
+
+    pub fn key_of(t: &sushi_formats::texture::Texture) -> String {
+        Self::key(t)
+    }
+
+    pub fn find_key(&self, key: &str) -> Option<TextureId> {
+        self.names.get(key).copied()
     }
 
     fn view(&self, id: TextureId, cube: bool) -> &wgpu::TextureView {
@@ -382,6 +390,11 @@ impl Pipelines {
                 buffers: &buffers,
             },
             primitive: wgpu::PrimitiveState {
+                // `FillMode Wireframe` draws the edges, which the engine gives as lines.
+                topology: match pass.wireframe {
+                    true => wgpu::PrimitiveTopology::LineList,
+                    false => wgpu::PrimitiveTopology::TriangleList,
+                },
                 // D3D9 calls clockwise faces front faces; a mirror turns them around.
                 front_face: match mirrored {
                     true => wgpu::FrontFace::Ccw,
@@ -404,10 +417,14 @@ impl Pipelines {
                 }),
                 stencil: stencil(pass),
                 // Read as steps of a 24 bit buffer.
-                bias: wgpu::DepthBiasState {
-                    constant: pass.z_bias as i32,
-                    slope_scale: pass.z_slope,
-                    clamp: 0.0,
+                // Lines cannot have a bias here; their program moves them instead.
+                bias: match pass.wireframe {
+                    true => wgpu::DepthBiasState::default(),
+                    false => wgpu::DepthBiasState {
+                        constant: pass.z_bias as i32,
+                        slope_scale: pass.z_slope,
+                        clamp: 0.0,
+                    },
                 },
             }),
             multisample: wgpu::MultisampleState {
