@@ -1,0 +1,30 @@
+[package]
+name = "squid"
+description = "Port of NVIDIA's Squid demo: native window and browser"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = "0.34.3"
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+wgpu = "30.0.2"
+png = "0.18.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "1.0.3"
+rfd = "0.18.0"
+rodio = { version = "0.23.0", default-features = false, features = ["playback"] }
+winit = "0.30"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
+wasm-bindgen = "0.2.130"
+wasm-bindgen-futures = "0.4.80"
+web-sys = { version = "0.3.107", features = ["HtmlCanvasElement"] }
+wgpu = { version = "30.0.2", features = ["webgl"] }
