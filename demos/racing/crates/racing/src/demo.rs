@@ -359,11 +359,13 @@ impl Demo {
             let wheels = car.wheels;
             let pose = move |id: u32| wheels.iter().position(|&w| w == Some(id)).map(|i| poses[i]);
             let mut part = Vec::new();
+            // The walk works in the car's own space, so its level-of-detail
+            // nodes measure the eye's distance from there.
             atb::walk(
                 &self.bof,
                 car.root,
                 &View {
-                    eye,
+                    eye: car.matrix.inverse().transform_point3(eye),
                     pose: &pose,
                     ..View::default()
                 },
