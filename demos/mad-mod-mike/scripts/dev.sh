@@ -20,7 +20,7 @@ OUT=target/devtest
 PORT=8112
 mkdir -p "$OUT"
 # Take, seconds and keys of the moments that `compare` looks at.
-STILLS="0:1: 1:3: 2:5: 3:11:c 4:2: 5:4: 6:3: 7:6: 8:2: 9:7:"
+STILLS="0:1: 1:3: 2:1.5: 3:1: 4:2: 5:2: 6:1.5: 7:21: 8:2: 9:2:"
 
 need_data() {
   [ -f "$MADMODMIKE_DATA/models/geom.nmb" ] || { echo "demo not found: $MADMODMIKE_DATA" >&2; exit 1; }

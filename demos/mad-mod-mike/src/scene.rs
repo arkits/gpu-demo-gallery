@@ -1,7 +1,7 @@
 //! GPU resources and frame submission shared by the native and browser players.
 use std::collections::HashMap;
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 
 use crate::Error;
 use crate::data::Files;
@@ -355,9 +355,13 @@ impl Pipelines<'_> {
             }
             _ => (
                 "vs_main",
-                match shape.pass {
-                    Pass::Card => "fs_card",
-                    _ => "fs_main",
+                if shape.fragment.starts_with("mike_wetball") {
+                    "fs_wetball"
+                } else {
+                    match shape.pass {
+                        Pass::Card => "fs_card",
+                        _ => "fs_main",
+                    }
                 },
                 vec![
                     layout(&moving, size_of::<Moving>()),
@@ -365,11 +369,18 @@ impl Pipelines<'_> {
                 ],
             ),
         };
+        // The wet cornea layer blends over the eyeball; the file leaves
+        // it on the default (opaque) blend.
+        let blend = if shape.fragment.starts_with("mike_wetball") {
+            crate::model::Blend::Alpha
+        } else {
+            shape.blend
+        };
         self.make(Style {
             vertex,
             fragment,
             buffers: &buffers,
-            blend: shape.blend,
+            blend,
             cull: shape.cull,
             depth: Some(true),
         })
@@ -731,7 +742,10 @@ impl Scene {
         let (width, height) = (size.0 as f32, size.1 as f32);
         let take = frame.take % self.takes.len();
         let animation = &self.takes[take];
-        let seconds = frame.local * f64::from(animation.scale);
+        let info = &demo::TAKES[take];
+        // Master-timeline seconds: each take plays its own window of the
+        // curves (`args.txt` start frame at 30 fps).
+        let seconds = info.start + frame.local * f64::from(animation.scale);
         let mut values = HashMap::new();
         for n in &animation.numbers {
             let v = n.curve.at(seconds);
@@ -760,6 +774,65 @@ impl Scene {
                 place: self.head(&world),
                 fov: 55_f32.to_radians(),
             },
+            // The movie camera is the take's own rig (`args.txt` flag 6).
+            // Three takes can't use theirs: take 5's camera2 stares into
+            // a board inches away, and takes 2 and 8 animate no usable
+            // rig. Those fall back instead: take 2 keeps the shipped
+            // preset as is (verified to frame him), take 5 uses a fixed
+            // offset that frames him (verified), and take 8 re-anchors
+            // the nearest preset onto him (verified: jetpack detail) [I].
+            Camera::Movie => {
+                const FALLBACK: &[usize] = &[2, 5, 8];
+                let rig = if info.camera.is_empty() || FALLBACK.contains(&frame.take) {
+                    None
+                } else {
+                    self.world
+                        .model
+                        .find(info.camera)
+                        .filter(|_| animation.channels.iter().any(|c| c.node == info.camera))
+                };
+                match rig {
+                    Some(at) => crate::show::Shot {
+                        place: world[at],
+                        fov: 40_f32.to_radians(),
+                    },
+                    None if frame.take == 2 => {
+                        let yaw = preset.yaw + frame.local as f32 * 0.008;
+                        let turn = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(preset.pitch);
+                        let target = preset.look + (root - preset.anchor);
+                        crate::show::Shot {
+                            place: Mat4::from_rotation_translation(
+                                turn,
+                                target + turn * Vec3::new(0.0, 0.0, preset.distance),
+                            ),
+                            fov: 40_f32.to_radians(),
+                        }
+                    }
+                    None if frame.take == 5 => {
+                        let target = root + Vec3::new(0.0, 30.0, 0.0);
+                        let turn = Quat::from_rotation_y(-2.3) * Quat::from_rotation_x(-0.38);
+                        crate::show::Shot {
+                            place: Mat4::from_rotation_translation(
+                                turn,
+                                target + turn * Vec3::new(0.0, 0.0, 240.0),
+                            ),
+                            fov: 40_f32.to_radians(),
+                        }
+                    }
+                    None => {
+                        let target = root + Vec3::new(0.0, 30.0, 0.0);
+                        let turn =
+                            Quat::from_rotation_y(preset.yaw) * Quat::from_rotation_x(preset.pitch);
+                        crate::show::Shot {
+                            place: Mat4::from_rotation_translation(
+                                turn,
+                                target + turn * Vec3::new(0.0, 0.0, preset.distance),
+                            ),
+                            fov: 40_f32.to_radians(),
+                        }
+                    }
+                }
+            }
             other => other.shot(preset, root, frame.local),
         };
         let eye = shot.place.w_axis.truncate();
@@ -955,10 +1028,7 @@ fn draw_actor(
         let distance = (*view * bones[0]).transform_point3(shape.center).length();
         let start = data.len();
         for m in &bones {
-            let rows = m.transpose();
-            for row in [rows.x_axis, rows.y_axis, rows.z_axis] {
-                data.extend_from_slice(bytemuck::bytes_of(&row.to_array()));
-            }
+            data.extend_from_slice(bytemuck::bytes_of(&m.to_cols_array_2d()));
         }
         data.resize(start + STRIDE as usize, 0);
         if let (Geometry::Mesh(m) | Geometry::Cage(m), Buffers::Mesh { moving, loaded, .. }) =
@@ -1014,10 +1084,7 @@ fn draw_actor_static(
         }
         let distance = (*view).transform_point3(shape.center).length();
         let start = data.len();
-        let rows = Mat4::IDENTITY.transpose();
-        for row in [rows.x_axis, rows.y_axis, rows.z_axis] {
-            data.extend_from_slice(bytemuck::bytes_of(&row.to_array()));
-        }
+        data.extend_from_slice(bytemuck::bytes_of(&Mat4::IDENTITY.to_cols_array_2d()));
         data.resize(start + STRIDE as usize, 0);
         calls.push(Call {
             actor: id,

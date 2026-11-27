@@ -69,8 +69,12 @@ in `docs/DEVELOPMENT.md`.
 - Skinned meshes carry `model[n]` (map 23) bone slots on their geometry's
   `processParams`; shadow-caster variants carry `modelViewProj[n]` (map 26) on
   the shape. The port skins every color pass on the GPU (up to 8 influences
-  from `boneWeights0/1`, `boneIndices0/1`); bones with no weights bind identity.
-  Bind pose is the identity (checked): bend is `world · rest⁻¹`.
+  from `boneWeights0/1`, `boneIndices0/1`); the bone palette uploads full
+  column-major matrices to match the shader's `array<mat4x4>` layout
+  (uploading transposed 3-row matrices instead explodes every skinned mesh
+  while leaving unweighted static geometry untouched). Vertices with no
+  weights filed are rigidly carried by the single bone (helmet, teeth,
+  eyeballs, rocket pack); bend is `world · rest⁻¹`.
 - Morphs are `objCoordDiffN`/`objNormalDiffN` streams driven by
   `<geometry>_blend_0_<N>` weight parameters; the first eight weights over
   0.01 apply on the CPU. The jaw is a joint plus blend shapes [I for the jaw].
@@ -92,16 +96,23 @@ in `docs/DEVELOPMENT.md`.
 
 ## Running
 
-- Ten takes, one animation each (`models/scene2.nmb` … `models/scene26.nmb`,
-  spans in `demo::TAKES`); each loops. `anim_reset.nma` and `poses.nma` parse
-  but are not performed [I: reset pose and pose cycling].
-- The movie camera uses the take's shipped yaw/pitch/distance (21–242 units,
-  kept as-is) aimed at the shipped look-at, plus Mike's movement since the
-  take started, with a slow dolly [I: the shipped look-ats belong to animation
-  slots, not to these files, so each take uses the preset whose look-at is
-  nearest to where Mike stands]; `c` switches to free orbit and helmet cam
-  (the head joint). `1`–`0` switch takes, arrows change expressions, space
-  pauses, `m` toggles the menu overlay [I].
+- Ten takes play the storyboard windows from `bin/args.txt` (`consume_anim`:
+  start frame at 30 fps plus length in seconds; `demo::TAKES` follows it, so
+  each take plays its own master-timeline segment and loops). Takes without
+  a storyboard slot (`scene6.nmb`) play their key span [I]. `anim_reset.nma`
+  and `poses.nma` parse but are not performed [I: reset pose and pose cycling].
+- The movie camera is the take's own rig (`args.txt` flag 6: `camera1`,
+  take 5's `camera2`, take 8's `cornerCam`). Takes that can't use theirs
+  fall back instead: take 2 keeps the shipped preset as is, take 5 uses a
+  fixed offset, take 8 re-anchors the nearest preset onto Mike (each
+  verified in stills; the shipped look-ats belong to other animation slots
+  and the flagged rigs stare into a board / sit inside him) [I]. `c`
+  switches to free orbit and helmet cam (the head joint). `1`–`0` switch
+  takes, arrows change expressions, space pauses, `m` toggles the menu
+  overlay [I].
+- The wet cornea layer (`mike_wetball_*`, opaque-blended by default in the
+  files) draws as a transparent analytic gloss over the textured eyeball;
+  drawn opaque it covers the iris with a white shell.
 - Expressions: `BlendCombos.txt`'s seven combos of five blend targets and a
   jaw angle; `↑`/`↓` step through them.
 - Sound: `audio/soundtrack.wav` loops (FLAC on the web).
