@@ -1173,6 +1173,8 @@ impl<'a> Words<'a> {
             "constant" => 0,
             "add" => 1,
             "always" => 1,
+            "zero" => 0,
+            "one" => 1,
             "src_alpha" => 4,
             "inv_src_alpha" => 5,
             "linear" => 1,

@@ -81,6 +81,27 @@ fn fs_lit(v: Vary) -> @location(0) vec4<f32> {
     return vec4<f32>(col * (0.5 + 0.5 * v.occ), 1.0);
 }
 
+// eyeballGloss.fp30, in outline: the specular highlight only, drawn
+// additively over the ball. The wet layer binds no bump map, so its blank
+// reads neutral and only scales the highlight.
+@fragment
+fn fs_gloss(v: Vary) -> @location(0) vec4<f32> {
+    let bumpspec = textureSample(t1, smp, v.uv);
+    let n = normalize(v.nrm) + p.misc.z * (bumpspec.x * normalize(v.tan) + bumpspec.y * normalize(v.bin));
+    let refl = reflect(normalize(-v.eye), normalize(n));
+    let specular = textureSample(c1, smp, refl).xyz;
+    let w = bumpspec.w * 0.5 + 0.5;
+    return vec4<f32>(specular * p.spec.w * w, 1.0);
+}
+
+// eyeballShadow.fp30, in outline: the lid-bits card darkens the ball
+// multiplicatively; misc.y carries its modulate_by floor.
+@fragment
+fn fs_shadow(v: Vary) -> @location(0) vec4<f32> {
+    let bits = textureSample(t0, smp, v.uv).xyz;
+    return vec4<f32>(vec3<f32>(p.misc.y) + (1.0 - p.misc.y) * bits, 1.0);
+}
+
 // glassLenses.fp30, in outline: a dim tinted reflection.
 @fragment
 fn fs_glass(v: Vary) -> @location(0) vec4<f32> {

@@ -152,6 +152,7 @@ pub enum Blend {
     None,
     Alpha,
     Add,
+    Multiply,
 }
 
 pub struct Shape {
@@ -168,6 +169,9 @@ pub struct Shape {
     /// Lower sets are drawn first; within one, far to near or near to far.
     pub set: i32,
     pub far_first: bool,
+    /// Depth test and write: None skips the test, Some(false) tests
+    /// without writing, Some(true) tests and writes.
+    pub depth: Option<bool>,
     pub center: Vec3,
     /// Names of the weights of the morph targets.
     pub weights: Vec<String>,
@@ -220,6 +224,9 @@ pub struct Model {
     pub shapes: Vec<Shape>,
     pub groups: Vec<(String, Vec<usize>)>,
     pub textures: HashMap<String, Texture>,
+    /// Blend factors by render-pass name, from the scene's BlendParams:
+    /// (color source, color destination).
+    blends: HashMap<String, (u32, u32)>,
     /// The background's faces.
     pub sky: Vec<String>,
     pub animations: Vec<Animation>,
@@ -411,6 +418,7 @@ impl Model {
             shapes: Vec::new(),
             groups: Vec::new(),
             textures: HashMap::new(),
+            blends: HashMap::new(),
             sky: Vec::new(),
             animations: Vec::new(),
             cameras: Vec::new(),
@@ -480,6 +488,14 @@ impl Model {
                 camera: n.text("camera").to_owned(),
                 clears_color: n.bool("clearsColor", false),
             });
+        }
+        for n in root.nodes("renderParams") {
+            if n.kind == "BlendParams" {
+                model.blends.insert(
+                    n.name.clone(),
+                    (n.int("colorSrcBlend"), n.int("colorDestBlend")),
+                );
+            }
         }
         for n in root.nodes("backgrounds") {
             for p in params(
@@ -658,6 +674,21 @@ impl Model {
         for p in params(setting, "fragmentShaderParams", "TextureParam") {
             textures.insert(p.text("paramName").to_owned(), p.text("texture").to_owned());
         }
+        // Blending comes from the named BlendParams when the scene files one,
+        // with the old name checks as a fallback for files that do not (hair).
+        // The factors are the viewer's own: 0 zero, 1 one, 2 source color,
+        // 4 source alpha, 5 one minus source alpha.
+        let blend = match self.blends.get(setting.text("blendParams")) {
+            Some(&(4, 5)) => Blend::Alpha,
+            Some(&(1, 1)) => Blend::Add,
+            Some(&(0, 2)) => Blend::Multiply,
+            Some(_) => Blend::None,
+            None => match setting.text("blendParams") {
+                "_BlendAlpha" | "AlphaBlendProxy" => Blend::Alpha,
+                "_BlendAdd" => Blend::Add,
+                _ => Blend::None,
+            },
+        };
         let mut constants = HashMap::new();
         for p in params(setting, "fragmentShaderParams", "ConstantParam") {
             constants.insert(
@@ -665,6 +696,13 @@ impl Model {
                 p.vec::<4>("value").unwrap_or([0.0; 4]),
             );
         }
+        // The skybox tests but never writes depth (_DepthNoWrite); the
+        // blur passes skip the test too. Everything else tests and writes.
+        let depth = match setting.text("depthParams") {
+            "_DepthNoTest" => None,
+            "_DepthNoWrite" => Some(false),
+            _ => Some(true),
+        };
         Ok(Shape {
             name: s.name.clone(),
             geometry,
@@ -673,13 +711,10 @@ impl Model {
             textures,
             constants,
             cull: s.text("cull") != "never" && s.int("cull") == 0,
-            blend: match setting.text("blendParams") {
-                "_BlendAlpha" | "AlphaBlendProxy" => Blend::Alpha,
-                "_BlendAdd" => Blend::Add,
-                _ => Blend::None,
-            },
+            blend,
             set: setting.int("sortSet") as i32,
             far_first: setting.text("sortType") == "back_to_front" || setting.int("sortType") == 1,
+            depth,
             center: s.vec::<3>("sphereCenter").map_or(Vec3::ZERO, Vec3::from),
             weights: weights.into_iter().map(|w| w.1).collect(),
         })

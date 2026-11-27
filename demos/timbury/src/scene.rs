@@ -438,7 +438,15 @@ struct Style<'a> {
 
 impl Pipelines<'_> {
     fn make(&mut self, s: Style<'_>) -> wgpu::RenderPipeline {
-        let key = format!("{} {} {} {}", s.vertex, s.fragment, s.blend as u8, s.cull);
+        let depth_key = match s.depth {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        };
+        let key = format!(
+            "{} {} {} {} {}",
+            s.vertex, s.fragment, s.blend as u8, s.cull, depth_key
+        );
         if let Some((_, p)) = self.made.iter().find(|m| m.0 == key) {
             return p.clone();
         }
@@ -447,7 +455,7 @@ impl Pipelines<'_> {
             dst_factor: dst,
             operation: wgpu::BlendOperation::Add,
         };
-        use wgpu::BlendFactor::{One, OneMinusSrcAlpha, SrcAlpha};
+        use wgpu::BlendFactor::{One, OneMinusSrcAlpha, Src, SrcAlpha, Zero};
         let both = |c| wgpu::BlendState { color: c, alpha: c };
         let pipeline = self
             .gpu
@@ -471,6 +479,7 @@ impl Pipelines<'_> {
                             Blend::None => None,
                             Blend::Alpha => Some(both(component(SrcAlpha, OneMinusSrcAlpha))),
                             Blend::Add => Some(both(component(One, One))),
+                            Blend::Multiply => Some(both(component(Zero, Src))),
                         },
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -481,10 +490,10 @@ impl Pipelines<'_> {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH,
-                    depth_write_enabled: Some(s.depth.is_some()),
+                    depth_write_enabled: Some(s.depth == Some(true)),
                     depth_compare: Some(match s.depth {
-                        Some(_) => wgpu::CompareFunction::LessEqual,
                         None => wgpu::CompareFunction::Always,
+                        Some(_) => wgpu::CompareFunction::LessEqual,
                     }),
                     stencil: Default::default(),
                     bias: Default::default(),
@@ -497,7 +506,7 @@ impl Pipelines<'_> {
         pipeline
     }
 
-    fn shape(&mut self, shape: &Shape) -> (&'static str, Blend, bool) {
+    fn shape(&mut self, shape: &Shape) -> (&'static str, Blend, bool, Option<bool>) {
         let program = shape.program.as_str();
         let fragment = if program.starts_with("hair") {
             "fs_hair"
@@ -507,20 +516,21 @@ impl Pipelines<'_> {
             "fs_lambert"
         } else if program.starts_with("glass") {
             "fs_glass"
+        } else if program.starts_with("eyeballGloss") {
+            "fs_gloss"
+        } else if program.starts_with("eyeballShadow") {
+            "fs_shadow"
         } else if program.starts_with("_texture") || program.starts_with("_bkg") {
             "fs_flat"
         } else {
             "fs_lit"
         };
-        let blend = if shape.blend == Blend::Alpha
-            || program.starts_with("glass")
-            || program.starts_with("hair")
-        {
-            Blend::Alpha
-        } else {
-            Blend::None
-        };
-        (fragment, blend, shape.cull)
+        let mut blend = shape.blend;
+        if program.starts_with("glass") || program.starts_with("hair") {
+            blend = Blend::Alpha;
+        }
+        // Depth mode comes from the shape's depthParams.
+        (fragment, blend, shape.cull, shape.depth)
     }
 }
 
@@ -799,7 +809,7 @@ impl Actor {
         let mut shapes = Vec::new();
         for shape in &model.shapes {
             use wgpu::BufferUsages as Use;
-            let (fragment, blend, cull) = pipelines.shape(shape);
+            let (fragment, blend, cull, depth) = pipelines.shape(shape);
             let buffers = match &shape.geometry {
                 Geometry::Mesh(m) => Buffers::Mesh {
                     moving: gpu.buffer(
@@ -882,7 +892,7 @@ impl Actor {
                 buffers: layouts,
                 blend,
                 cull: cull && !matches!(shape.geometry, Geometry::Hair(_)),
-                depth: Some(true),
+                depth,
                 coverage: false,
             });
             shapes.push(GpuShape {
@@ -1062,7 +1072,13 @@ impl Scene {
                 let spec = c("specularColor");
                 let scale = c("specularScale")[0];
                 let ambient = c("ambientColor");
-                let shadow = c("shadow_str")[0];
+                // The eyelid shadow reads its strength from modulate_by
+                // instead of shadow_str; nothing else files modulate_by.
+                let shadow = shape
+                    .constants
+                    .get("modulate_by")
+                    .map(|m| m[0])
+                    .unwrap_or_else(|| c("shadow_str")[0]);
                 let bump = c("bump_scale")[0];
                 let transp = c("transparency")[0];
                 param_data.push(Params {
@@ -1480,12 +1496,25 @@ impl Scene {
                 });
             }
         }
-        // Bones for the four actors' own shapes.
+        // Bones for the four actors' own shapes. The skybox follows the
+        // camera: the original adds the camera position to its vertices
+        // (_bkg_split.vp20), so the ±1000 box stays around the eye even on
+        // the finale's pull-back; drawn first with no depth write, the rest
+        // overdraws it (_DepthNoWrite, sortSet -999).
         let mut data = Vec::new();
+        let shift = Mat4::from_translation(eye);
         for (a, actor) in actors.iter().enumerate() {
             let w = if a == 2 { Some(&world) } else { None };
             let rest = actor.model.pose(None, &[]);
-            let w = w.unwrap_or(&rest);
+            let shifted;
+            let w = match (a, w) {
+                (2, Some(w)) => w,
+                (0, _) => {
+                    shifted = rest.iter().map(|m| shift * *m).collect::<Vec<_>>();
+                    &shifted
+                }
+                _ => &rest,
+            };
             for (k, (shape, _)) in actor.model.shapes.iter().zip(&actor.shapes).enumerate() {
                 let _ = k;
                 for m in &actor.model.bones(shape, w) {

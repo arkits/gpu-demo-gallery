@@ -71,8 +71,25 @@ per use and a fragment function per program.
 - Cube maps are crosses cut as `FUN_00460a60` cuts them: +X, -X, +Y, -Y, +Z,
   -Z. The fullscreen passes use a fullscreen triangle.
 - Order: sky and set draw as themselves, then Timbury's `nvPrimaryRenderPass`
-  group plus absorbed hair, then the swarm. Alpha programs blend; the rest do
-  not. [I] for the exact original order.
+  group plus absorbed hair, then the swarm.
+- Blending follows the filed `BlendParams`, resolved by name: (4, 5) is
+  standard alpha (`AlphaBlendProxy`, bug wings), (1, 1) is additive
+  (`wetballBlendParamsProxy`, the cornea gloss), (0, 2) is multiplicative
+  (`darkballBlendParamsProxy`, the lid shadow); files without a proxy keep
+  the old `_BlendAlpha`/`_BlendAdd` name checks (hair). The wet cornea
+  layer draws `eyeballGloss` (specular highlight only) additively over the
+  textured ball, and the lid-bits card draws `eyeballShadow`
+  (`modulate_by` + (1 - `modulate_by`) * bits) multiplicatively over it;
+  rendering either opaque covers the iris with a white shell. [I] for the
+  exact original order.
+- Depth follows the filed `depthParams`: the skybox tests but never writes
+  (`_DepthNoWrite`), the blur passes skip the test, everything else tests
+  and writes.
+- The skybox follows the camera: `_bkg_split.vp20` adds `cameraPosition`
+  to its vertices, so the ±1000 box stays around the eye. Drawn static, its
+  edges show the clear color on the finale's pull-back (the camera key
+  jumps ~3000 units out at t≈57); drawn following, the finale wide shot of
+  the island stays covered.
 
 ## Running
 
