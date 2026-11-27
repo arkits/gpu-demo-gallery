@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dangerous Curves</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; --ground: #0a0d08; --ink: #e4e6dc; --dim: #9fa697; --line: #56634a; --accent: #d29147; --on: #1a0f02; --panel: #10140cc0; }
+  html, body { margin: 0; height: 100%; background: var(--ground); color: var(--ink); font: 15px/1.5 system-ui, sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+  #start { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; text-align: center; gap: 14px; padding: 16px; }
+  [hidden] { display: none !important; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  label, button { font: inherit; color: inherit; background: none; border: 1px solid var(--line); border-radius: 6px; padding: 10px 18px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on); font-weight: 600; }
+  label:hover, button:hover, label:focus-within { filter: brightness(1.2); }
+  :focus-visible, label:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  label input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  p { margin: 0; max-width: 52ch; color: var(--dim); }
+  kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  progress { width: min(320px, 80vw); accent-color: var(--accent); }
+  #chapters { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(12px, env(safe-area-inset-bottom)); display: flex; gap: 6px; max-width: 96vw; overflow-x: auto; opacity: 0; transition: opacity .3s; }
+  #chapters[data-awake], #chapters:focus-within { opacity: 1; }
+  #chapters button { background: var(--panel); padding: 8px 14px; min-height: 44px; white-space: nowrap; font-size: 14px; }
+  #chapters [aria-current] { border-color: var(--accent); color: var(--accent); }
+  #status[data-error] { color: light-dark(#a3261b, #ff9d8a); }
+</style>
+<!-- Cloudflare Pages adds its analytics script to an explicit body. -->
+<body>
+<canvas id="view" tabindex="0" aria-label="Dangerous Curves demo"></canvas>
+<nav id="chapters" aria-label="Chapters" hidden></nav>
+<main id="start">
+  <h1>Dangerous Curves</h1>
+  <button id="play" class="primary" hidden>Start</button>
+  <div class="row" id="choose">
+    <label>Choose demo folder <input id="folder" type="file" webkitdirectory></label>
+    <label>Choose files <input id="files" type="file" multiple accept=".ati,.mp3,.tga"></label>
+  </div>
+  <p id="need">Needs your copy of ATI's demo: <code>Sushi.ati</code>, and optionally <code>SceneIntro.mp3</code> and <code>Logo2.tga</code>. Files stay on this computer.</p>
+  <p><kbd>1</kbd>–<kbd>9</kbd> chapters &nbsp; <kbd>Space</kbd> pause &nbsp; <kbd>←</kbd> <kbd>→</kbd> skip &nbsp; drag or <kbd>F</kbd> free camera &nbsp; <kbd>L</kbd> logo &nbsp; <kbd>M</kbd> mute &nbsp; <kbd>Enter</kbd> full screen</p>
+  <p>ATI Radeon X850 technology demo, 2005.</p>
+  <progress id="progress" hidden></progress>
+  <p id="status" role="status"></p>
+</main>
+<script type="module">
+  import init, { WebPlayer } from "./pkg/dangerous_curves.js";
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("view");
+  const status = (text, error) => {
+    $("status").textContent = text;
+    $("status").toggleAttribute("data-error", !!error);
+  };
+  const size = () => {
+    const s = window.devicePixelRatio || 1;
+    return [Math.round(canvas.clientWidth * s), Math.round(canvas.clientHeight * s)];
+  };
+  // ?chapter=C&t=SECONDS shows one fixed moment, for checking frames.
+  const params = new URLSearchParams(location.search);
+  const frozen = params.has("t") ? Number(params.get("t")) : null;
+  const data = { archive: null, loop: null, logo: null };
+  let player = null;
+  // The bundled files, while they come; Start can be pressed before they are here.
+  let loading = null;
+  const wasmReady = init();
+
+  function offer() {
+    if (!data.archive) return;
+    $("play").hidden = false;
+    $("play").focus();
+    status(data.loop ? "" : "SceneIntro.mp3 was not found: it will play silently.");
+    if (frozen !== null) start();
+  }
+
+  async function score(context) {
+    if (!context) return null;
+    if (!data.loop) {
+      await context.close();
+      return null;
+    }
+    try {
+      const buffer = await context.decodeAudioData(data.loop.buffer);
+      const gain = context.createGain();
+      gain.connect(context.destination);
+      let playing = null;
+      return {
+        context, gain,
+        restart(seconds) {
+          playing?.stop();
+          playing = null;
+          if (seconds >= buffer.duration) return;
+          playing = context.createBufferSource();
+          playing.buffer = buffer;
+          playing.connect(gain);
+          playing.start(0, seconds);
+        },
+      };
+    } catch (error) {
+      await context.close();
+      throw error;
+    }
+  }
+
+  async function start() {
+    if (player || $("play").disabled) return;
+    $("play").disabled = true;
+    // Open the audio context while the click is still active.
+    const context = frozen === null ? new AudioContext() : null;
+    void context?.resume();
+    try {
+      if (loading) $("play").textContent = "Starting when loaded";
+      await loading;
+    } catch {
+      // Reported where it began.
+      await context?.close();
+      return;
+    } finally {
+      $("play").textContent = "Start";
+    }
+    status("Loading…");
+    const sound = score(context).catch((error) => { console.warn("playing without music", error); return null; });
+    try {
+      await new Promise((r) => setTimeout(r));
+      await wasmReady;
+      [canvas.width, canvas.height] = size();
+      player = await WebPlayer.create(canvas, data.archive, data.logo ?? new Uint8Array());
+    } catch (e) {
+      console.error(e);
+      await (await sound)?.context.close();
+      $("play").disabled = false;
+      return status(`Could not start: ${e.message ?? e}`, true);
+    }
+    status("Preparing graphics…");
+    while (!player.ready()) await new Promise((r) => setTimeout(r, 30));
+    data.archive = data.loop = data.logo = null;
+    $("start").hidden = true;
+    canvas.focus();
+    if (frozen !== null) player.freeze(Number(params.get("chapter") ?? 1) - 1, frozen);
+    run(await sound);
+  }
+
+  function run(audio) {
+    let last = size().join();
+    let muted = false;
+    const nav = $("chapters");
+    player.titles().forEach((title, i) => {
+      const b = document.createElement("button");
+      b.textContent = title;
+      b.addEventListener("click", () => { player.go(i); canvas.focus(); });
+      nav.append(b);
+    });
+    nav.hidden = frozen !== null;
+    let sleep;
+    const wake = () => {
+      nav.toggleAttribute("data-awake", true);
+      clearTimeout(sleep);
+      sleep = setTimeout(() => nav.removeAttribute("data-awake"), 3000);
+    };
+    for (const e of ["pointermove", "pointerdown", "keydown"]) addEventListener(e, wake);
+    wake();
+    let shown = -1;
+    const tick = (now) => {
+      const [w, h] = size();
+      if (`${w},${h}` !== last) {
+        last = `${w},${h}`;
+        [canvas.width, canvas.height] = [w, h];
+        player.resize(w, h);
+      }
+      player.frame(now / 1000);
+      if (shown !== player.chapter()) {
+        shown = player.chapter();
+        [...nav.children].forEach((b, i) => i === shown ? b.setAttribute("aria-current", "true") : b.removeAttribute("aria-current"));
+      }
+      if (audio) {
+        if (player.take_restart()) audio.restart(player.time());
+        if (player.paused() && audio.context.state === "running") audio.context.suspend();
+        if (!player.paused() && audio.context.state === "suspended") audio.context.resume();
+        audio.gain.gain.value = muted ? 0 : player.brightness();
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+
+    addEventListener("keydown", (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "m" || e.key === "M") muted = !muted;
+      else if (e.key === "Enter" && e.target.tagName !== "BUTTON") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+      else if (e.target.tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
+      else if (!player.key(e.key)) return;
+      e.preventDefault();
+    });
+    let drag = null;
+    canvas.addEventListener("pointerdown", (e) => { drag = [e.clientX, e.clientY]; canvas.setPointerCapture(e.pointerId); });
+    canvas.addEventListener("pointerup", () => { drag = null; });
+    canvas.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      player.drag((e.clientX - drag[0]) * 0.3, (e.clientY - drag[1]) * 0.3);
+      drag = [e.clientX, e.clientY];
+    });
+    canvas.addEventListener("wheel", (e) => { e.preventDefault(); player.zoom(-e.deltaY * 0.001); }, { passive: false });
+    // For automated checks.
+    window.demo = { player, audio };
+  }
+
+  const bytes = async (f) => new Uint8Array(await f.arrayBuffer());
+  async function take(files) {
+    for (const f of files) {
+      const name = f.name.toLowerCase();
+      if (name === "sushi.ati") data.archive = await bytes(f);
+      else if (name === "sceneintro.mp3") data.loop = await bytes(f);
+      else if (name === "logo2.tga") data.logo = await bytes(f);
+    }
+    if (!data.archive) return status("Sushi.ati was not among those files.", true);
+    offer();
+  }
+
+  async function dropped(e) {
+    e.preventDefault();
+    const files = [];
+    const walk = async (entry) => {
+      if (entry.isFile) files.push(await new Promise((r, x) => entry.file(r, x)));
+      else {
+        const reader = entry.createReader();
+        for (;;) {
+          const batch = await new Promise((r, x) => reader.readEntries(r, x));
+          if (!batch.length) break;
+          for (const b of batch) await walk(b);
+        }
+      }
+    };
+    const entries = [...e.dataTransfer.items].map((i) => i.webkitGetAsEntry()).filter(Boolean);
+    for (const entry of entries) await walk(entry);
+    take(files);
+  }
+
+  $("play").addEventListener("click", start);
+  for (const id of ["folder", "files"]) $(id).addEventListener("change", (e) => take(e.target.files));
+  addEventListener("dragover", (e) => e.preventDefault());
+  addEventListener("drop", dropped);
+  wasmReady.catch((e) => {
+    console.error(e);
+    status(`Could not load the player: ${e.message ?? e}`, true);
+  });
+  // Content served with the page: scripts/serve.py locally, or a bundled deployment.
+  async function get(url, onBytes, signal) {
+    const r = await fetch(url, { signal });
+    if (!r.ok || !r.body) throw new Error(`${url}: ${r.status}`);
+    const chunks = [];
+    for (const reader = r.body.getReader(); ; ) {
+      const { done, value } = await reader.read();
+      if (done) return new Blob(chunks);
+      chunks.push(value);
+      onBytes?.(value.length);
+    }
+  }
+  // The demo goes on without its sound or logo.
+  const extra = (url) => get(url).then(bytes).catch((e) => (console.error(e), null));
+  const mb = (n) => (n / 1e6).toFixed(0);
+  try {
+    const manifest = await fetch("./local/assets.json").catch(() => null);
+    // Some hosts answer unknown paths with a page.
+    if (manifest?.ok && manifest.headers.get("content-type")?.includes("json")) {
+      const { files: names, size: total } = await manifest.json();
+      for (const id of ["choose", "need"]) $(id).hidden = true;
+      $("progress").hidden = false;
+      $("play").hidden = false;
+      $("play").focus();
+      const stop = new AbortController();
+      loading = (async () => {
+        const extras = [extra("./local/Audio/SceneIntro.mp3"), extra("./local/Logo2.tga")];
+        let done = 0;
+        const parts = await Promise.all(names.map((name) => get(`./local/${encodeURIComponent(name)}`, (n) => {
+          if (stop.signal.aborted) return;
+          done += n;
+          [$("progress").max, $("progress").value] = [total, Math.min(done, total)];
+          status(`Downloading ${mb(done)} of ${mb(total)} MB…`);
+        }, stop.signal)));
+        if (done !== total) throw new Error("incomplete download");
+        const archive = await bytes(new Blob(parts));
+        [data.loop, data.logo] = await Promise.all(extras);
+        data.archive = archive;
+      })();
+      loading.catch(() => stop.abort());
+      await loading;
+      offer();
+    }
+  } catch (e) {
+    console.error(e);
+    for (const id of ["choose", "need"]) $(id).hidden = false;
+    $("play").hidden = true;
+    $("play").disabled = false;
+    loading = null;
+    status(`Download failed: ${e.message ?? e}`, true);
+  }
+  $("progress").hidden = true;
+</script>
+</body>
+</html>
