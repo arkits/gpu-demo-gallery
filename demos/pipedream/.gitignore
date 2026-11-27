@@ -1,0 +1,10 @@
+/target
+/dist
+.DS_Store
+# Original demo: third-party copyrighted content, never commit.
+/ATI_Radeon-9700_PipeDream-Demo_v1.1
+/assets
+*.ati
+*.mp3
+/.wrangler
+/.vercel
