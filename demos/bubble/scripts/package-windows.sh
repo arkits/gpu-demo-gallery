@@ -1,0 +1,9 @@
+#!/bin/sh
+# Cross-builds dist/windows/Bubble.exe. Needs mingw-w64 and the Rust target
+# x86_64-pc-windows-gnu.
+set -eu
+cd "$(dirname "$0")/.."
+cargo build --release --bin bubble --target x86_64-pc-windows-gnu
+mkdir -p dist/windows
+cp target/x86_64-pc-windows-gnu/release/bubble.exe "dist/windows/Bubble.exe"
+ls -l dist/windows
