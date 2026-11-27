@@ -1,0 +1,26 @@
+[package]
+name = "subsurface-scattering"
+description = "Port of ATI's Subsurface Scattering demo: native window and browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sushi-engine = { path = "../sushi-engine" }
+wgpu = "30.0.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "1.0.3"
+rfd = "0.18.0"
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "mp3", "wav"] }
+winit = "0.30"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
+wasm-bindgen = "0.2.130"
+wasm-bindgen-futures = "0.4.80"
+web-sys = { version = "0.3.107", features = ["HtmlCanvasElement"] }

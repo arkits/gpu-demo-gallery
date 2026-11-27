@@ -1,0 +1,13 @@
+[package]
+name = "sushi-shader"
+description = "Parses Sushi surface shaders and translates D3D9 assembly to WGSL"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+naga = { version = "30.0.2", features = ["wgsl-in"] }
+sushi-formats = { path = "../sushi-formats" }
