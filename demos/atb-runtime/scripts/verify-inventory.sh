@@ -1,0 +1,28 @@
+#!/bin/sh
+# Verifies a local ATBRT original stash against the checksums recorded from the
+# staged package used for this research.
+set -eu
+
+root=${1:-original}
+cat <<'SUMS' | (cd "$root" && shasum -a 256 -c -)
+ab55a2de2b6faf3daacd3e69473d385ceaead8033f7c79beb6bbf802f230f030  ATB_Demos/Drivers/MSVCRT40.DLL
+d6cbc26ebb8543d1e38936b1508e3c0224ba8642d0fc74dff41f1890d0605615  ATB_Demos/Drivers/apilib.dll
+ee7f5087b6ca25d8ab1ca806bee78b90bdf1bc83a1b03232e99645ada79fac77  ATB_Demos/Drivers/atcmg.lib
+2a5265f97c468ee0c4a5185c64d3e94d7631ff5604e331b063ba9a452f42a0fb  ATB_Demos/Drivers/fltdata.dll
+00e4d37e35e748aadb654fbbe403b5bf5f3d1602da7c9090c8b8cdbc6cf8c205  ATB_Demos/Drivers/lm.dll
+2713d9ed772bf9765f2dc1e0b29d2dec6666fb5d0c3cabc3a84cad373dce8ff4  ATB_Demos/Drivers/mgdd.dll
+23919d4f2eea041af2dd74305f8a652a78a1621e1267aaf522816ed0ee9b84d5  ATB_Demos/Drivers/runtime.dll
+d96fc6bf50476709816031bca0fa940ea3a91a1c8df0ba5083d7adbe1326703a  ATB_Demos/Drivers/textureeditor.dll
+0479e4a250c5f1c507ff255bf9932f56a51e0acf0e338ed134adabaa85c1fec6  LOGO.BMP
+02c1ba969d6abc4e5c4237fdba4f9762def1f95e2618d359cd8cc243be33c31e  SETUP.INS
+123e192f9ab63711eabc0f7fbac7dbe88e250ddd44beef11b72ccc77c0a90097  _INST32I.EX_
+b526045cdf964674851fe70b54c1b486a78647be1aecb66bccc61d0a56eba183  _ISDEL.EXE
+5db08c1d790fbb73331c76d13d83d42fcb8e9c343f2f1c9139704555e31ebc9c  _SETUP.DLL
+4870ed3051d15866a303138b6a105d41971f4a1b21095eb94b915eadb14b75c9  _setup.lib
+eda9d2918d1915aa7ad76010f74b3d9b5c20de7417cc12e7f784d39dc95c0003  docs/atbrt.txt
+09a45869a3f65d417dd91a8e9fd255938686347192165727fc7d47953c38e912  is95/shell.dll
+2773ca644da5337bd184403315584a0da4089b66655a84d5ca5dee865a99343c  isnt/shell.dll
+cb08153b0822d32fe834ae8ef876f7979ade6140b3f9a6162266072fc1fdaa9d  license.txt
+31f32ee2a78aa13935e577fec5990377cb5525a9a7ca088e65b502cfede2c018  setup.exe
+82cce1c91d57422c42ca70661af3648a705e6094ecc33f34d7e8488eca23a1f7  uninst.exe
+SUMS
