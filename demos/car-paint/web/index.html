@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Car Paint</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0c0909; color: #e6dcda; font: 15px/1.5 system-ui, sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+  #start { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; text-align: center; gap: 14px; padding: 16px; }
+  [hidden] { display: none !important; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  label, button { font: inherit; color: inherit; background: none; border: 1px solid #7a5450; border-radius: 6px; padding: 10px 18px; cursor: pointer; }
+  button.primary { background: #e0562f; border-color: #e0562f; color: #1a0703; font-weight: 600; }
+  label:hover, button:hover, label:focus-within { filter: brightness(1.2); }
+  :focus-visible, label:focus-within { outline: 2px solid #ffb08f; outline-offset: 2px; }
+  label input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  p { margin: 0; max-width: 52ch; color: #ae9b97; }
+  kbd { font: 12px ui-monospace, monospace; border: 1px solid #5f4643; border-radius: 4px; padding: 1px 5px; }
+  progress { width: min(320px, 80vw); accent-color: #e0562f; }
+  #chapters { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(12px, env(safe-area-inset-bottom)); display: flex; gap: 6px; max-width: 96vw; overflow-x: auto; opacity: 0; transition: opacity .3s; }
+  #chapters[data-awake], #chapters:focus-within { opacity: 1; }
+  #chapters button { background: #150c0bc0; padding: 8px 14px; min-height: 44px; white-space: nowrap; font-size: 14px; }
+  #chapters [aria-current] { border-color: #e0562f; color: #ff9a78; }
+  #status[data-error] { color: #ff9d8a; }
+</style>
+<!-- Cloudflare Pages adds its analytics script to an explicit body. -->
+<body>
+<canvas id="view" tabindex="0" aria-label="Car in a showroom"></canvas>
+<nav id="chapters" aria-label="Chapters" hidden></nav>
+<main id="start">
+  <h1>Car Paint</h1>
+  <button id="play" class="primary" hidden>Start</button>
+  <div class="row" id="choose">
+    <label>Choose demo folder <input id="folder" type="file" webkitdirectory></label>
+    <label>Choose files <input id="files" type="file" multiple accept=".ati,.wav"></label>
+  </div>
+  <p id="need">Needs your copy of ATI's demo: <code>Sushi.ati</code>, plus the two <code>CarRoom</code> WAV files for the music. Files stay on this computer.</p>
+  <p><kbd>1</kbd>–<kbd>5</kbd> chapters &nbsp; <kbd>Space</kbd> pause &nbsp; <kbd>←</kbd> <kbd>→</kbd> skip &nbsp; drag or <kbd>F</kbd> free camera &nbsp; <kbd>L</kbd> logo &nbsp; <kbd>M</kbd> mute &nbsp; <kbd>Enter</kbd> full screen</p>
+  <p>ATI's “Radeon 9700 Car Paint” demo, 2002. Music by George Valavanis, Astrophel Sound Productions.</p>
+  <progress id="progress" hidden></progress>
+  <p id="status" role="status"></p>
+</main>
+<script type="module">
+  import init, { WebMusic, WebPlayer } from "./pkg/carpaint.js";
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("view");
+  const status = (text, error) => {
+    $("status").textContent = text;
+    $("status").toggleAttribute("data-error", !!error);
+  };
+  const size = () => {
+    const s = window.devicePixelRatio || 1;
+    return [Math.round(canvas.clientWidth * s), Math.round(canvas.clientHeight * s)];
+  };
+  // ?chapter=C&t=SECONDS shows one fixed moment, for checking frames.
+  const params = new URLSearchParams(location.search);
+  const frozen = params.has("t") ? Number(params.get("t")) : null;
+  const data = { archive: null, intro: null, loop: null };
+  let player = null;
+
+  function offer() {
+    if (!data.archive) return;
+    $("play").hidden = false;
+    $("play").focus();
+    status(data.intro && data.loop ? "" : "The CarRoom WAV files were not found: it will play silently.");
+    if (frozen !== null) start();
+  }
+
+  // The intro, then the loop from before the intro's end, both from the start.
+  function score() {
+    if (!data.intro || !data.loop || frozen !== null) return null;
+    const context = new AudioContext();
+    const gain = context.createGain();
+    gain.connect(context.destination);
+    const music = new WebMusic(data.intro, data.loop);
+    const buffer = (loop) => {
+      const all = [...Array(music.channels()).keys()].map((c) => music.channel(loop, c));
+      const b = context.createBuffer(all.length, all[0].length, music.rate());
+      all.forEach((d, c) => b.copyToChannel(d, c));
+      return b;
+    };
+    const buffers = [buffer(false), buffer(true)];
+    const start = music.repeat_start();
+    music.free();
+    let playing = [];
+    return {
+      context, gain,
+      restart() {
+        for (const p of playing) p.stop();
+        const now = context.currentTime + 0.02;
+        playing = buffers.map((b, i) => {
+          const p = new AudioBufferSourceNode(context, { buffer: b, loop: i === 1 });
+          p.connect(gain);
+          p.start(now + (i ? start : 0));
+          return p;
+        });
+      },
+    };
+  }
+
+  async function start() {
+    if (player) return;
+    $("play").disabled = true;
+    status("Loading…");
+    let audio = null;
+    // Made inside the click, which is what lets it play.
+    try { audio = score(); } catch (e) { console.warn("playing without music", e); }
+    try {
+      await new Promise((r) => setTimeout(r));
+      [canvas.width, canvas.height] = size();
+      player = await WebPlayer.create(canvas, data.archive);
+    } catch (e) {
+      console.error(e);
+      $("play").disabled = false;
+      return status(`Could not start: ${e.message ?? e}`, true);
+    }
+    status("Preparing graphics…");
+    while (!player.ready()) await new Promise((r) => setTimeout(r, 30));
+    data.archive = data.intro = data.loop = null;
+    $("start").hidden = true;
+    canvas.focus();
+    if (frozen !== null) player.freeze(Number(params.get("chapter") ?? 1) - 1, frozen);
+    run(audio);
+  }
+
+  function run(audio) {
+    let last = size().join();
+    let muted = false;
+    const nav = $("chapters");
+    player.titles().forEach((title, i) => {
+      const b = document.createElement("button");
+      b.textContent = title;
+      b.addEventListener("click", () => { player.go(i); canvas.focus(); });
+      nav.append(b);
+    });
+    nav.hidden = frozen !== null;
+    let sleep;
+    const wake = () => {
+      nav.toggleAttribute("data-awake", true);
+      clearTimeout(sleep);
+      sleep = setTimeout(() => nav.removeAttribute("data-awake"), 3000);
+    };
+    for (const e of ["pointermove", "pointerdown", "keydown"]) addEventListener(e, wake);
+    wake();
+    let shown = -1;
+    const tick = (now) => {
+      const [w, h] = size();
+      if (`${w},${h}` !== last) {
+        last = `${w},${h}`;
+        [canvas.width, canvas.height] = [w, h];
+        player.resize(w, h);
+      }
+      player.frame(now / 1000);
+      if (shown !== player.chapter()) {
+        shown = player.chapter();
+        [...nav.children].forEach((b, i) => i === shown ? b.setAttribute("aria-current", "true") : b.removeAttribute("aria-current"));
+      }
+      if (audio) {
+        if (player.take_restart()) audio.restart();
+        if (player.paused() && audio.context.state === "running") audio.context.suspend();
+        if (!player.paused() && audio.context.state === "suspended") audio.context.resume();
+        audio.gain.gain.value = muted ? 0 : player.brightness();
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+
+    addEventListener("keydown", (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "m" || e.key === "M") muted = !muted;
+      else if (e.key === "Enter" && e.target.tagName !== "BUTTON") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+      else if (e.target.tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
+      else if (!player.key(e.key)) return;
+      e.preventDefault();
+    });
+    let drag = null;
+    canvas.addEventListener("pointerdown", (e) => { drag = [e.clientX, e.clientY]; canvas.setPointerCapture(e.pointerId); });
+    canvas.addEventListener("pointerup", () => { drag = null; });
+    canvas.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      player.drag((e.clientX - drag[0]) * 0.3, (e.clientY - drag[1]) * 0.3);
+      drag = [e.clientX, e.clientY];
+    });
+    canvas.addEventListener("wheel", (e) => { e.preventDefault(); player.zoom(-e.deltaY * 0.001); }, { passive: false });
+    // For automated checks.
+    window.demo = { player, audio };
+  }
+
+  const bytes = async (f) => new Uint8Array(await f.arrayBuffer());
+  async function take(files) {
+    for (const f of files) {
+      const name = f.name.toLowerCase();
+      if (name === "sushi.ati") data.archive = await bytes(f);
+      else if (name === "carroomintro.wav") data.intro = await bytes(f);
+      else if (name === "carroomloop.wav") data.loop = await bytes(f);
+    }
+    if (!data.archive) return status("Sushi.ati was not among those files.", true);
+    offer();
+  }
+
+  async function dropped(e) {
+    e.preventDefault();
+    const files = [];
+    const walk = async (entry) => {
+      if (entry.isFile) files.push(await new Promise((r, x) => entry.file(r, x)));
+      else {
+        const reader = entry.createReader();
+        for (;;) {
+          const batch = await new Promise((r, x) => reader.readEntries(r, x));
+          if (!batch.length) break;
+          for (const b of batch) await walk(b);
+        }
+      }
+    };
+    const entries = [...e.dataTransfer.items].map((i) => i.webkitGetAsEntry()).filter(Boolean);
+    for (const entry of entries) await walk(entry);
+    take(files);
+  }
+
+  try {
+    await init();
+  } catch (e) {
+    console.error(e);
+    status(`Could not load the player: ${e.message ?? e}`, true);
+  }
+  $("play").addEventListener("click", start);
+  for (const id of ["folder", "files"]) $(id).addEventListener("change", (e) => take(e.target.files));
+  addEventListener("dragover", (e) => e.preventDefault());
+  addEventListener("drop", dropped);
+  // Content served with the page: scripts/serve.py locally, or a bundled deployment.
+  async function get(url, onProgress) {
+    const r = await fetch(url).catch(() => null);
+    if (!r?.ok) return null;
+    const total = Number(r.headers.get("content-length")) || 0;
+    const parts = [];
+    let done = 0;
+    for (const reader = r.body.getReader(); ; ) {
+      const { done: end, value } = await reader.read();
+      if (end) break;
+      parts.push(value);
+      onProgress?.((done += value.length), total);
+    }
+    return new Blob(parts);
+  }
+  const mb = (n) => (n / 1e6).toFixed(0);
+  try {
+    // Some hosts answer unknown paths with a page, so the type matters too.
+    const url = "./local/carpaint.xz";
+    const head = await fetch(url, { method: "HEAD" }).catch(() => null);
+    if (head?.ok && !head.headers.get("content-type")?.includes("text/html")) {
+      for (const id of ["choose", "need"]) $(id).hidden = true;
+      $("progress").hidden = false;
+      const [archive, intro, loop] = await Promise.all([
+        get(url, (n, total) => {
+          if (total) [$("progress").max, $("progress").value] = [total, Math.min(n, total)];
+          status(`Downloading ${mb(n)}${total ? ` of ${mb(total)}` : ""} MB…`);
+        }),
+        get("./local/Audio/CarRoomIntro.wav"),
+        get("./local/Audio/CarRoomLoop.wav"),
+      ]);
+      if (!archive) throw new Error("the demo data could not be downloaded");
+      data.archive = await bytes(archive);
+      if (intro && loop) [data.intro, data.loop] = [await bytes(intro), await bytes(loop)];
+      offer();
+    }
+  } catch (e) {
+    console.error(e);
+    for (const id of ["choose", "need"]) $(id).hidden = false;
+    status(`Download failed: ${e.message ?? e}`, true);
+  }
+  $("progress").hidden = true;
+</script>
+</body>
+</html>
