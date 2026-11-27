@@ -59,8 +59,11 @@ fn textures(scene: &mut Scene, r: &mut Reader<'_>, records: &[&[u8]]) -> ReadRes
             let bytes = r.bytes(count_at(record, 0x108))?;
             let faces = record[0x11a].max(1);
             let name = cstr(&record[..0x100]);
-            let ocean_cube = faces == 6 && name.to_ascii_lowercase().ends_with("oc00.bmp");
-            if bytes.is_empty() || (faces != 1 && !ocean_cube) {
+            let environment = faces == 6
+                && ["oc00.bmp", "bub00.bmp", "cry00.bmp"]
+                    .iter()
+                    .any(|suffix| name.to_ascii_lowercase().ends_with(suffix));
+            if bytes.is_empty() || (faces != 1 && !environment) {
                 return Ok(0);
             }
             // The DX9 format uses the same texel ordering but relocated the fields.
@@ -78,7 +81,7 @@ fn textures(scene: &mut Scene, r: &mut Reader<'_>, records: &[&[u8]]) -> ReadRes
             }
             let mut decoded = texture.decode()?;
             let index = scene.textures.len();
-            scene.textures.push(if ocean_cube {
+            scene.textures.push(if environment {
                 vec![cube_panorama(&decoded)]
             } else {
                 decoded.remove(0)
@@ -143,21 +146,20 @@ fn color(bytes: &[u8], offset: usize) -> [f32; 4] {
 }
 
 fn static_vertices(bytes: &[u8], stride: usize, layout: u8) -> Vec<Vertex> {
-    let (normal_at, color_at, uv_at) = match layout {
-        0x01 => (None, Some(12), None),
-        0x03 | 0x05 => (None, Some(12), Some(16)),
-        0x19 => (Some(stride.saturating_sub(12)), Some(12), Some(20)),
-        0x1d => (Some(12), Some(24), Some(28)),
-        0x34 => (Some(stride.saturating_sub(12)), Some(12), Some(20)),
-        0x3a | 0x41 => (Some(12), None, Some(24)),
-        0x3e => (Some(12), Some(24), Some(28)),
-        0x38 => (Some(12), Some(24), Some(32)),
-        0x40 => (Some(12), Some(24), Some(28)),
-        _ => (
-            None,
-            (stride >= 16).then_some(12),
-            (stride >= 24).then_some(16),
-        ),
+    // The declarations passed to FUN_00420b20 use geometry byte 2.
+    let (normal_at, color_at, uv_at, extra_at, bump_at) = match layout {
+        2 => (None, Some(12), None, None, None),
+        5..=8 | 45 => (Some(12), Some(24), Some(28), None, None),
+        12 => (None, Some(12), Some(16), None, None),
+        13 | 34 => (None, Some(12), Some(16), Some(24), None),
+        14 => (None, Some(12), Some(20), Some(28), Some(36)),
+        15 => (Some(12), Some(24), Some(28), Some(36), Some(44)),
+        16 => (None, Some(12), Some(20), Some(28), None),
+        18 | 19 | 41 | 46 | 50 => (Some(12), None, Some(24), None, None),
+        26 => (Some(12), Some(24), Some(28), None, None),
+        27 => (Some(12), None, Some(24), Some(32), None),
+        47 => (Some(12), Some(24), Some(32), Some(40), Some(48)),
+        _ => (None, None, None, None, None),
     };
     bytes
         .chunks_exact(stride.max(1))
@@ -167,27 +169,17 @@ fn static_vertices(bytes: &[u8], stride: usize, layout: u8) -> Vec<Vertex> {
             let normal = normal_at
                 .filter(|&o| o + 12 <= v.len())
                 .map_or(Vec3::Z, |o| vec3(v, o).normalize_or_zero());
-            let uv = uv_at
+            let coords = uv_at
                 .filter(|&o| o + 8 <= v.len())
                 .map_or([0.0; 2], |o| uv(v, o));
-            let mut vertex = Vertex::new(pos.to_array(), normal.to_array(), uv);
-            let extra = match layout {
-                0x05 => Some(24),
-                0x19 => Some(28),
-                0x34 => Some(28),
-                0x3e => Some(36),
-                0x38 => Some(40),
-                _ => None,
-            };
-            if let Some(offset) = extra.filter(|o| o + 8 <= v.len()) {
-                let [x, y] = [f32_at(v, offset), f32_at(v, offset + 4)];
-                let bump = if matches!(layout, 0x19 | 0x38 | 0x3e) && offset + 16 <= v.len() {
-                    [f32_at(v, offset + 8), f32_at(v, offset + 12)]
-                } else {
-                    [uv[0], uv[1]]
-                };
-                vertex.uv_extra = [x, y, bump[0], bump[1]];
-            }
+            let mut vertex = Vertex::new(pos.to_array(), normal.to_array(), coords);
+            let [u, w] = extra_at
+                .filter(|o| o + 8 <= v.len())
+                .map_or(coords, |o| uv(v, o));
+            let [b, c] = bump_at
+                .filter(|o| o + 8 <= v.len())
+                .map_or(coords, |o| uv(v, o));
+            vertex.uv_extra = [u, w, b, c];
             if let Some(o) = color_at.filter(|&o| o + 4 <= v.len()) {
                 vertex.color = color(v, o);
             }
@@ -206,6 +198,16 @@ fn material(shader: &str, base: usize, detail: usize, has_vertex_color: bool) ->
     let sky = name.contains("skys") || name.contains("cloudsky");
     let teleporter = name.starts_with("steleporter");
     let glass = name.contains("vlighttrans") || name.contains("glass") || name.contains("cornea");
+    let film = match name.as_str() {
+        "obubble.ssh" => Some(Effect::Bubble),
+        "scrystal.ssh" => Some(Effect::Crystal),
+        "senvcrystal.ssh" | "scrystaltree.ssh" => Some(Effect::ReflectiveCrystal),
+        "oiridescenttrans.ssh" => Some(Effect::IridescentWing),
+        "opsychedelic.ssh" | "opsychedelic_p.ssh" | "olightningglass.ssh" => {
+            Some(Effect::LightningGlass)
+        }
+        _ => None,
+    };
     let effect = if distorted_sprite {
         Effect::DistortedSprite
     } else if portal {
@@ -224,6 +226,10 @@ fn material(shader: &str, base: usize, detail: usize, has_vertex_color: bool) ->
         Effect::Caustics
     } else if name.contains("lfxface") {
         Effect::Skin
+    } else if name == "ogloss2lights_pm.ssh" {
+        Effect::Gloss
+    } else if let Some(effect) = film {
+        effect
     } else if has_vertex_color {
         Effect::Baked
     } else {
@@ -245,18 +251,26 @@ fn material(shader: &str, base: usize, detail: usize, has_vertex_color: bool) ->
         },
         strength: if foam {
             1.0
-        } else if name.contains("dot3") || name.contains("bumpy") || effect == Effect::Skin {
+        } else if effect == Effect::ReflectiveCrystal {
+            0.4
+        } else if name.contains("dot3")
+            || name.contains("bumpy")
+            || matches!(
+                effect,
+                Effect::Skin | Effect::IridescentWing | Effect::LightningGlass | Effect::Gloss
+            )
+        {
             0.65
         } else {
             0.0
         },
-        blend: glass || teleporter || distorted_sprite,
-        tint: if glass {
-            [1.0, 1.0, 1.0, 0.5]
-        } else if waterfall {
-            [0.55, 0.76, 0.82, 1.0]
-        } else {
-            [1.0; 4]
+        blend: glass || teleporter || distorted_sprite || film.is_some(),
+        tint: match name.as_str() {
+            "senvcrystal.ssh" => [0.5, 0.0, 0.5, 0.5],
+            "scrystaltree.ssh" => [0.2, 0.5, 1.0, 0.25],
+            _ if glass => [1.0, 1.0, 1.0, 0.5],
+            _ if waterfall => [0.55, 0.76, 0.82, 1.0],
+            _ => [1.0; 4],
         },
     }
 }
@@ -333,7 +347,8 @@ fn read_scene(scene: &mut Scene, data: &[u8]) -> Result<()> {
     for ((draw, buffer), mut ranges) in batches {
         let draw = draws.get(draw).ok_or("invalid scene draw")?;
         let geo = count_at(draw, 0);
-        let layout = geometry.get(geo).ok_or("invalid scene geometry")?[3];
+        let geometry_record = geometry.get(geo).ok_or("invalid scene geometry")?;
+        let layout = geometry_record[2];
         let (vertex_bytes, indices, stride) = streams
             .get(geo)
             .and_then(|s| s.get(buffer))
@@ -346,14 +361,11 @@ fn read_scene(scene: &mut Scene, data: &[u8]) -> Result<()> {
                 .copied()
                 .unwrap_or(0)
         };
-        let color = matches!(layout, 0x01 | 0x03 | 0x05 | 0x19 | 0x1d | 0x34 | 0x3e);
+        let color = !matches!(layout, 18 | 19 | 27 | 41 | 46 | 50);
         let mut mat = material(&shader, texture(0usize), texture(1usize), color);
         mat.third = texture(2usize);
         if shader.eq_ignore_ascii_case("rFallsLowerFoam.ssh") {
             mat.third = texture(3usize);
-        }
-        if mat.effect == Effect::Water {
-            mat.texture = texture(1usize);
         }
         let vertex_data = static_vertices(vertex_bytes, *stride, layout);
         ranges.sort_unstable();
@@ -549,7 +561,7 @@ fn packed(
                 uv,
             );
         }
-        return object_vertex(stream, i).0;
+        return object_vertex(stream, i);
     }
     let pos = Vec3::from_array([0, 2, 4].map(|o| unpack_short(b, o))) * scale + bias;
     let (n, tex) = if stream.stride == 24 {
@@ -569,53 +581,65 @@ fn packed(
     )
 }
 
-fn packed_weights(stream: &Stream<'_>, aux: Option<&Stream<'_>>, i: usize) -> [f32; 4] {
+fn object_skin(
+    stream: &Stream<'_>,
+    aux: Option<&Stream<'_>>,
+    i: usize,
+    palette: &[Option<usize>; 256],
+) -> Result<Skin> {
     let bytes = &stream.data[i * stream.stride..][..stream.stride];
     let aux_bytes = aux.and_then(|s| s.data.get(i * s.stride..(i + 1) * s.stride));
-    match stream.encoding {
-        86 => [8, 9, 10, 11].map(|o| f32::from(bytes[o]) / 255.0),
-        83 => aux_bytes.map_or([1.0, 0.0, 0.0, 0.0], |buf| {
-            [0, 1, 2, 3].map(|o| f32::from(buf[o]) / 255.0)
-        }),
-        37 => aux_bytes.map_or([1.0, 0.0, 0.0, 0.0], |buf| {
-            let weights = [0, 4, 8].map(|o| f32_at(buf, o).clamp(0.0, 1.0));
-            let rest = (1.0 - weights.iter().sum::<f32>()).max(0.0);
-            [weights[0], weights[1], weights[2], rest]
-        }),
-        _ => object_vertex(stream, i).1,
+    let mut slots = [0, 1, 2, 3];
+    let weights = match stream.encoding {
+        86 => bytes[8..12].try_into().map(byte_weights)?,
+        83 => {
+            let aux = aux_bytes.ok_or("missing packed skin attributes")?;
+            aux[..4].try_into().map(byte_weights)?
+        }
+        37 => {
+            let aux = aux_bytes.ok_or("missing float skin attributes")?;
+            if stream.layout == 43 {
+                slots = [12, 13, 14, 15].map(|o| usize::from(aux[o]));
+            }
+            float_weights(aux, 0)
+        }
+        88 => {
+            slots = [24, 25, 26, 27].map(|o| usize::from(bytes[o]));
+            float_weights(bytes, 12)
+        }
+        _ => float_weights(bytes, 12),
+    };
+    let mut joints = [0; 4];
+    for (i, (&slot, &weight)) in slots.iter().zip(&weights).enumerate() {
+        if weight > 0.00001 {
+            joints[i] = palette[slot].ok_or_else(|| format!("unbound skin palette slot {slot}"))?;
+        }
     }
+    Ok(Skin { weights, joints })
 }
 
-fn object_vertex(stream: &Stream<'_>, index: usize) -> (Vertex, [f32; 4]) {
-    let stride = stream.stride;
-    let v = &stream.data[index * stride..][..stride];
-    let (uv_offset, normal, weights) = match stream.layout {
-        3 => (24, Vec3::Z, 3),
-        9 => (36, vec3(v, 24), 3),
-        43 => (40, vec3(v, 28), 3),
-        _ if stride >= 56 => (40, vec3(v, 28), 3),
-        _ if stride >= 44 => (24, vec3(v, 32), 3),
-        _ => (stride.saturating_sub(8), Vec3::Z, 0),
+fn byte_weights(bytes: [u8; 4]) -> [f32; 4] {
+    bytes.map(|w| f32::from(w) / 255.0)
+}
+
+fn float_weights(bytes: &[u8], offset: usize) -> [f32; 4] {
+    let [x, y, z] = [0, 4, 8].map(|o| f32_at(bytes, offset + o).clamp(0.0, 1.0));
+    [x, y, z, (1.0 - x - y - z).max(0.0)]
+}
+
+fn object_vertex(stream: &Stream<'_>, index: usize) -> Vertex {
+    let v = &stream.data[index * stream.stride..][..stream.stride];
+    let (uv_offset, normal) = match stream.layout {
+        3 => (24, Vec3::Z),
+        9 | 19 | 37 | 48 => (36, vec3(v, 24)),
+        31 => (40, vec3(v, 24)),
+        43 => (40, vec3(v, 28)),
+        _ => (stream.stride.saturating_sub(8), Vec3::Z),
     };
-    let mut blend = [0.0; 4];
-    for (i, weight) in blend.iter_mut().enumerate().take(weights) {
-        *weight = f32_at(v, 12 + i * 4).clamp(0.0, 1.0);
-    }
-    let sum = blend.iter().sum::<f32>();
-    if weights < 4 {
-        blend[weights] = (1.0 - sum).max(0.0);
-    } else if sum > 0.0 {
-        blend = blend.map(|w| w / sum);
-    } else {
-        blend[0] = 1.0;
-    }
-    (
-        Vertex::new(
-            vec3(v, 0).to_array(),
-            normal.normalize_or_zero().to_array(),
-            uv(v, uv_offset),
-        ),
-        blend,
+    Vertex::new(
+        vec3(v, 0).to_array(),
+        normal.normalize_or_zero().to_array(),
+        uv(v, uv_offset),
     )
 }
 
@@ -658,24 +682,29 @@ fn object(
         let stream = streams.get(main).ok_or("invalid object stream")?;
         let mut shader = 0;
         let mut texture_slots = [0; 6];
-        let mut palette = [0; 4];
+        let mut palette = [None; 256];
         let mut meshes = BTreeMap::<(usize, [usize; 6]), (Vec<u32>, Vec<Skin>)>::new();
         for command in &draw.commands {
             let a = u32_at(command, 4) as usize;
             let b = u32_at(command, 8) as usize;
             match u32_at(command, 0) {
                 1 if a < materials.len() => shader = a,
-                2 if a < palette.len() => palette[a] = b,
+                2 if a < palette.len() => palette[a] = Some(b),
                 3 if a < texture_slots.len() => texture_slots[a] = tex.get(b).copied().unwrap_or(0),
                 0 => {
                     let indices = draw.indices.get(a..=b).ok_or("invalid object draw range")?;
                     let (out, skin) = meshes.entry((shader, texture_slots)).or_default();
                     for &index in indices {
+                        if usize::from(index) >= stream.data.len() / stream.stride.max(1) {
+                            return Err("object index outside vertex stream".into());
+                        }
                         out.push(u32::from(index));
-                        skin.push(Skin {
-                            joints: palette,
-                            weights: [0.0; 4],
-                        });
+                        skin.push(object_skin(
+                            stream,
+                            streams.get(aux),
+                            usize::from(index),
+                            &palette,
+                        )?);
                     }
                 }
                 _ => {}
@@ -687,6 +716,7 @@ fn object(
                 continue;
             }
             let mut mat = material(&label, slots[0], slots[1], false);
+            mat.third = slots[2];
             if scene.demo == Demo::Dolphin {
                 mat.effect = Effect::Caustics;
                 mat.detail = if scene.textures.len() > 2 { 2 } else { 0 };
@@ -698,14 +728,25 @@ fn object(
             if label.eq_ignore_ascii_case("oLFXHair.ssh") {
                 mat.alpha_cut = 0.06;
             }
-            let (vertices, indices, motion) = if animated {
-                if stream.stride == 12 && streams.get(aux).is_none() {
-                    return Err("split animation missing the attribute stream".into());
-                }
+            // A source vertex can appear in several draw commands whose
+            // palette slots point to different joints.
+            let mut sources = Vec::new();
+            let mut weights = Vec::new();
+            let mut remap = BTreeMap::new();
+            let indices = indices
+                .into_iter()
+                .zip(skin)
+                .map(|(index, skin)| {
+                    *remap.entry((index, skin.joints)).or_insert_with(|| {
+                        let dest = sources.len() as u32;
+                        sources.push(index as usize);
+                        weights.push(skin);
+                        dest
+                    })
+                })
+                .collect();
+            let (vertices, motion) = if animated {
                 let count = stream.data.len() / stream.stride.max(1);
-                if indices.iter().any(|&index| index as usize >= count) {
-                    return Err("animated index outside vertex stream".into());
-                }
                 let mut poses: Vec<Arc<[Vertex]>> = Vec::with_capacity(anim.frames.len());
                 for frame in &anim.frames {
                     let updates = frame.get(main).ok_or("missing animated stream")?;
@@ -719,65 +760,28 @@ fn object(
                     if previous.data.len() / previous.stride.max(1) != count {
                         return Err("animated vertex count changed".into());
                     }
-                    let vertices = (0..count)
-                        .map(|i| packed(previous, streams.get(aux), i, scale, bias))
+                    let vertices = sources
+                        .iter()
+                        .map(|&i| packed(previous, streams.get(aux), i, scale, bias))
                         .collect();
                     poses.push(vertices);
                 }
                 let vertices = poses[0].to_vec();
-                let mut vertex_skin = vec![
-                    Skin {
-                        weights: [1.0, 0.0, 0.0, 0.0],
-                        joints: [0; 4]
-                    };
-                    count
-                ];
-                for (&index, skin) in indices.iter().zip(skin) {
-                    let index = index as usize;
-                    vertex_skin[index] = Skin {
-                        weights: packed_weights(stream, streams.get(aux), index),
-                        joints: skin.joints,
-                    };
-                }
                 (
                     vertices,
-                    indices,
                     Motion::Morph {
                         origin,
                         start,
                         track: anim.track.clone(),
                         frames: poses,
-                        skin: vertex_skin,
+                        skin: weights,
                     },
                 )
             } else {
-                let mut vertices = Vec::new();
-                let mut out = Vec::new();
-                let mut weights = Vec::new();
-                let mut remap = BTreeMap::new();
-                for (index, skin) in indices.into_iter().zip(skin) {
-                    let dest = match remap.entry((index, skin.joints)) {
-                        std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            if index as usize >= stream.data.len() / stream.stride.max(1) {
-                                return Err("object index outside vertex stream".into());
-                            }
-                            let (v, blend) = object_vertex(stream, index as usize);
-                            let dest = vertices.len() as u32;
-                            vertices.push(v);
-                            weights.push(Skin {
-                                weights: blend,
-                                ..skin
-                            });
-                            *entry.insert(dest)
-                        }
-                    };
-                    out.push(dest);
-                }
+                let vertices = sources.iter().map(|&i| object_vertex(stream, i)).collect();
                 let pn_level = if scene.demo == Demo::Dolphin { 3 } else { 1 };
                 (
                     vertices,
-                    out,
                     Motion::Skeletal {
                         origin,
                         start,
@@ -880,8 +884,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn island_models_resolve_draw_palettes_for_indexed_and_morph_streams() {
+        let mut palette = [None; 256];
+        palette[5] = Some(14);
+        palette[19] = Some(23);
+
+        let mut rigid = [0; 80];
+        rigid[12..16].copy_from_slice(&0.75f32.to_le_bytes());
+        rigid[24..28].copy_from_slice(&[19, 0, 0, 5]);
+        let indexed = Stream {
+            encoding: 88,
+            layout: 43,
+            stride: 80,
+            data: &rigid,
+        };
+
+        let positions = [0; 24];
+        let mut attributes = [0; 56];
+        attributes[..12].copy_from_slice(&rigid[12..24]);
+        attributes[12..16].copy_from_slice(&rigid[24..28]);
+        let morph = Stream {
+            encoding: 37,
+            layout: 43,
+            stride: 24,
+            data: &positions,
+        };
+        let aux = Stream {
+            encoding: 89,
+            layout: 43,
+            stride: 56,
+            data: &attributes,
+        };
+
+        for (stream, aux) in [(&indexed, None), (&morph, Some(&aux))] {
+            let skin = object_skin(stream, aux, 0, &palette).unwrap();
+            assert_eq!(skin.weights, [0.75, 0.0, 0.0, 0.25]);
+            assert_eq!(skin.joints, [23, 0, 0, 14]);
+        }
+    }
+
+    #[test]
     fn wet_terrain_and_ocean_uvs_follow_the_original_vertex_declarations() {
-        for (layout, stride, uv_offset) in [(0x38, 92, 32), (0x40, 60, 28)] {
+        for (layout, stride, uv_offset) in [(47, 92, 32), (26, 60, 28)] {
             let mut bytes = vec![0; stride];
             bytes[uv_offset..uv_offset + 4].copy_from_slice(&0.25f32.to_le_bytes());
             bytes[uv_offset + 4..uv_offset + 8].copy_from_slice(&0.75f32.to_le_bytes());
@@ -908,8 +952,11 @@ mod tests {
         assert!(vertex.normal[2] > 0.99);
         assert!((vertex.uv[0] - 0.5).abs() < 0.001);
         assert_eq!(vertex.uv[1], 1.0);
+        let mut palette = [None; 256];
+        palette[0] = Some(3);
+        palette[1] = Some(4);
         assert_eq!(
-            packed_weights(&stream, None, 0),
+            object_skin(&stream, None, 0, &palette).unwrap().weights,
             [192.0 / 255.0, 63.0 / 255.0, 0.0, 0.0]
         );
     }

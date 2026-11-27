@@ -147,6 +147,48 @@ fn point_light(p: vec3f, n: vec3f, v: vec3f, light: vec3f, tint: vec3f) -> vec3f
     } else if effect == 11u {
         let glow = vec3f(0.82, 0.84, 1.0);
         color = base.rgb * (0.75 + 0.65 * bump_map.r) + glow * (0.12 * bump_map.r);
+    } else if effect == 14u || effect == 16u {
+        let ray = reflect(-view, n);
+        let env_uv = vec2f(atan2(ray.y, ray.x) * 0.15915494 + 0.5,
+            clamp(acos(clamp(ray.z, -1.0, 1.0)) * 0.31830989, 0.002, 0.998));
+        let rim = 1.0 - abs(dot(n, view));
+        if effect == 14u {
+            let film = textureSample(base_tex, repeat_sampler, vec2f(0.02 + 0.96 * rim, 0.5)).rgb;
+            let env = textureSampleLevel(detail_tex, repeat_sampler, env_uv, 0.0);
+            color = clamp(4.0 * film * env.rgb, vec3f(0.0), vec3f(1.0)) + 0.5 * env.a * (1.0 + film);
+            opacity = 0.01 + 0.50 * pow(rim, 4.0);
+        } else {
+            let env = textureSampleLevel(third_tex, repeat_sampler, env_uv, 0.0);
+            color = base.rgb + env.rgb * rim;
+            opacity = clamp(material.tint.a + rim, 0.0, 0.94);
+        }
+    } else if effect == 15u || effect == 17u {
+        let rim = 1.0 - abs(dot(n, view));
+        let lookup = vec2f(0.02 + rim * 0.96, 0.5);
+        if effect == 15u {
+            let fresnel = textureSample(detail_tex, repeat_sampler, lookup);
+            color = base.rgb * (0.71 + rim * 0.29);
+            opacity = clamp(0.15 + fresnel.a * 0.62 + 0.18 * rim, 0.0, 0.91);
+        } else {
+            let rainbow = textureSample(third_tex, repeat_sampler, lookup).rgb;
+            color = mix(base.rgb * (0.68 + 0.40 * key), rainbow, 0.65 * rim);
+            opacity = base.a * (0.24 + rim * 0.58);
+        }
+    } else if effect == 18u {
+        let a = textureSample(base_tex, repeat_sampler, uv * vec2f(1.0, 1.46) + vec2f(0.05, -0.43) * time);
+        let b = textureSample(base_tex, repeat_sampler, uv.yx * vec2f(1.8, 0.9) + vec2f(-0.09, 0.23) * time);
+        let glow = max(a.a * a.r, b.a * b.b);
+        let rim = 1.0 - abs(dot(n, view));
+        color = mix(a.rgb, b.rgb, 0.5) * (0.52 + glow);
+        opacity = clamp(glow * (0.62 + 0.36 * rim), 0.0, 0.78);
+    } else if effect == 19u {
+        let light_a = normalize(vec3f(-0.28, -0.62, 0.74));
+        let light_b = normalize(vec3f(0.46, 0.58, 0.67));
+        let diffuse = 0.40 + 0.46 * max(dot(n, light_a), 0.0) + 0.23 * max(dot(n, light_b), 0.0);
+        let glint_a = pow(max(dot(n, normalize(view + light_a)), 0.0), 24.0);
+        let glint_b = pow(max(dot(n, normalize(view + light_b)), 0.0), 24.0);
+        color = base.rgb * diffuse + detail.a * (glint_a * vec3f(0.76, 0.84, 0.85)
+            + glint_b * vec3f(0.38, 0.51, 0.41));
     } else if effect == 4u {
         let clouds = textureSample(detail_tex, repeat_sampler, uv * 0.8 - vec2f(0.006, 0.002) * time);
         color = clamp(base.rgb * 0.83 + clouds.rgb * 0.17, vec3f(0.0), vec3f(1.0));

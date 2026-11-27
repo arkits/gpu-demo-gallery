@@ -123,6 +123,12 @@ pub(crate) enum Effect {
     StainedGlass,
     Teleporter,
     DistortedSprite,
+    Bubble,
+    Crystal,
+    ReflectiveCrystal,
+    IridescentWing,
+    LightningGlass,
+    Gloss,
 }
 
 #[derive(Clone, Copy)]
