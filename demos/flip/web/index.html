@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flip</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; --ground: #08101a; --ink: #e6edf5; --dim: #9fb0c0; --line: #4a6379; --accent: #7fc4ff; --on: #04141f; --panel: #0f1a26c0; }
+  html, body { margin: 0; height: 100%; background: var(--ground); color: var(--ink); font: 15px/1.5 system-ui, sans-serif; overflow: hidden; }
+  canvas { background: #000; position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+  #start { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; text-align: center; gap: 14px; padding: 16px; overflow: auto; }
+  [hidden] { display: none !important; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; }
+  label, button { font: inherit; color: inherit; background: none; border: 1px solid var(--line); border-radius: 6px; padding: 10px 18px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on); font-weight: 600; }
+  label:hover, button:hover { filter: brightness(1.2); }
+  :focus-visible, label:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  label input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  p { margin: 0; max-width: 56ch; color: var(--dim); }
+  kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  progress { width: min(320px, 80vw); accent-color: var(--accent); }
+  #status[data-error] { color: #ff9d8a; }
+  #modes { position: fixed; left: 50%; transform: translateX(-50%); top: max(14px, env(safe-area-inset-top)); display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; width: min(860px, calc(100vw - 32px)); transition: opacity .4s; }
+  #modes.still { opacity: 0; }
+  #modes:hover, #modes:focus-within { opacity: 1; }
+  #modes button { background: var(--panel); padding: 6px 12px; min-height: 44px; }
+  #modes button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+</style>
+<!-- Cloudflare Pages adds its analytics script to an explicit body. -->
+<body>
+<canvas id="view" tabindex="0" aria-label="A textured 3D room"></canvas>
+<div id="modes" hidden><button id="mute" aria-pressed="false" hidden>Mute</button></div>
+<main id="start">
+  <h1>Flip</h1>
+  <button id="play" class="primary" hidden>Start</button>
+  <label id="choose">Choose the demo's folder <input id="folder" type="file" webkitdirectory></label>
+  <p id="need">Needs the unpacked files of the original. They stay on this computer.</p>
+  <p>A room built from the demo's own .3DS geometry and .3DF textures — the ATB pioneer.</p>
+  <p><kbd>w</kbd> wireframe &nbsp; <kbd>p</kbd> pause spin &nbsp; Drag to turn &nbsp; Scroll to zoom. &nbsp; <kbd>Enter</kbd> full screen</p>
+  <p>3dfx's "Flip" ATB demo, 1997.</p>
+  <progress id="progress" hidden></progress>
+  <p id="status" role="status"></p>
+</main>
+<script type="module">
+  import init, { WebFiles, WebPlayer, buttons } from "./pkg/flip.js";
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("view");
+  const status = (text, error) => {
+    $("status").textContent = text;
+    $("status").toggleAttribute("data-error", !!error);
+  };
+  const size = () => {
+    const s = window.devicePixelRatio || 1;
+    return [Math.round(canvas.clientWidth * s), Math.round(canvas.clientHeight * s)];
+  };
+  // ?time=&keys= shows one still, for checking frames.
+  const params = new URLSearchParams(location.search);
+  const still = params.has("time");
+  let files = null, player = null;
+
+  // No sound in this demo, but keep the small harness so cues() is harmless.
+  const sound = {
+    open() {},
+    cue() {},
+    mute() {},
+  };
+
+  function offer() {
+    $("play").hidden = false;
+    $("play").focus();
+    status("");
+    if (still) start();
+  }
+
+  async function start() {
+    if (player) return;
+    $("play").disabled = true;
+    status("Loading…");
+    await new Promise((r) => setTimeout(r));
+    try {
+      [canvas.width, canvas.height] = size();
+      player = await WebPlayer.create(canvas, files);
+    } catch (e) {
+      console.error(e);
+      $("play").disabled = false;
+      return status(`Could not start: ${e.message ?? e}`, true);
+    }
+    status("Preparing graphics…");
+    while (!player.ready()) await new Promise((r) => setTimeout(r, 30));
+    $("start").hidden = true;
+    $("modes").hidden = still;
+    canvas.focus();
+    run();
+  }
+
+  function run() {
+    let last = size().join(), n = 0;
+    if (still) player.freeze(Number(params.get("time")), params.get("keys") ?? "");
+    const tick = (now) => {
+      const [w, h] = size();
+      if (`${w},${h}` !== last) {
+        last = `${w},${h}`;
+        [canvas.width, canvas.height] = [w, h];
+        player.resize(w, h);
+      }
+      player.frame(now / 1000);
+      if (still) {
+        if (++n < 3) requestAnimationFrame(tick);
+        else document.documentElement.dataset.done = n;
+        return;
+      }
+      for (const c of player.cues()) sound.cue(c);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    if (still) return;
+    const list = buttons();
+    for (let i = 0; i < list.length; i += 2) {
+      const b = document.createElement("button");
+      b.dataset.key = list[i];
+      b.textContent = list[i + 1];
+      b.addEventListener("click", () => { player.key(b.dataset.key, true); player.key(b.dataset.key, false); canvas.focus(); });
+      $("mute").before(b);
+    }
+    let hide;
+    const wake = () => {
+      $("modes").classList.remove("still");
+      clearTimeout(hide);
+      hide = setTimeout(() => $("modes").classList.add("still"), 4000);
+    };
+    for (const t of ["pointermove", "pointerdown", "keydown"]) addEventListener(t, wake);
+    wake();
+
+    addEventListener("keydown", (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+      if (e.key === "Enter" && e.target.tagName !== "BUTTON") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+      else if (e.key === " " && e.target.tagName === "BUTTON") return;
+      else if (player.key(e.key, true)) ;
+      else return;
+      e.preventDefault();
+    });
+    addEventListener("keyup", (e) => player.key(e.key, false));
+
+    const at = (e) => [e.clientX / canvas.clientWidth, e.clientY / canvas.clientHeight];
+    const touches = new Map();
+    const spread = () => {
+      const [a, b] = [...touches.values()];
+      return Math.hypot(a[0] - b[0], a[1] - b[1]);
+    };
+    const mask = (e) => e.pointerType === "touch" ? (touches.size ? 1 : 0) : e.buttons & 7;
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      if (e.pointerType === "touch") touches.set(e.pointerId, at(e));
+      player.pointer(...at(e), touches.size > 1 ? 0 : mask(e));
+    });
+    const up = (e) => {
+      touches.delete(e.pointerId);
+      player.pointer(...at(e), touches.size ? 0 : mask(e));
+    };
+    for (const t of ["pointerup", "pointercancel"]) canvas.addEventListener(t, up);
+    canvas.addEventListener("pointermove", (e) => {
+      if (touches.size === 2 && touches.has(e.pointerId)) {
+        const before = spread();
+        touches.set(e.pointerId, at(e));
+        return player.wheel((spread() - before) * 2);
+      }
+      if (touches.has(e.pointerId)) touches.set(e.pointerId, at(e));
+      player.pointer(...at(e), touches.size > 1 ? 0 : mask(e));
+    });
+    canvas.addEventListener("wheel", (e) => { e.preventDefault(); player.wheel(-e.deltaY * 0.002); }, { passive: false });
+    // For automated checks.
+    window.demo = { player };
+  }
+
+  async function take(list) {
+    const found = new WebFiles();
+    for (const f of list) {
+      if (f.size < 4e7) found.insert(f.name, new Uint8Array(await f.arrayBuffer()));
+    }
+    try {
+      found.check();
+    } catch (e) {
+      return status(`That folder will not do: ${e.message ?? e}`, true);
+    }
+    files = found;
+    offer();
+  }
+
+  try {
+    await init();
+  } catch (e) {
+    console.error(e);
+    status(`Could not load the player: ${e.message ?? e}`, true);
+  }
+  $("play").addEventListener("click", start);
+  $("folder").addEventListener("change", (e) => take([...e.target.files]));
+  // Content served with the page: scripts/serve.py locally, or a bundled deployment.
+  const mb = (n) => (n / 1e6).toFixed(1);
+  try {
+    const r = await fetch("./local/flip.xz?v=2").catch(() => null);
+    // Some hosts answer unknown paths with a page.
+    if (r?.ok && !r.headers.get("content-type")?.includes("text/html")) {
+      for (const id of ["choose", "need"]) $(id).hidden = true;
+      $("progress").hidden = false;
+      const total = Number(r.headers.get("content-length")) || 0;
+      const parts = [];
+      let done = 0;
+      for (const reader = r.body.getReader(); ; ) {
+        const { done: end, value } = await reader.read();
+        if (end) break;
+        parts.push(value);
+        done += value.length;
+        if (total) [$("progress").max, $("progress").value] = [total, Math.min(done, total)];
+        status(`Downloading ${mb(done)}${total ? ` of ${mb(total)}` : ""} MB…`);
+      }
+      files = WebFiles.open(new Uint8Array(await new Blob(parts).arrayBuffer()));
+      offer();
+    }
+  } catch (e) {
+    console.error(e);
+    for (const id of ["choose", "need"]) $(id).hidden = false;
+    status(`Download failed: ${e.message ?? e}`, true);
+  }
+  $("progress").hidden = true;
+</script>
+</body>
+</html>
