@@ -13,6 +13,11 @@ use crate::image::Image;
 pub const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 pub const SAMPLES: u32 = 4;
+/// The Voodoo's display gamma. Glide's `grSstOpen` fills the card's gamma
+/// table with 1.7 (`sst1InitGamma`, in the Glide that `_FLIP.exe` carries),
+/// and the 3dfx programs never change it, so everything they drew reached
+/// the screen raised to 1 / 1.7.
+pub const GLIDE_GAMMA: f32 = 1.7;
 /// Vectors the programs get with each draw.
 pub const PARAMS: usize = 32;
 const SLOT: u64 = 512;
@@ -338,6 +343,11 @@ pub struct Gl {
     uniform: Option<(wgpu::Buffer, wgpu::BindGroup)>,
     window: Option<((u32, u32), wgpu::TextureView, wgpu::TextureView)>,
     format: wgpu::TextureFormat,
+    /// Display gamma, applied as the frame goes to the window; 1 leaves it.
+    pub gamma: f32,
+    /// The frame before gamma, and what shows it.
+    screen: Option<((u32, u32), wgpu::TextureView, wgpu::BindGroup)>,
+    show: Option<(f32, wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
 }
 
 const PRELUDE: &str = include_str!("../shaders/prelude.wgsl");
@@ -416,6 +426,9 @@ impl Gl {
             uniform: None,
             window: None,
             format,
+            gamma: GLIDE_GAMMA,
+            screen: None,
+            show: None,
         };
         let white = Image::solid([255; 4]);
         gl.texture(gpu, &white, REPEAT);
@@ -719,6 +732,10 @@ impl Gl {
                 view(gpu.target(size, DEPTH, SAMPLES)),
             ));
         }
+        let gamma = self.gamma != 1.0;
+        if gamma {
+            self.screen(gpu, size);
+        }
         let passes = std::mem::take(&mut self.passes);
         for p in &passes {
             let format = p.target.map_or(self.format, |_| COLOR);
@@ -771,10 +788,14 @@ impl Gl {
         }
         let (buffer, uniforms) = self.uniform.as_ref().expect("made above");
         gpu.queue.write_buffer(buffer, 0, &self.params);
+        let window = match &self.screen {
+            Some((_, frame, _)) if gamma => frame,
+            _ => view,
+        };
         let (_, samples, depth) = self.window.as_ref().expect("made above");
         for p in &passes {
             let (samples, depth, resolved, format) = match p.target {
-                None => (samples, depth, view, self.format),
+                None => (samples, depth, window, self.format),
                 Some(t) => {
                     let t = &self.textures[t];
                     let (samples, depth) = t.target.as_ref().expect("made to be drawn to");
@@ -822,6 +843,115 @@ impl Gl {
                 }
                 pass.draw(c.vertices.clone(), instances);
             }
+        }
+        if gamma {
+            let (_, pipeline, _) = self.show.as_ref().expect("made by screen");
+            let (_, _, group) = self.screen.as_ref().expect("made by screen");
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gamma"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
+    /// The picture the window's passes resolve to when there is gamma, and the
+    /// pipeline that shows it through the gamma table.
+    fn screen(&mut self, gpu: &Gpu, size: (u32, u32)) {
+        let d = &gpu.device;
+        if self.show.as_ref().is_none_or(|s| s.0 != self.gamma) {
+            let source = format!(
+                "@group(0) @binding(0) var frame: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {{
+    let p = vec2(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
+    let c = textureLoad(frame, vec2<i32>(p.xy), 0);
+    return vec4(pow(max(c.rgb, vec3(0.0)), vec3({:?})), c.a);
+}}",
+                1.0 / self.gamma
+            );
+            let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("gamma"),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+            let layout = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+            let pipeline_layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+            let pipeline = d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("gamma"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(self.format.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            self.show = Some((self.gamma, pipeline, layout));
+            self.screen = None;
+        }
+        if self.screen.as_ref().is_none_or(|s| s.0 != size) {
+            let frame = d.create_texture(&wgpu::TextureDescriptor {
+                label: Some("frame"),
+                size: extent(size.0, size.1, 1),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let frame = frame.create_view(&Default::default());
+            let (_, _, layout) = self.show.as_ref().expect("made above");
+            let group = d.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&frame),
+                }],
+            });
+            self.screen = Some((size, frame, group));
         }
     }
 }

@@ -19,6 +19,12 @@ mouse turns it a tenth of a degree a pixel and the arrows move it a unit a
 frame along its right. The view is 60 degrees, near 1, far 1000; the screen
 is cleared to black. Environment map and fog start off.
 
+The screen goes through the Voodoo's gamma table, which Glide's `grSstOpen`
+fills with 1.7 and `surf_glide2x.exe` never changes; the port applies the
+same as the frame goes to the window (`gl.rs`, `GLIDE_GAMMA`). The 1.7 is
+read from the Glide built into the ATB demo `_FLIP.exe`; that Surf's Glide
+DLL does the same is inferred. [I]
+
 ### Differences from the original
 
 - The original subdivides each patch by its distance; the port uses one
