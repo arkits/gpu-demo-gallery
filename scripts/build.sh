@@ -3,14 +3,17 @@
 # `scripts/dev.sh compare` in each first). Images never enter Git.
 set -eu
 cd "$(dirname "$0")/.."
-D=${DEMOS:-$PWD/..}
+D=${DEMOS:-$PWD/demos}
+# A port not yet moved into demos/ is still beside this repository.
+at() { if [ -d "$D/$1" ]; then echo "$D/$1"; else echo "$PWD/../$1"; fi; }
 mkdir -p dist/img
 cp web/index.html dist/
 # make NAME SOURCE CROP. Some frames are pre-rendered by another session's
 # `dev.sh compare`; when that PNG is absent, keep the image already in dist/img.
 make() {
-  if [ -f "$D/$2" ]; then
-    ffmpeg -v error -y -i "$D/$2" -vf "crop=$3,scale=1600:-2:flags=lanczos" -frames:v 1 -q:v 4 "dist/img/$1.jpg"
+  src=$(at "${2%%/*}")/${2#*/}
+  if [ -f "$src" ]; then
+    ffmpeg -v error -y -i "$src" -vf "crop=$3,scale=1600:-2:flags=lanczos" -frames:v 1 -q:v 4 "dist/img/$1.jpg"
   elif [ -f "dist/img/$1.jpg" ]; then
     : # keep the previously rendered frame
   else
@@ -22,8 +25,9 @@ make() {
 # frame already in dist/img instead of aborting the whole gallery build.
 shot() {
   demo=$1; shift
-  out=$(cd "$D/$demo" && pwd)/target/devtest/gallery.png
-  if sh "$D/$demo/scripts/dev.sh" shot "$@" "$out" >/dev/null 2>&1 && [ -f "$out" ]; then
+  dir=$(at "$demo")
+  out=$dir/target/devtest/gallery.png
+  if sh "$dir/scripts/dev.sh" shot "$@" "$out" >/dev/null 2>&1 && [ -f "$out" ]; then
     ffmpeg -v error -y -i "$out" -vf "crop=$crop,scale=1600:-2:flags=lanczos" -frames:v 1 -q:v 4 "dist/img/$demo.jpg"
   elif [ -f "dist/img/$demo.jpg" ]; then
     echo "keep $demo: render failed, using existing image" >&2
