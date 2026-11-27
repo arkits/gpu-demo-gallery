@@ -94,6 +94,13 @@ lie on a car's body round to the same value and, drawn later, win. The port's
 shaders write that same value as the fragment's depth; a finer depth buffer
 made the decals flicker.
 
+The screen goes through the Voodoo's gamma table, which `grSstOpen` fills
+with 1.7 (`sst1InitGamma(1.7)` in the Glide built into `_FLIP.exe`; none of
+the programs change it), so every colour reaches the screen raised to 1 / 1.7.
+The port applies the same as the frame goes to the window (`gl.rs`,
+`GLIDE_GAMMA`). The other programs load the Glide DLL, which is not among
+their files; that it opens with the same 1.7 is inferred. [I]
+
 The camera (`rcamera.c`): horizontal field of view 60 degrees by default,
 near 1, far 65535, looking along its frame's z with y up; the view is the
 inverse of its frame (`0x41e480`).
