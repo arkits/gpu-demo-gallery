@@ -1,0 +1,17 @@
+/target
+/dist
+.DS_Store
+# Original demo: third-party copyrighted content, never commit.
+/assets
+*.ati
+*.mp3
+/.wrangler
+/.vercel
+*.wav
+*.xz
+*.pack
+*.so2
+*.sa2
+*.exe
+/data
+/original/
