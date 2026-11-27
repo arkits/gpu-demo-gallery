@@ -1,67 +1,114 @@
 # GPU demo gallery
 
-One page that links the ports of old graphics card demos:
+[Open the gallery](https://gpu-demo-gallery.pages.dev)
 
-| Demo | Code | Site |
-|---|---|---|
-| Borg (3dfx, 1998) | [demos/borg](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/borg) | https://borg-port.pages.dev |
-| Donut (3dfx, 1998) | [demos/donut](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/donut) | https://donut-port.pages.dev |
-| Bubble (NVIDIA, 1999) | [demos/bubble](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/bubble) | https://bubble-port.pages.dev |
-| Lightning (NVIDIA, 2000) | [demos/lightning](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/lightning) | https://lightning-port.pages.dev |
-| Grove (NVIDIA, 2000) | [demos/grove](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/grove) | https://grove-port.pages.dev |
-| Principles of Shading (NVIDIA, 2000) | [demos/principles-of-shading](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/principles-of-shading) | https://principles-of-shading-port.pages.dev |
-| Creature (NVIDIA, 2000) | [demos/creature](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/creature) | https://creature-port.pages.dev |
-| Grass (NVIDIA, 2000) | [demos/grass](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/grass) | https://grass-port.pages.dev |
-| Small Pond (NVIDIA, 2000) | [demos/pond](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/pond) | https://pond-port.pages.dev |
-| Toy Soldier (NVIDIA, 2000) | [demos/toy-soldier](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/toy-soldier) | https://toy-soldier-port.pages.dev |
-| Crystal Ball (NVIDIA, 2000) | [demos/crystal-ball](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/crystal-ball) | https://crystal-ball-port.pages.dev |
-| Chameleon (NVIDIA, 2001) | [demos/chameleon](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/chameleon) | https://chameleon-port.pages.dev |
-| Zoltar (NVIDIA, 2001) | [demos/zoltar](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/zoltar) | https://zoltar-port.pages.dev |
-| Wolfman (NVIDIA, 2002) | [demos/wolfman](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/wolfman) | https://wolfman-port.pages.dev |
-| Squid (NVIDIA, 2002) | [demos/squid](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/squid) | https://squid-port.pages.dev |
-| Bugs (NVIDIA, 2002) | [demos/bugs](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/bugs) | https://bugs-port.pages.dev |
-| Tidepool (NVIDIA, 2002) | [demos/tidepool](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/tidepool) | https://tidepool-port.pages.dev |
-| Car Paint (ATI, 2002) | [demos/car-paint](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/car-paint) | https://car-paint-port.pages.dev |
-| NPR Hatching (ATI, 2002) | [demos/npr-hatching](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/npr-hatching) | https://npr-hatching-port.pages.dev |
-| Natural Light (ATI, 2002) | [demos/natural-light](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/natural-light) | https://natural-light-port.pages.dev |
-| Bear (ATI, 2002) | [demos/bear](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/bear) | https://bear-port.pages.dev |
-| Dawn (NVIDIA, 2002) | [demos/dawn](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/dawn) | https://dawn-port.pages.dev |
-| Pipe Dream (ATI, 2003) | [demos/pipedream](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/pipedream) | https://pipedream-port.pages.dev |
-| Double Cross v1.4 (ATI, 2004) | [demos/double-cross](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/double-cross) | https://double-cross-port.pages.dev |
-| Dangerous Curves v1.3 (ATI, 2005) | [demos/dangerous-curves](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/dangerous-curves) | https://dangerous-curves-port.pages.dev |
-| The Assassin v1.0 (ATI, 2005) | [demos/the-assassin](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/the-assassin) | https://the-assassin-port.pages.dev |
-| Box of Smoke (NVIDIA, 2006) | [demos/box-of-smoke](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/box-of-smoke) | https://box-of-smoke-port.pages.dev |
-| Surf (3dfx, 1998) | [demos/surf](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/surf) | https://surf-port.pages.dev |
-| 60Hz / 30Hz / 15Hz (3dfx, 1998) | [demos/sixty-hertz](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/sixty-hertz) | https://sixty-hertz-port.pages.dev |
-| Demoroom (3dfx, 1997) | [demos/demoroom](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/demoroom) | https://demoroom-port.pages.dev |
-| ATB-TV (3dfx, 1997) | [demos/atb-tv](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/atb-tv) | https://atb-tv-port.pages.dev |
-| Flip (3dfx, 1997) | [demos/flip](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/flip) | https://flip-port.pages.dev |
-| Grand Bleu (3dfx, 1997) | [demos/grand-bleu](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/grand-bleu) | https://grand-bleu-port.pages.dev |
-| Racing (3dfx, 1997) | [demos/racing](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/racing) | https://racing-port.pages.dev |
-| Valley of Ra (3dfx, 1997) | [demos/valley-of-ra](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/valley-of-ra) | https://valley-of-ra-port.pages.dev |
-| Wizards Tower (3dfx, 1997) | [demos/wizards-tower](https://github.com/arkits/gpu-demo-gallery/tree/main/demos/wizards-tower) | https://wizards-tower-port.pages.dev |
+Playable ports of 36 graphics card demos from 3dfx, NVIDIA and ATI, originally released between 1997 and 2006. The old Glide, OpenGL and Direct3D programs now run in the browser with WebGPU or WebGL2. Each demo also has a native player.
 
-## Layout
+These are ports, not recordings or emulators. They read the original models, textures, shaders and audio, then reproduce the rendering, animation and controls in Rust with [wgpu](https://wgpu.rs/). The individual demo folders document the reverse engineering and any remaining differences from the originals.
 
-This repository holds the gallery page and, under `demos/`, every port. Each
-port is a self-contained project with its own `Cargo.toml`, `scripts/dev.sh`
-and `scripts/deploy-cloudflare.sh`, published at `https://<name>-port.pages.dev`.
-The ports used to be separate repositories (`arkits/<name>`); on 2026-11-27 they
-were merged in with their history. The older commits keep their original
-paths, so `git log -- demos/<name>` stops at the import; see them with
-`git log 'HEAD^{/^Import <name> }^2'`. A new port is a
-new folder in `demos/`, not a new repository.
+## Run a demo
 
-The original demos' files never enter Git: each port reads them from its own
-git-ignored `data/`, and the deploy scripts bundle them into the Pages upload.
+The links below open the hosted browser versions. For a local build, pick a demo and follow its README to supply the original assets. Most demos expect them in a git-ignored `data/` directory.
 
-A port that still sits beside this repository with its own `.git` (hidden here
-by sparse checkout until then) is moved in with `scripts/absorb.sh NAME`, which
-first merges the commits it gained since the import.
+```sh
+cd demos/dawn
+scripts/dev.sh run   # native player
+scripts/dev.sh web   # browser build at a local address
+scripts/dev.sh all   # native, WebGPU and WebGL2 checks
+```
 
-## Gallery
+Each port has its own `Cargo.toml`, development scripts and deployment script. There is no root Rust workspace to build.
 
-`scripts/build.sh` assembles `dist/`, taking pictures from the ports in
-`demos/`: rendered, or left by their tests. `scripts/deploy-cloudflare.sh` publishes it. To add
-a demo, add a link to `web/index.html` and a picture to `scripts/build.sh`. Pictures show
-the demos' content, so they stay out of Git. Fonts come from Google Fonts.
+## Demos
+
+| Demo | Year | Original GPU | Play | Source |
+|---|---:|---|---|---|
+| Demoroom | 1997 | 3dfx Voodoo / ATB | [Play](https://demoroom-port.pages.dev) | [Code](demos/demoroom) |
+| ATB-TV | 1997 | 3dfx Voodoo / ATB | [Play](https://atb-tv-port.pages.dev) | [Code](demos/atb-tv) |
+| Flip | 1997 | 3dfx Voodoo / ATB | [Play](https://flip-port.pages.dev) | [Code](demos/flip) |
+| Grand Bleu | 1997 | 3dfx Voodoo / ATB | [Play](https://grand-bleu-port.pages.dev) | [Code](demos/grand-bleu) |
+| Racing | 1997 | 3dfx Voodoo / ATB | [Play](https://racing-port.pages.dev) | [Code](demos/racing) |
+| Valley of Ra | 1997 | 3dfx Voodoo / ATB | [Play](https://valley-of-ra-port.pages.dev) | [Code](demos/valley-of-ra) |
+| Wizards Tower | 1997 | 3dfx Voodoo / ATB | [Play](https://wizards-tower-port.pages.dev) | [Code](demos/wizards-tower) |
+| Borg | 1998 | 3dfx Voodoo2 | [Play](https://borg-port.pages.dev) | [Code](demos/borg) |
+| Donut | 1998 | 3dfx Voodoo2 | [Play](https://donut-port.pages.dev) | [Code](demos/donut) |
+| Surf | 1998 | 3dfx Voodoo / ATB | [Play](https://surf-port.pages.dev) | [Code](demos/surf) |
+| 60Hz / 30Hz / 15Hz | 1998 | 3dfx Voodoo / ATB | [Play](https://sixty-hertz-port.pages.dev) | [Code](demos/sixty-hertz) |
+| Bubble | 1999 | NVIDIA GeForce 256 | [Play](https://bubble-port.pages.dev) | [Code](demos/bubble) |
+| Lightning | 2000 | NVIDIA GeForce 256 | [Play](https://lightning-port.pages.dev) | [Code](demos/lightning) |
+| Grove | 2000 | NVIDIA GeForce 256 | [Play](https://grove-port.pages.dev) | [Code](demos/grove) |
+| Principles of Shading | 2000 | NVIDIA GeForce2 | [Play](https://principles-of-shading-port.pages.dev) | [Code](demos/principles-of-shading) |
+| Creature | 2000 | NVIDIA GeForce2 | [Play](https://creature-port.pages.dev) | [Code](demos/creature) |
+| Grass | 2000 | NVIDIA GeForce 256 | [Play](https://grass-port.pages.dev) | [Code](demos/grass) |
+| Small Pond | 2000 | NVIDIA GeForce2 | [Play](https://pond-port.pages.dev) | [Code](demos/pond) |
+| Toy Soldier | 2000 | NVIDIA GeForce2 | [Play](https://toy-soldier-port.pages.dev) | [Code](demos/toy-soldier) |
+| Crystal Ball | 2000 | NVIDIA GeForce 256 | [Play](https://crystal-ball-port.pages.dev) | [Code](demos/crystal-ball) |
+| Chameleon | 2001 | NVIDIA GeForce3 | [Play](https://chameleon-port.pages.dev) | [Code](demos/chameleon) |
+| Zoltar | 2001 | NVIDIA GeForce3 | [Play](https://zoltar-port.pages.dev) | [Code](demos/zoltar) |
+| Bugs | 2002 | NVIDIA GeForce4 Ti | [Play](https://bugs-port.pages.dev) | [Code](demos/bugs) |
+| Wolfman | 2002 | NVIDIA GeForce4 Ti | [Play](https://wolfman-port.pages.dev) | [Code](demos/wolfman) |
+| Squid | 2002 | NVIDIA GeForce4 Ti | [Play](https://squid-port.pages.dev) | [Code](demos/squid) |
+| Tidepool | 2002 | NVIDIA GeForce4 Ti | [Play](https://tidepool-port.pages.dev) | [Code](demos/tidepool) |
+| Car Paint | 2002 | ATI Radeon 9700 | [Play](https://car-paint-port.pages.dev) | [Code](demos/car-paint) |
+| NPR Hatching | 2002 | ATI Radeon 9700 | [Play](https://npr-hatching-port.pages.dev) | [Code](demos/npr-hatching) |
+| Natural Light | 2002 | ATI Radeon 9700 | [Play](https://natural-light-port.pages.dev) | [Code](demos/natural-light) |
+| Bear | 2002 | ATI Radeon 9700 | [Play](https://bear-port.pages.dev) | [Code](demos/bear) |
+| Dawn | 2002 | NVIDIA GeForce FX | [Play](https://dawn-port.pages.dev) | [Code](demos/dawn) |
+| Pipe Dream | 2003 | ATI Radeon 9700 | [Play](https://pipedream-port.pages.dev) | [Code](demos/pipedream) |
+| Double Cross v1.4 | 2004 | ATI Radeon X800 | [Play](https://double-cross-port.pages.dev) | [Code](demos/double-cross) |
+| Dangerous Curves v1.3 | 2005 | ATI Radeon X850 | [Play](https://dangerous-curves-port.pages.dev) | [Code](demos/dangerous-curves) |
+| The Assassin v1.0 | 2005 | ATI Radeon X1800 | [Play](https://the-assassin-port.pages.dev) | [Code](demos/the-assassin) |
+| Box of Smoke | 2006 | NVIDIA GeForce 8 | [Play](https://box-of-smoke-port.pages.dev) | [Code](demos/box-of-smoke) |
+
+## Repository layout
+
+- `web/index.html` contains the gallery's HTML, CSS and JavaScript. It has no frontend framework or package build.
+- `demos/<name>/` contains one self-contained port, including its engine notes, tests, original-asset instructions and Cloudflare Pages deployment script.
+- `demos/atb-runtime/` contains research and format readers for the 3dfx Arcade Tool Box runtime. It is not a separate gallery demo.
+- `scripts/build.sh` assembles `dist/` and renders or crops the gallery screenshots.
+- `scripts/deploy-cloudflare.sh` builds and deploys the gallery with Wrangler.
+- `docs/PORT_PLAN.md` records the format research and porting plan for the later demos.
+
+## Build the gallery
+
+Install `ffmpeg` for image processing. Rendering missing screenshots also requires the dependencies of the individual ports. Existing screenshots in `dist/img/` are reused when a new render is unavailable.
+
+```sh
+scripts/build.sh
+```
+
+The generated site is written to `dist/`. Both `dist/` and the screenshot sources are ignored by Git.
+
+To deploy to Cloudflare Pages:
+
+```sh
+scripts/deploy-cloudflare.sh              # gpu-demo-gallery
+scripts/deploy-cloudflare.sh PROJECT_NAME # another Pages project
+```
+
+Wrangler handles the Cloudflare project and deployment. You need to authenticate it with your Cloudflare account first.
+
+## Add a demo
+
+1. Add the port under `demos/<name>/`. New ports belong here rather than in separate repositories.
+2. Add a card to `web/index.html` with the demo's name, year, vendor, hardware, description and links.
+3. Add a screenshot rule to `scripts/build.sh`.
+4. Run `scripts/build.sh` and check the generated gallery in `dist/`.
+
+Keep original demo content and gallery images out of Git.
+
+## Standalone repository history
+
+The ports originally lived in separate `arkits/<name>` repositories. They were merged into this repository on 2026-11-27 with their Git history. Their older commits still use the original repository-root paths, so `git log -- demos/<name>` begins at the import.
+
+For a port imported with a merge commit, inspect its earlier history with:
+
+```sh
+git log 'HEAD^{/^Import <name> }^2'
+```
+
+A standalone port that still sits beside this repository can be moved in with `scripts/absorb.sh NAME`. The script merges any newer standalone commits, moves the folder into `demos/` and updates the sparse-checkout rules. Commit changes in the standalone repository before running it.
+
+## Original content
+
+The original demos and their art and audio belong to 3dfx, NVIDIA, ATI and Animusic. These ports are unofficial. Original assets are not tracked in this repository; the deployment scripts package them locally for the hosted demos.
