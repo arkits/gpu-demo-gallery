@@ -77,5 +77,8 @@ shot grand-bleu 1 ''
 shot racing 5 ''
 shot valley-of-ra 0.3 o
 shot wizards-tower 1 2
+for demo in dolphin nature rachel island1 island2 island3 treasure-chest geoforms; do
+  make "$demo" "radeon-8500/target/shots/$demo.png" in_w:in_h
+done
 echo '<!doctype html><title>Not found</title><p>Not found.' > dist/404.html
 ls -l dist/img

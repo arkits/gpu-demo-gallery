@@ -1,0 +1,34 @@
+[package]
+name = "radeon-8500"
+description = "Native and browser players for ATI Radeon 8500 and NVIDIA GeoForms demos"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = "0.34.3"
+image = { version = "0.25", default-features = false, features = ["bmp", "tga"] }
+sushi-formats = { path = "../pipedream/crates/sushi-formats" }
+wgpu = "30.0.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "1.0.3"
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "mp3", "wav"] }
+winit = "0.30"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
+wasm-bindgen = "0.2.130"
+wasm-bindgen-futures = "0.4.80"
+web-sys = { version = "0.3.107", features = ["HtmlCanvasElement"] }
+wgpu = { version = "30.0.2", features = ["webgl"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.image]
+version = "0.25"
+default-features = false
+features = ["png"]

@@ -1,0 +1,43 @@
+:root {
+  color-scheme: dark;
+  --background: #121316;
+  --panel: #1d1f23;
+  --line: #383a40;
+  --text: #eae8e0;
+  --muted: #a7a9ab;
+  --accent: #f1bb72;
+  font: 15px/1.5 Georgia, serif;
+  color: var(--text);
+  background: var(--background);
+}
+* { box-sizing: border-box }
+[hidden] { display: none !important }
+body { margin: 0 }
+a { color: inherit }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px }
+.top { display: flex; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: 1rem max(1rem, calc((100vw - 1060px) / 2)); font: 12px/1.4 ui-monospace, monospace }
+.top a { text-decoration: none }
+.top a:hover, #demos a:hover { color: var(--accent) }
+main { max-width: 1092px; margin: 0 auto; padding: 1.1rem 1rem 3rem; }
+#demos { display: flex; flex-wrap: wrap; gap: .45rem 1.05rem; font: 12px/1.5 ui-monospace, monospace }
+#demos a { color: var(--muted); text-decoration: none; padding: .3rem 0; border-bottom: 1px solid transparent }
+#demos a[aria-current] { color: var(--accent); border-color: var(--accent) }
+.heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 1rem; margin-top: 1rem }
+h1 { margin: .3rem 0 .7rem; font-size: clamp(2rem, 5vw, 3.5rem); line-height: 1.1; font-weight: normal; letter-spacing: -.045em }
+#hardware, #keyboard { color: var(--muted); margin: 0 0 .7rem; font: 12px/1.5 ui-monospace, monospace }
+#stage { position: relative; overflow: hidden; border: 1px solid var(--line); background: #090a0c; aspect-ratio: 4 / 3; width: 100%; max-height: 75vh; }
+#stage:fullscreen { border: 0; max-height: none; width: 100%; height: 100%; aspect-ratio: auto }
+#canvas { display: block; height: 100%; width: 100%; touch-action: none }
+#status { position: absolute; inset: 0; display: grid; place-content: center; margin: 0; padding: 1.5rem; text-align: center; font: 14px/1.6 ui-monospace, monospace; background: #0b0c0edb; overflow-wrap: anywhere }
+#controls { display: flex; flex-wrap: wrap; gap: .5rem; padding: .75rem 0 }
+#controls button, #load-audio { appearance: none; border: 1px solid var(--line); border-radius: 0; color: var(--text); background: var(--panel); padding: .55rem .8rem; font: 12px/1.5 ui-monospace, monospace; cursor: pointer }
+#controls :is(button:hover, label:hover):not(:disabled) { border-color: var(--accent); color: var(--accent) }
+#controls button:disabled { opacity: .5; cursor: default }
+#load-audio input { width: 0; height: 0; opacity: 0; position: absolute }
+#load-audio:focus-within { outline: 2px solid var(--accent); outline-offset: 3px }
+#directory { margin-top: 3.5rem; padding: 1.75rem 0; border-top: 1px solid var(--line) }
+
+#controls button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent) }
+
+#chest-select { color: var(--muted); align-self: center; font: 12px/1.5 ui-monospace, monospace }
+#chest-object { color: var(--text); border: 1px solid var(--line); background: var(--panel); padding: .5rem; font: inherit }

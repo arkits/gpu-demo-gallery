@@ -1,0 +1,19 @@
+# Engine notes
+
+## ATI SushiDX8
+
+The six releases share an identical `SushiDX8.exe` (SHA-1 `4549bd902d065e1c8fc8688ef57a3f5bbb8310ee`). Rea recovered the scene reader at `0x405a50`, object reader at `0x430860`, animation reader at `0x431120`, and indexed draw stream at `0x430df0`. The v54 scene loader reads draw groups, original vertices and indices, material names, texture slots, full 2D mip chains, and the portal surface geometry. The object loader reads the draw command stream, joint palettes, compressed morph positions, and matrix animations. Paths come from the original `FlyPaths` files.
+
+Dolphin evaluates cubic PN triangle positions after applying the original bone animation. Nature and Island 2 use distorted reflection and refraction captures, with one reflected plane per scene. The port uses WGSL versions of the baked vertex lighting, layered terrain, cloud shader, caustics and material effects. Rachel uses the original animated face streams and skin, eye and hair textures. Nature, Rachel and the Island releases package their original soundtracks.
+
+Differences include estimated material lighting and Rachel position scale and bias. The renderable water passes use the visible scene instead of each original visibility list. Particle systems, shadow passes, Island teleport sequences and the original menus are incomplete. The current renderer loops the main camera paths.
+
+## Treasure Chest
+
+The POF reader consumes geometry, normal, UV and face chunks. The model and texture pairings follow the executable at `0x410e70`, and both camera paths come from the files referenced by `0x411d40`. The room, chest, four moving lights and seven showpieces use original data. The lid movement, specimen placement, colors and material lighting are estimates. The original per-object Shader Model 1.1/1.4 comparison modes are incomplete.
+
+## GeoForms
+
+The port reads the field of view from `sceneBS.nma`, samples an original Voronoi volume and warp texture, and loads the shipping stencil textures. The stencil loading path can be seen at `0x4248a0` and `0x434c10` in Rea. The original `_bkg.fp30`, `blobs.fp30` and `deform*.vp30` guided the background, shading and deformation.
+
+The liquid renderer sphere-traces a smooth distance field, estimates thickness and applies colored transmission, Fresnel reflection and surface noise. This approximates the original isosurface, depth peeling, HDR motion blur, and subsurface scattering. The web and native players analyze a chosen audio file. The original screensaver used system audio capture and its own beat detector.

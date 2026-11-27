@@ -2,7 +2,7 @@
 
 [Open the gallery](https://gpu-demo-gallery.pages.dev)
 
-Playable ports of 36 graphics card demos from 3dfx, NVIDIA and ATI, originally released between 1997 and 2006. The old Glide, OpenGL and Direct3D programs now run in the browser with WebGPU or WebGL2. Each demo also has a native player.
+Playable ports of 44 graphics card demos from 3dfx, NVIDIA and ATI, originally released between 1997 and 2006. The old Glide, OpenGL and Direct3D programs now run in the browser with WebGPU or WebGL2. Each demo also has a native player.
 
 These are ports, not recordings or emulators. They read the original models, textures, shaders and audio, then reproduce the rendering, animation and controls in Rust with [wgpu](https://wgpu.rs/). The individual demo folders document the reverse engineering and any remaining differences from the originals.
 
@@ -43,6 +43,13 @@ Each port has its own `Cargo.toml`, development scripts and deployment script. T
 | Small Pond | 2000 | NVIDIA GeForce2 | [Play](https://pond-port.pages.dev) | [Code](demos/pond) |
 | Toy Soldier | 2000 | NVIDIA GeForce2 | [Play](https://toy-soldier-port.pages.dev) | [Code](demos/toy-soldier) |
 | Crystal Ball | 2000 | NVIDIA GeForce 256 | [Play](https://crystal-ball-port.pages.dev) | [Code](demos/crystal-ball) |
+| ATI Dolphin | 2001 | ATI Radeon 8500 | [Play](https://radeon-8500-port.pages.dev/dolphin/) | [Code](demos/radeon-8500) |
+| ATI Nature | 2001 | ATI Radeon 8500 | [Play](https://radeon-8500-port.pages.dev/nature/) | [Code](demos/radeon-8500) |
+| ATI Rachel | 2001 | ATI Radeon 8500 | [Play](https://radeon-8500-port.pages.dev/rachel/) | [Code](demos/radeon-8500) |
+| ATI Island 1 | 2001 | ATI Radeon 8500 | [Play](https://radeon-8500-port.pages.dev/island1/) | [Code](demos/radeon-8500) |
+| ATI Island 2 | 2001 | ATI Radeon 8500 | [Play](https://radeon-8500-port.pages.dev/island2/) | [Code](demos/radeon-8500) |
+| ATI Island 3 | 2001 | ATI Radeon 8500 | [Play](https://radeon-8500-port.pages.dev/island3/) | [Code](demos/radeon-8500) |
+| ATI Treasure Chest | 2001 | ATI Radeon 8500 | [Play](https://radeon-8500-port.pages.dev/treasure-chest/) | [Code](demos/radeon-8500) |
 | Chameleon | 2001 | NVIDIA GeForce3 | [Play](https://chameleon-port.pages.dev) | [Code](demos/chameleon) |
 | Zoltar | 2001 | NVIDIA GeForce3 | [Play](https://zoltar-port.pages.dev) | [Code](demos/zoltar) |
 | Bugs | 2002 | NVIDIA GeForce4 Ti | [Play](https://bugs-port.pages.dev) | [Code](demos/bugs) |
@@ -58,6 +65,7 @@ Each port has its own `Cargo.toml`, development scripts and deployment script. T
 | Double Cross v1.4 | 2004 | ATI Radeon X800 | [Play](https://double-cross-port.pages.dev) | [Code](demos/double-cross) |
 | Dangerous Curves v1.3 | 2005 | ATI Radeon X850 | [Play](https://dangerous-curves-port.pages.dev) | [Code](demos/dangerous-curves) |
 | The Assassin v1.0 | 2005 | ATI Radeon X1800 | [Play](https://the-assassin-port.pages.dev) | [Code](demos/the-assassin) |
+| GeoForms | 2006 | NVIDIA GeForce 7 | [Play](https://radeon-8500-port.pages.dev/geoforms/) | [Code](demos/radeon-8500) |
 | Box of Smoke | 2006 | NVIDIA GeForce 8 | [Play](https://box-of-smoke-port.pages.dev) | [Code](demos/box-of-smoke) |
 
 ## Repository layout
