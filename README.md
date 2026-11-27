@@ -47,7 +47,9 @@ This repository holds the gallery page and, under `demos/`, every port. Each
 port is a self-contained project with its own `Cargo.toml`, `scripts/dev.sh`
 and `scripts/deploy-cloudflare.sh`, published at `https://<name>-port.pages.dev`.
 The ports used to be separate repositories (`arkits/<name>`); on 2026-11-27 they
-were merged in with their history (`git log -- demos/<name>`). A new port is a
+were merged in with their history. The older commits keep their original
+paths, so `git log -- demos/<name>` stops at the import; see them with
+`git log 'HEAD^{/^Import <name> }^2'`. A new port is a
 new folder in `demos/`, not a new repository.
 
 The original demos' files never enter Git: each port reads them from its own
