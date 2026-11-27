@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mad Mod Mike</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; --ground: #140f0c; --ink: #f2e6da; --dim: #a89a8c; --line: #5f5148; --accent: #e5a06a; --on: #170d06; --panel: #17100bd0; }
+  html, body { margin: 0; height: 100%; background: var(--ground); color: var(--ink); font: 15px/1.5 system-ui, sans-serif; overflow: hidden; }
+  /* Black: WebGL shows what is behind where the picture's alpha is not 1. */
+  canvas { background: #000; position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+  #start { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; text-align: center; gap: 14px; padding: 16px; overflow: auto; }
+  [hidden] { display: none !important; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; }
+  label, button { font: inherit; color: inherit; background: none; border: 1px solid var(--line); border-radius: 6px; padding: 10px 18px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on); font-weight: 600; }
+  label:hover, button:hover { filter: brightness(1.2); }
+  :focus-visible, label:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  label input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  p { margin: 0; max-width: 56ch; color: var(--dim); }
+  kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  progress { width: min(320px, 80vw); accent-color: var(--accent); }
+  #status[data-error] { color: #ff9d8a; }
+  #modes { position: fixed; left: 50%; transform: translateX(-50%); top: max(14px, env(safe-area-inset-top)); display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; width: min(860px, calc(100vw - 32px)); transition: opacity .4s; }
+  #modes.still { opacity: 0; }
+  #modes:hover, #modes:focus-within { opacity: 1; }
+  #modes button { background: var(--panel); padding: 6px 12px; min-height: 44px; }
+  #modes button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+  #face { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(14px, env(safe-area-inset-bottom)); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; width: min(560px, calc(100vw - 32px)); }
+  #faces { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  #faces button { padding: 6px; min-height: 40px; }
+  #faces button[aria-pressed=true] { border-color: var(--accent); color: #ffd9b8; }
+  #face .row { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; border: 0; padding: 0; cursor: default; font-size: 13px; }
+  #face input { position: static; opacity: 1; width: 100%; height: auto; margin: 0; accent-color: var(--accent); min-height: 28px; }
+</style>
+<!-- Cloudflare Pages adds its analytics script to an explicit body. -->
+<body>
+<canvas id="view" tabindex="0" aria-label="Mad Mod Mike acts out its takes in a bedroom and a workshop"></canvas>
+<div id="modes" hidden>
+  <button data-key="1">1</button><button data-key="2">2</button><button data-key="3">3</button><button data-key="4">4</button><button data-key="5">5</button><button data-key="6">6</button><button data-key="7">7</button><button data-key="8">8</button><button data-key="9">9</button><button data-key="0">10</button>
+  <button data-key="c">Camera</button><button data-key="m">Menu</button><button id="open" aria-expanded="false" aria-controls="face">Expressions</button>
+  <button data-key="p" id="pause" aria-pressed="false">Pause</button><button id="mute" aria-pressed="false">Mute</button>
+</div>
+<form id="face" hidden>
+  <div id="faces"></div>
+  <div id="sliders"></div>
+</form>
+<main id="start">
+  <h1>Mad Mod Mike</h1>
+  <button id="play" class="primary" hidden>Start</button>
+  <label id="choose">Choose the demo's folder <input id="folder" type="file" webkitdirectory></label>
+  <p id="need">Needs the unpacked files of the original. They stay on this computer.</p>
+  <p>A moddel with morphed faces and grown hair acts out ten takes in a bedroom and a workshop, with rocket flames, sparks and mermaid projections.</p>
+  <p><kbd>1</kbd>–<kbd>0</kbd> takes · <kbd>c</kbd> scripted, free and helmet cameras · <kbd>↑</kbd><kbd>↓</kbd> expressions · <kbd>Space</kbd> pause · <kbd>m</kbd> menu · <kbd>M</kbd> mute · <kbd>Enter</kbd> full screen. Drag to orbit, scroll to zoom.</p>
+  <p>NVIDIA's “Mad Mod Mike” demo for the GeForce FX, 2003.</p>
+  <progress id="progress" hidden></progress>
+  <p id="status" role="status"></p>
+</main>
+<script type="module">
+  import init, { WebFiles, WebPlayer } from "./pkg/mad_mod_mike.js";
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("view");
+  const status = (text, error) => {
+    $("status").textContent = text;
+    $("status").toggleAttribute("data-error", !!error);
+  };
+  const size = () => {
+    const s = window.devicePixelRatio || 1;
+    return [Math.round(canvas.clientWidth * s), Math.round(canvas.clientHeight * s)];
+  };
+  // ?time=&yaw=&pitch=&key= shows one still, for checking frames.
+  const params = new URLSearchParams(location.search);
+  const still = params.has("time");
+  let files = null, player = null;
+
+  const sound = {
+    sources: {}, buffers: {}, muted: false, music: null,
+    open() {
+      this.context = new AudioContext();
+      this.volume = this.context.createGain();
+      this.meter = this.context.createAnalyser();
+      this.volume.connect(this.meter).connect(this.context.destination);
+      for (const n of ["soundtrack", "musicloop"]) this.get(n);
+    },
+    get(name) {
+      return this.buffers[name] ??= (async () => {
+        try {
+          const own = this.sources[name];
+          const data = own ? await own.arrayBuffer() : await fetch(`./local/${name}.flac`).then((r) => r.ok ? r.arrayBuffer() : null);
+          return data && await this.context.decodeAudioData(data);
+        } catch { return null; } // The demo goes on without sound.
+      })();
+    },
+    async cue(text) {
+      const name = text.replace(/\*$/, "");
+      this.music?.node?.stop();
+      const entry = this.music = { name };
+      const asked = this.context.currentTime;
+      const buffer = await this.get(name);
+      // Another cue may have come while this one was loading.
+      if (!buffer || this.music !== entry) return;
+      entry.node = new AudioBufferSourceNode(this.context, { buffer, loop: text.endsWith("*") });
+      entry.node.connect(this.volume);
+      entry.node.start(0, Math.min(this.context.currentTime - asked, buffer.duration));
+    },
+    // It plays at a tenth at the ends of a take, and follows the white.
+    follow(level, paused) {
+      this.volume.gain.value = this.muted ? 0 : level || 0.1;
+      const want = paused || document.hidden ? "suspended" : "running";
+      if (this.context.state !== want && this.wanted !== want) {
+        this.wanted = want;
+        (want === "running" ? this.context.resume() : this.context.suspend()).then(() => { this.wanted = null; });
+      }
+    },
+    mute() {
+      this.muted = !this.muted;
+      $("mute").setAttribute("aria-pressed", this.muted);
+    },
+    state() {
+      const d = new Float32Array(this.meter.fftSize);
+      this.meter.getFloatTimeDomainData(d);
+      let level = 0;
+      for (const x of d) level = Math.max(level, Math.abs(x));
+      return { playing: this.music?.node ? this.music.name : null, level };
+    },
+  };
+
+  // The demo's menus: buttons for expressions, sliders for blend weights.
+  const face = {
+    inputs: [], shown: null,
+    build() {
+      WebPlayer.expressions().forEach((name, i) => {
+        const b = document.createElement("button");
+        Object.assign(b, { type: "button", textContent: name, onclick: () => player.express(i) });
+        $("faces").append(b);
+      });
+      for (let i = 0; i < 5; i++) {
+        const row = document.createElement("label"), text = document.createElement("span"), input = document.createElement("input");
+        row.className = "row";
+        Object.assign(input, { type: "range", min: 0, max: 1, step: 0.01, oninput: () => player.slide(i, input.valueAsNumber) });
+        row.append(text, input);
+        $("sliders").append(row);
+        this.inputs.push([text, input]);
+      }
+    },
+    // Follows what keys and time change.
+    update() {
+      const now = [player.mode(), player.take(), player.expression(), player.paused(), ...player.sliders()].join();
+      if (now === this.shown) return;
+      this.shown = now;
+      [...$("faces").children].forEach((b, i) => b.setAttribute("aria-pressed", i === player.expression()));
+      const labels = player.labels(), values = player.sliders();
+      labels.forEach((label, i) => {
+        const [text, input] = this.inputs[i];
+        text.textContent = label;
+        if (document.activeElement !== input) input.value = values[i];
+      });
+    },
+    toggle() {
+      $("face").hidden = !$("face").hidden;
+      $("open").setAttribute("aria-expanded", !$("face").hidden);
+    },
+  };
+
+  function offer() {
+    $("play").hidden = false;
+    $("play").focus();
+    status("");
+    if (still) start();
+  }
+
+  async function start() {
+    if (player) return;
+    // Browsers allow sound only from a click.
+    if (!still) sound.open();
+    $("play").disabled = true;
+    status("Loading…");
+    await new Promise((r) => setTimeout(r));
+    try {
+      [canvas.width, canvas.height] = size();
+      player = await WebPlayer.create(canvas, files);
+    } catch (e) {
+      console.error(e);
+      $("play").disabled = false;
+      return status(`Could not start: ${e.message ?? e}`, true);
+    }
+    status("Preparing graphics…");
+    while (!player.ready()) await new Promise((r) => setTimeout(r, 30));
+    $("start").hidden = true;
+    $("modes").hidden = still;
+    canvas.focus();
+    run();
+  }
+
+  function run() {
+    let last = size().join(), n = 0;
+    const number = (k) => Number(params.get(k) ?? 0);
+    if (still) {
+      // The take comes first: digits select takes, the key does the rest.
+      const t = Number(params.get("take") ?? 0);
+      player.key(String((t + 1) % 10));
+      player.freeze(number("time"), number("yaw"), number("pitch"), params.get("key") ?? "");
+    }
+    const tick = (now) => {
+      const [w, h] = size();
+      if (`${w},${h}` !== last) {
+        last = `${w},${h}`;
+        [canvas.width, canvas.height] = [w, h];
+        player.resize(w, h);
+      }
+      player.frame(now / 1000);
+      if (still) {
+        if (++n < 3) requestAnimationFrame(tick);
+        else document.documentElement.dataset.done = n;
+        return;
+      }
+      for (const c of player.cues()) sound.cue(c);
+      sound.follow(player.level(), player.paused());
+      face.update();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    if (still) return;
+    let hide;
+    const wake = () => {
+      $("modes").classList.remove("still");
+      clearTimeout(hide);
+      hide = setTimeout(() => $("face").hidden && $("modes").classList.add("still"), 4000);
+    };
+    for (const t of ["pointermove", "pointerdown", "keydown"]) addEventListener(t, wake);
+    wake();
+    document.addEventListener("visibilitychange", () => sound.follow(player.level(), player.paused()));
+    face.build();
+
+    addEventListener("keydown", (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "Enter" && e.target.tagName !== "BUTTON") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+      else if (e.target.tagName === "INPUT" || (e.key === " " && e.target.tagName === "BUTTON")) return;
+      else if (e.key === "m" || e.key === "M") { if (!player.key("m")) return; }
+      else if (!player.key(e.key)) return;
+      e.preventDefault();
+    });
+
+    for (const b of $("modes").children) b.addEventListener("click", () => {
+      if (b.id === "mute") sound.mute();
+      else if (b.id === "open") return face.toggle();
+      else player.key(b.dataset.key);
+      canvas.focus();
+    });
+
+    const at = (e) => [e.clientX / canvas.clientWidth, e.clientY / canvas.clientHeight];
+    const touches = new Map();
+    const gesture = () => {
+      const [a, b] = [...touches.values()];
+      return { x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2, d: Math.hypot(a[0] - b[0], a[1] - b[1]) };
+    };
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      other = e.button;
+      touches.set(e.pointerId, at(e));
+      if (touches.size === 1 && other === 0) player.press(...at(e));
+      else player.release();
+    });
+    let other = 0;
+    const up = (e) => {
+      if (!touches.delete(e.pointerId)) return;
+      player.release();
+    };
+    for (const t of ["pointerup", "pointercancel"]) canvas.addEventListener(t, up);
+    canvas.addEventListener("pointermove", (e) => {
+      if (!touches.has(e.pointerId)) return;
+      if (touches.size === 1) {
+        // Middle pans and right zooms, as in the original.
+        const rise = at(e)[1] - touches.get(e.pointerId)[1];
+        touches.set(e.pointerId, at(e));
+        if (other === 1) return player.pan(rise);
+        if (other === 2) return player.zoom(-rise * 3);
+        return player.motion(...at(e));
+      }
+      if (touches.size !== 2) return;
+      const before = gesture();
+      touches.set(e.pointerId, at(e));
+      const now = gesture();
+      player.zoom((now.d - before.d) * 2);
+      player.pan(now.y - before.y);
+    });
+    canvas.addEventListener("wheel", (e) => { e.preventDefault(); player.zoom(-e.deltaY * 0.002); }, { passive: false });
+    // For automated checks.
+    window.demo = { player, sound: () => sound.state() };
+  }
+
+  async function take(list) {
+    const found = new WebFiles();
+    for (const f of list) {
+      if (/\.(nmb|nma|dds|tga|t3d|txt|fp30|vp30|fp20|vp20)$/i.test(f.name)) found.insert(f.webkitRelativePath.split("/").slice(1).join("/"), new Uint8Array(await f.arrayBuffer()));
+      else if (/\.wav$/i.test(f.name)) sound.sources[f.name.toLowerCase().replace(".wav", "")] = f;
+    }
+    try {
+      found.check();
+    } catch (e) {
+      return status(`That folder will not do: ${e.message ?? e}`, true);
+    }
+    files = found;
+    offer();
+  }
+
+  try {
+    await init();
+  } catch (e) {
+    console.error(e);
+    status(`Could not load the player: ${e.message ?? e}`, true);
+  }
+  $("play").addEventListener("click", start);
+  $("folder").addEventListener("change", (e) => take([...e.target.files]));
+  // Content served with the page: scripts/serve.py locally, or a bundled deployment.
+  const mb = (n) => (n / 1e6).toFixed(1);
+  try {
+    const manifest = await fetch("./local/assets.json").catch(() => null);
+    if (manifest?.ok && manifest.headers.get("content-type")?.includes("json")) {
+      const { files: names, size: total } = await manifest.json();
+      for (const id of ["choose", "need"]) $(id).hidden = true;
+      $("progress").hidden = false;
+      const parts = [];
+      let done = 0;
+      for (const name of names) {
+        const r = await fetch(`./local/${encodeURIComponent(name)}`);
+        if (!r.ok || !r.body) throw new Error(`Asset download failed (${r.status})`);
+        for (const reader = r.body.getReader(); ; ) {
+          const { done: end, value } = await reader.read();
+          if (end) break;
+          parts.push(value);
+          done += value.length;
+          [$("progress").max, $("progress").value] = [total, Math.min(done, total)];
+          status(`Downloading ${mb(done)} of ${mb(total)} MB…`);
+        }
+      }
+      if (done !== total) throw new Error("Incomplete asset download");
+      files = WebFiles.open(new Uint8Array(await new Blob(parts).arrayBuffer()));
+      offer();
+    }
+  } catch (e) {
+    console.error(e);
+    for (const id of ["choose", "need"]) $(id).hidden = false;
+    status(`Download failed: ${e.message ?? e}`, true);
+  }
+  $("progress").hidden = true;
+</script>
+</body>
+</html>
