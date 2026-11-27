@@ -1,0 +1,10 @@
+[package]
+name = "atb"
+description = "Shared ATB runtime readers and helpers for 3dfx ATB demo ports"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam = "0.34.3"
