@@ -63,6 +63,7 @@ Each port has its own `Cargo.toml`, development scripts and deployment script. T
 | Dawn | 2002 | NVIDIA GeForce FX | [Play](https://dawn-port.pages.dev) | [Code](demos/dawn) |
 | Pipe Dream | 2003 | ATI Radeon 9700 | [Play](https://pipedream-port.pages.dev) | [Code](demos/pipedream) |
 | Double Cross v1.4 | 2004 | ATI Radeon X800 | [Play](https://double-cross-port.pages.dev) | [Code](demos/double-cross) |
+| Clear Sailing | 2004 | NVIDIA GeForce FX | [Play](https://clear-sailing-port.pages.dev) | [Code](demos/clear-sailing) |
 | Dangerous Curves v1.3 | 2005 | ATI Radeon X850 | [Play](https://dangerous-curves-port.pages.dev) | [Code](demos/dangerous-curves) |
 | The Assassin v1.0 | 2005 | ATI Radeon X1800 | [Play](https://the-assassin-port.pages.dev) | [Code](demos/the-assassin) |
 | GeoForms | 2006 | NVIDIA GeForce 7 | [Play](https://radeon-8500-port.pages.dev/geoforms/) | [Code](demos/radeon-8500) |

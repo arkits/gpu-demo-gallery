@@ -67,6 +67,7 @@ shot chameleon 8 0.8 -0.3 1
 shot tidepool 5 0 0 0
 shot zoltar 5 0 0 1
 shot dawn 28 0 0 -
+shot clear-sailing 4 ""
 crop=in_w:in_h
 shot surf 4 ''
 shot sixty-hertz 8 4r
