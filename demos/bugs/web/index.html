@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bugs</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #03110d; color: #d5e6df; font: 15px/1.5 system-ui, sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+  #start { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; text-align: center; gap: 14px; padding: 16px; overflow: auto; }
+  [hidden] { display: none !important; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; }
+  label, button { font: inherit; color: inherit; background: none; border: 1px solid #3f6a5c; border-radius: 6px; padding: 10px 18px; cursor: pointer; }
+  button.primary { background: #59d3a6; border-color: #59d3a6; color: #02140d; font-weight: 600; }
+  label:hover, button:hover { filter: brightness(1.2); }
+  :focus-visible, label:focus-within { outline: 2px solid #b6f0da; outline-offset: 2px; }
+  label input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  p { margin: 0; max-width: 54ch; color: #8fada2; }
+  kbd { font: 12px ui-monospace, monospace; border: 1px solid #355a4d; border-radius: 4px; padding: 1px 5px; }
+  progress { width: min(320px, 80vw); accent-color: #59d3a6; }
+  #status[data-error] { color: #ff9d8a; }
+  #modes { position: fixed; right: max(12px, env(safe-area-inset-right)); top: max(12px, env(safe-area-inset-top)); display: flex; gap: 6px; }
+  #modes button { background: #081713e8; padding: 6px 12px; min-height: 44px; }
+  #modes button[aria-pressed=true] { border-color: #59d3a6; color: #b6f0da; }
+  #quick { display: flex; gap: 6px; }
+  #options { position: absolute; top: calc(100% + 8px); right: 0; width: min(320px, calc(100vw - 24px)); box-sizing: border-box; padding: 10px; border: 1px solid #3f6a5c; background: #081713f2; max-height: calc(100dvh - 76px); overflow-y: auto; }
+  #options fieldset { border: 0; border-top: 1px solid #355a4d; padding: 4px 0 6px; margin: 0 0 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+  #options legend { padding-right: 8px; color: #8fada2; font: 11px ui-monospace, monospace; letter-spacing: .09em; text-transform: uppercase; }
+  #options button { padding: 4px 8px; }
+</style>
+<!-- Cloudflare Pages adds its analytics script to an explicit body. -->
+<body>
+<canvas id="view" tabindex="0" aria-label="Alien bugs walking in a spotlight"></canvas>
+<div id="modes" hidden>
+  <div id="quick">
+    <button id="controls" aria-expanded="false" aria-controls="options">Controls</button>
+    <button id="mute" aria-pressed="false">Mute</button>
+  </div>
+  <div id="options" hidden>
+    <fieldset><legend>Vision</legend>
+      <button data-key="1" data-mode>Normal</button>
+      <button data-key="2" data-mode>Night Vision</button>
+      <button data-key="3" data-mode>Depth Vision</button>
+    </fieldset>
+    <fieldset><legend>Draw style</legend>
+      <button data-key="s" data-mode>Solid</button>
+      <button data-key="w" data-mode>Lines</button>
+      <button data-key="p" data-mode>Points</button>
+      <button data-key="a" data-mode>Aliased inset</button>
+    </fieldset>
+    <fieldset><legend>Navigation</legend>
+      <button data-key="n" data-mode>Walk</button>
+      <button data-key="l" data-mode>Light</button>
+      <button data-key="Home">Reset view</button>
+    </fieldset>
+    <fieldset><legend>Show</legend>
+      <button data-key="-">Fewer bugs</button>
+      <button data-key="+">More bugs</button>
+      <button data-key=" " data-mode>Pause</button>
+    </fieldset>
+  </div>
+</div>
+<main id="start">
+  <h1>Bugs</h1>
+  <button id="play" class="primary" hidden>Start</button>
+  <label id="choose">Choose demo folder <input id="folder" type="file" webkitdirectory></label>
+  <p id="need">Needs the unpacked files of NVIDIA's demo. They stay on this computer.</p>
+  <p>Sixty alien bugs walk on their six legs through a spotlight in a junkyard.</p>
+  <p>Drag to look. Use the arrow keys or scroll to walk. <kbd>1</kbd>–<kbd>3</kbd> vision modes · <kbd>L</kbd> light control · <kbd>Space</kbd> pause · <kbd>Enter</kbd> full screen</p>
+  <p>NVIDIA's “Bugs” demo, 2002.</p>
+  <progress id="progress" hidden></progress>
+  <p id="status" role="status"></p>
+</main>
+<script type="module">
+  import init, { WebFiles, WebPlayer } from "./pkg/bugs.js";
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("view");
+  const status = (text, error) => {
+    $("status").textContent = text;
+    $("status").toggleAttribute("data-error", !!error);
+  };
+  const size = () => {
+    const s = window.devicePixelRatio || 1;
+    return [Math.round(canvas.clientWidth * s), Math.round(canvas.clientHeight * s)];
+  };
+  // ?time=&yaw=&pitch= shows a still. Use action=1 for Depth or action=2 for Night.
+  const params = new URLSearchParams(location.search);
+  const still = params.has("time");
+  let files = null, player = null;
+
+  const sound = {
+    sources: {}, buffers: {}, muted: false, loops: new Map(), voices: [],
+    open() {
+      this.context = new AudioContext();
+      this.volume = this.context.createGain();
+      this.meter = this.context.createAnalyser();
+      this.volume.connect(this.meter).connect(this.context.destination);
+      for (const n of ["wind_constant", "heli", "horde_rumble", "bug_screech1", "bug_screech2", "bug_screech3", "bug_clack1", "bug_clack2", "bug_clack3"]) this.get(n);
+    },
+    get(name) {
+      return this.buffers[name] ??= (async () => {
+        try {
+          const own = this.sources[name];
+          const data = own ? await own.arrayBuffer() : await fetch(`./local/${name}.flac`).then((r) => r.ok ? r.arrayBuffer() : null);
+          return data && await this.context.decodeAudioData(data);
+        } catch { return null; } // The demo goes on without sound.
+      })();
+    },
+    async cue(text) {
+      const [name, flag, gainText, panText] = text.split("|");
+      const loop = flag === "1", gain = Number(gainText), pan = Number(panText);
+      const now = this.context.currentTime;
+      const current = this.loops.get(name);
+      if (current) {
+        current.gain = gain;
+        current.pan = pan;
+        current.level?.gain.setTargetAtTime(gain, now, 0.05);
+        current.position?.pan.setTargetAtTime(pan, now, 0.05);
+        return;
+      }
+      const entry = { gain, pan };
+      if (loop) this.loops.set(name, entry);
+      const buffer = await this.get(name);
+      if (!buffer) return;
+      entry.node = new AudioBufferSourceNode(this.context, { buffer, loop });
+      entry.level = new GainNode(this.context, { gain: entry.gain });
+      entry.position = new StereoPannerNode(this.context, { pan: entry.pan });
+      entry.node.connect(entry.level).connect(entry.position).connect(this.volume);
+      if (!loop) {
+        this.voices.push(entry);
+        if (this.voices.length > 24) this.voices.shift().node.stop();
+        entry.node.onended = () => {
+          this.voices = this.voices.filter((voice) => voice !== entry);
+          entry.node.disconnect();
+          entry.level.disconnect();
+          entry.position.disconnect();
+        };
+      }
+      entry.node.start();
+    },
+    mute() {
+      this.muted = !this.muted;
+      this.volume.gain.value = this.muted ? 0 : 1;
+      $("mute").setAttribute("aria-pressed", this.muted);
+    },
+    state() {
+      const d = new Float32Array(this.meter.fftSize);
+      this.meter.getFloatTimeDomainData(d);
+      const loops = [...this.loops].filter(([, loop]) => loop.node).map(([name]) => name);
+      return { loops, level: Math.max(...d.map(Math.abs)) };
+    },
+  };
+
+  function offer() {
+    $("play").hidden = false;
+    $("play").focus();
+    status("");
+    if (still) start();
+  }
+
+  async function start() {
+    if (player) return;
+    // Browsers allow sound only from a click.
+    if (!still) sound.open();
+    $("play").disabled = true;
+    status("Loading…");
+    await new Promise((r) => setTimeout(r));
+    try {
+      [canvas.width, canvas.height] = size();
+      player = await WebPlayer.create(canvas, files);
+    } catch (e) {
+      console.error(e);
+      $("play").disabled = false;
+      return status(`Could not start: ${e.message ?? e}`, true);
+    }
+    status("Preparing graphics…");
+    while (!player.ready()) await new Promise((r) => setTimeout(r, 30));
+    $("start").hidden = true;
+    $("modes").hidden = still;
+    canvas.focus();
+    run();
+  }
+
+  function run() {
+    let last = size().join(), n = 0;
+    const number = (k) => Number(params.get(k) ?? 0);
+    if (still) {
+      player.freeze(number("time"), number("yaw"), number("pitch"), number("action") === 1);
+      if (number("action") === 2) player.key("2");
+    }
+    const tick = (now) => {
+      const [w, h] = size();
+      if (`${w},${h}` !== last) {
+        last = `${w},${h}`;
+        [canvas.width, canvas.height] = [w, h];
+        player.resize(w, h);
+      }
+      player.frame(now / 1000);
+      if (still) {
+        if (++n < 3) requestAnimationFrame(tick);
+        else document.documentElement.dataset.done = n;
+        return;
+      }
+      for (const c of player.cues()) sound.cue(c);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    if (still) return;
+    const sync = () => {
+      for (const button of $("options").querySelectorAll("[data-mode]")) {
+        button.setAttribute("aria-pressed", player.selected(button.dataset.key));
+      }
+    };
+    const menu = (open) => {
+      $("options").hidden = !open;
+      $("controls").setAttribute("aria-expanded", open);
+    };
+    $("controls").addEventListener("click", () => menu($("options").hidden));
+    $("mute").addEventListener("click", () => sound.mute());
+    sync();
+    document.addEventListener("visibilitychange", () => document.hidden ? sound.context?.suspend() : sound.context?.resume());
+    addEventListener("blur", () => player.clear_input());
+    addEventListener("keyup", (e) => player.key_up(e.key));
+
+    addEventListener("keydown", (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+      if (e.key === "Enter" && e.target.tagName !== "BUTTON") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+      else if (e.key === " " && e.target.tagName === "BUTTON") return;
+      else if (e.key === "Escape" && !$("options").hidden) {
+        menu(false);
+        $("controls").focus();
+      } else if (!e.repeat && (e.key === "m" || e.key === "M")) sound.mute();
+      else if (e.key === "Tab" || e.repeat || !player.key(e.key)) return;
+      sync();
+      e.preventDefault();
+    });
+    for (const button of $("options").querySelectorAll("[data-key]")) {
+      button.addEventListener("click", () => {
+        if (button.dataset.key === "l" && player.selected("l")) return;
+        player.key(button.dataset.key);
+        sync();
+      });
+    }
+
+    const at = (e) => [e.clientX / canvas.clientWidth, e.clientY / canvas.clientHeight];
+    const touches = new Map();
+    const gesture = () => {
+      const [a, b] = [...touches.values()];
+      return { x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2, d: Math.hypot(a[0] - b[0], a[1] - b[1]) };
+    };
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      touches.set(e.pointerId, at(e));
+      if (touches.size === 1) { player.press(...at(e)); sync(); }
+      else player.release();
+    });
+    const up = (e) => {
+      if (!touches.delete(e.pointerId)) return;
+      player.release();
+    };
+    for (const t of ["pointerup", "pointercancel"]) canvas.addEventListener(t, up);
+    canvas.addEventListener("pointermove", (e) => {
+      if (!touches.has(e.pointerId)) return;
+      if (touches.size === 1) {
+        touches.set(e.pointerId, at(e));
+        return player.motion(...at(e));
+      }
+      if (touches.size !== 2) return;
+      const before = gesture();
+      touches.set(e.pointerId, at(e));
+      const now = gesture();
+      player.zoom((now.d - before.d) * 2);
+    });
+    canvas.addEventListener("wheel", (e) => { e.preventDefault(); player.zoom(-e.deltaY * 0.002); }, { passive: false });
+    // For automated checks.
+    window.demo = { player, sound: () => sound.state() };
+  }
+
+  async function take(list) {
+    const found = new WebFiles();
+    for (const f of list) {
+      if (/\.(nmb|dds|tga|ifl|png|vxp)$/i.test(f.name)) found.insert(f.webkitRelativePath.split("/").slice(1).join("/"), new Uint8Array(await f.arrayBuffer()));
+      else if (/\.wav$/i.test(f.name)) sound.sources[f.name.toLowerCase().replace(".wav", "")] = f;
+    }
+    try {
+      found.check();
+    } catch (e) {
+      return status(`That folder will not do: ${e.message ?? e}`, true);
+    }
+    files = found;
+    offer();
+  }
+
+  try {
+    await init();
+  } catch (e) {
+    console.error(e);
+    status(`Could not load the player: ${e.message ?? e}`, true);
+  }
+  $("play").addEventListener("click", start);
+  $("folder").addEventListener("change", (e) => take([...e.target.files]));
+  // Content served with the page: scripts/serve.py locally, or a bundled deployment.
+  const mb = (n) => (n / 1e6).toFixed(1);
+  try {
+    const manifest = await fetch("./local/assets.json", { cache: "no-store" }).catch(() => null);
+    if (manifest?.ok && manifest.headers.get("content-type")?.includes("json")) {
+      const { files: names, size: total, version } = await manifest.json();
+      for (const id of ["choose", "need"]) $(id).hidden = true;
+      $("progress").hidden = false;
+      const parts = [];
+      let done = 0;
+      for (const name of names) {
+        const r = await fetch(`./local/${encodeURIComponent(name)}?v=${version}`);
+        if (!r.ok || !r.body) throw new Error(`Asset download failed (${r.status})`);
+        for (const reader = r.body.getReader(); ; ) {
+          const { done: end, value } = await reader.read();
+          if (end) break;
+          parts.push(value);
+          done += value.length;
+          [$("progress").max, $("progress").value] = [total, Math.min(done, total)];
+          status(`Downloading ${mb(done)} of ${mb(total)} MB…`);
+        }
+      }
+      if (done !== total) throw new Error("Incomplete asset download");
+      files = WebFiles.open(new Uint8Array(await new Blob(parts).arrayBuffer()));
+      offer();
+    }
+  } catch (e) {
+    console.error(e);
+    for (const id of ["choose", "need"]) $(id).hidden = false;
+    status(`Download failed: ${e.message ?? e}`, true);
+  }
+  $("progress").hidden = true;
+</script>
+</body>
+</html>
