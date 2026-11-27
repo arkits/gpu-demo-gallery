@@ -1,5 +1,5 @@
 //! Show logic without any windowing: chapters, clock, fades and controls.
-use sushi_engine::camera::Orbit;
+use sushi_engine::camera::{Control, Orbit};
 
 pub struct Show {
     durations: Vec<f64>,
@@ -11,6 +11,8 @@ pub struct Show {
     paused: bool,
     restart: bool,
     orbit: Option<Orbit>,
+    /// The `control` cameras of `Sushi2.ini`.
+    pub controls: Vec<Control>,
     pub logos: bool,
 }
 
@@ -25,6 +27,7 @@ impl Show {
             paused: false,
             restart: true,
             orbit: None,
+            controls: Vec::new(),
             logos: true,
         }
     }
@@ -56,6 +59,25 @@ impl Show {
         self.chapter = chapter.min(self.durations.len() - 1);
         self.time = 0.0;
         self.restart = true;
+        // A free camera takes the new chapter's first control.
+        if self.orbit.is_some() {
+            self.orbit = Some(self.free(None));
+        }
+    }
+
+    /// The control after `after` that the chapter offers (0x416ea0), from the first, or the
+    /// show's own camera turned around when it has none.
+    fn free(&self, after: Option<&Control>) -> Orbit {
+        let offered: Vec<&Control> = self
+            .controls
+            .iter()
+            .filter(|c| c.in_chapter(self.chapter))
+            .collect();
+        let at = after.and_then(|a| offered.iter().position(|c| *c == a));
+        let next = at.map_or(0, |i| (i + 1) % offered.len().max(1));
+        offered
+            .get(next)
+            .map_or_else(Orbit::default, |c| Orbit::with((*c).clone()))
     }
 
     /// Moves within the chapter.
@@ -103,8 +125,12 @@ impl Show {
             "f" | "F" => {
                 self.orbit = match self.orbit {
                     Some(_) => None,
-                    None => Some(Orbit::default()),
+                    None => Some(self.free(None)),
                 }
+            }
+            "c" | "C" => {
+                let next = self.free(self.orbit.as_ref().and_then(Orbit::control));
+                self.orbit = Some(next);
             }
             "l" | "L" => self.logos = !self.logos,
             _ => match key.parse::<usize>() {
@@ -117,11 +143,21 @@ impl Show {
 
     /// Dragging takes the camera.
     pub fn drag(&mut self, dx: f32, dy: f32) {
-        self.orbit.get_or_insert_default().rotate(dx, dy);
+        if self.orbit.is_none() {
+            self.orbit = Some(self.free(None));
+        }
+        if let Some(o) = &mut self.orbit {
+            o.rotate(dx, dy);
+        }
     }
 
     pub fn zoom(&mut self, amount: f32) {
-        self.orbit.get_or_insert_default().zoom(amount);
+        if self.orbit.is_none() {
+            self.orbit = Some(self.free(None));
+        }
+        if let Some(o) = &mut self.orbit {
+            o.zoom(amount);
+        }
     }
 }
 

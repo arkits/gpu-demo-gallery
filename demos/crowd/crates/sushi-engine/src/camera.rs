@@ -145,27 +145,136 @@ pub fn clipped(projection: Mat4, view: Mat4, plane: Vec4) -> Mat4 {
     m.transpose() * view
 }
 
-/// Interactive camera: turns the show's own camera around what it looks at. Not in the
-/// original, whose manual cameras are a list of places.
+/// A `control` line of `Sushi2.ini` (parsed at 0x426cdb): a camera that turns around a
+/// point within limits. Ranges are lowest, highest and where to start, which is the middle
+/// unless given (0x413850..0x413890).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Control {
+    pub target: Vec3,
+    pub distance: [f32; 3],
+    /// Degrees.
+    pub pitch: [f32; 3],
+    pub yaw: [f32; 3],
+    pub fov: Option<f32>,
+    /// Focal distance, f-stop and focal length.
+    pub focus: [Option<f32>; 3],
+    /// The script (chapter) it belongs to; any when `None` (`Seq` is 1 for the first).
+    pub sequence: Option<usize>,
+}
+
+impl Control {
+    /// The words after `control =`, such as `LAt(0,700,0)` or `Dist(325, 325)`.
+    pub fn parse(words: &[String]) -> Option<Self> {
+        let mut c = Self {
+            target: Vec3::ZERO,
+            distance: [0.0; 3],
+            pitch: [0.0; 3],
+            yaw: [0.0; 3],
+            fov: None,
+            focus: [None; 3],
+            sequence: None,
+        };
+        let range = |v: &[f32]| -> Option<[f32; 3]> {
+            let (low, high) = (*v.first()?, *v.get(1)?);
+            Some([
+                low,
+                high,
+                v.get(2).copied().unwrap_or((high - low) / 2.0 + low),
+            ])
+        };
+        for w in words {
+            let (name, rest) = w.split_once('(')?;
+            let v: Vec<f32> = rest
+                .trim_end_matches(')')
+                .split(',')
+                .filter_map(|n| n.trim().parse().ok())
+                .collect();
+            match name.trim().to_ascii_lowercase().as_str() {
+                "lookat" | "lat" => c.target = Vec3::new(*v.first()?, *v.get(1)?, *v.get(2)?),
+                "dist" | "d" => c.distance = range(&v)?,
+                "pitch" | "p" => c.pitch = range(&v)?,
+                "yaw" | "y" => c.yaw = range(&v)?,
+                "fov" => c.fov = v.first().copied(),
+                "focaldistance" | "fdist" | "fdst" => c.focus[0] = v.first().copied(),
+                "fstop" => c.focus[1] = v.first().copied(),
+                "focallength" | "flength" | "fln" => c.focus[2] = v.first().copied(),
+                "sequence" | "seq" => c.sequence = (*v.first()? as usize).checked_sub(1),
+                "frame" | "fr" => {}
+                _ => return None,
+            }
+        }
+        Some(c)
+    }
+
+    /// Whether it is offered in chapter `chapter` (0x416ea0).
+    pub fn in_chapter(&self, chapter: usize) -> bool {
+        self.sequence.is_none_or(|s| s == chapter)
+    }
+}
+
+/// Interactive camera. With a [`Control`] it is the original's: around the control's point
+/// within its limits. Otherwise it turns the show's own camera around what it looks at,
+/// which the original does not do.
 #[derive(Debug, Clone, Default)]
 pub struct Orbit {
     yaw: f32,
     pitch: f32,
     zoom: f32,
+    control: Option<Control>,
 }
 
 impl Orbit {
+    pub fn with(control: Control) -> Self {
+        Self {
+            yaw: control.yaw[2],
+            pitch: control.pitch[2],
+            zoom: control.distance[2],
+            control: Some(control),
+        }
+    }
+
+    pub fn control(&self) -> Option<&Control> {
+        self.control.as_ref()
+    }
+
     pub fn rotate(&mut self, dx: f32, dy: f32) {
+        if let Some(c) = &self.control {
+            // A full turn of limits wraps around.
+            self.yaw -= dx;
+            if c.yaw[1] - c.yaw[0] >= 360.0 {
+                self.yaw = (self.yaw - c.yaw[0]).rem_euclid(360.0) + c.yaw[0];
+            } else {
+                self.yaw = self.yaw.clamp(c.yaw[0], c.yaw[1]);
+            }
+            self.pitch = (self.pitch + dy).clamp(c.pitch[0], c.pitch[1]);
+            return;
+        }
         self.yaw -= dx;
         self.pitch = (self.pitch + dy).clamp(-80.0, 80.0);
     }
 
     /// Positive moves closer, as a fraction of the distance.
     pub fn zoom(&mut self, amount: f32) {
+        if let Some(c) = &self.control {
+            self.zoom = (self.zoom * (1.0 - amount)).clamp(c.distance[0], c.distance[1]);
+            return;
+        }
         self.zoom = (self.zoom + amount).clamp(-2.0, 0.9);
     }
 
     pub fn camera(&self, show: &Camera) -> Camera {
+        if let Some(c) = &self.control {
+            // 0x415520 and 0x4138b0: the camera's back axis, scaled by the distance.
+            let (pitch, yaw) = (self.pitch.to_radians(), self.yaw.to_radians());
+            let turn = Quat::from_rotation_y(-yaw) * Quat::from_rotation_x(-pitch);
+            let focus = [0, 1, 2].map(|i| c.focus[i].unwrap_or(show.focus[i]));
+            return Camera {
+                position: c.target + turn * Vec3::Z * self.zoom,
+                rotation: turn.inverse(),
+                fov: c.fov.unwrap_or(show.fov),
+                focus,
+            };
+        }
         let back = show.rotation.inverse();
         let distance = if show.focus[0] > 1.0 {
             show.focus[0]

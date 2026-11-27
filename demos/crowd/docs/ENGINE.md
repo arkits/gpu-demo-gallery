@@ -12,25 +12,58 @@ constant arrays.
 
 The main render path uses the original material properties, skeletal and morph animation,
 multipass targets, scene lights, and camera cuts. The engine came from the The Assassin port
-and is unchanged but for what Crowd needs (below).
+with what Crowd and Subsurface Scattering need (below).
+
+## Subsurface Scattering
+
+Subsurface Scattering's `SushiDX.exe` is byte for byte Crowd's (SHA-1 274d650c…). It was
+decompiled with `rea-agents@6.10.1 decompile-all`; functions the batch skipped were decompiled
+one by one in a Ghidra project, and the spherical harmonics code was run under Unicorn
+(`_rea/next7/emu.py`) to settle its conventions.
+
+- Every object carries two light transfer blocks, one per `PrtReceiver<k>` of its shader,
+  in order; `AppUpdate("PrtCPCABuffer", k, i, ...)` picks block `k`. Each holds the PCA
+  clusters (per cluster: the mean, then `4·W` vectors, each red, green, blue of 36
+  coefficients), with `W = PCAWeightVectors(W)` of that receiver. The statue streams its
+  weights per vertex; the temple samples them from seven signed textures (`S8888`,
+  Q8W8V8U8) per texel.
+- The buffer is set at 0x45c7f0 from per-cluster float4s made at 0x45b010: the mean's light
+  as RGB, then for red, green and blue the light of each PCA vector, four to a float4.
+- Light sources (0x458b50 parses them, 0x45b010 computes them each frame, always in the
+  object's space, using the rigid inverse of its first bone):
+  - `Runtime`: the block's named scene lights (`KEYShape`, `FILLShape`, `RIMShape`) as
+    directional lights from the centroid towards each light, coloured by color × intensity,
+    with `AtiSHEvalDirectionalLight` (0x450230; normalised by 4π, 4π/3, 16π/17 or 32π/31 by
+    order). `Centroid x y z` replaces the object's bounding centre.
+  - `Cubemap`: the environment projected by the exporter and stored in the block, turned
+    into object space with `AtiSHRotate` (0x44f570). Under emulation it moves light at d to
+    d·M, as a Direct3D row vector.
+  - Then `Scale s` multiplies, and `Rotate x y z` turns by the axis-angle vector: its matrix
+    (0x44d2c0) is transposed (0x44cf60) before `AtiSHRotate`, which makes the temple's sky
+    light turn 110° about y, as the sky shader turns its cube map.
+- ATI's SH basis is the one of D3DX (Condon–Shortley phase, √2 for m ≠ 0).
+- The statue lerps its two transfers by its own scale: `saturate((_m00 − 0.1) · 1.031)`.
+- Sushi binds the registers of `sampler t[n]` to textures `t0`..; a lone `sampler tSky`
+  takes `tSky0`. `tex2Dbias` on such arrays adds the bias to the sampler's own.
+- An HLSL array of one (`SI_SKINNING_MAX_BONES 1`) is still filled from the replicated
+  parameters `mSiWorld0`...
+- `control` lines (parsed at 0x426cdb) are the interactive cameras: `LookAt`/`LAt`,
+  `Dist`/`D`, `Pitch`/`P`, `Yaw`/`Y` as lowest, highest and start (the middle if missing),
+  `FOV`, `FDist`, `FStop`, `FLength` and `Seq` (the script it belongs to; any if missing,
+  0x416ea0). The camera sits at the point plus the distance along
+  (−sin yaw·cos pitch, sin pitch, cos yaw·cos pitch) and looks back at it (0x415520,
+  0x4138b0).
 
 ## Crowd
 
-Crowd's `SushiDX.exe` was decompiled with `rea-agents@6.10.1 decompile-all` (Ghidra). Its
-`Sushi.ini` sets no `backBufferColorDepth`, so the main buffer has eight bits per channel.
-
 - Soldiers are drawn four to a mesh (`oCrowdSk*.ssh`): the bone index divided by `nBones`
-  picks one of four, and `dot(pick, vRandomVec)` is that soldier's random number. It chooses
-  the row of the color-range texture in the normal passes and is the color in the
-  `RandomVectors` pass.
+  picks one of four, and `dot(pick, vRandomVec)` is that soldier's random number.
 - `vRandomVec` is `AppUpdate(SOLVectorADB0)`: an object data block of kind 0
-  (`SOLVectorADB.cpp`, read at 0x474350) holding four floats and an index, named
-  `SOLVectorADB<index>` (format string at 0x54fdd4). Every soldier object has one. Shader
-  variables whose `AppUpdate` names an object parameter take its value.
+  (`SOLVectorADB.cpp`, read at 0x474350) of four floats and an index. Shader variables whose
+  `AppUpdate` names an object parameter take its value.
 - Vertex element type 7 is four signed 16-bit integers, unnormalised.
 - Particles: `NonUniformRandom` values skew towards an end by their exponent (0x495020);
-  `Kill` shapes may be inverted and notify a `Collision` emitter, which then spawns
-  `NewParticlesPerCollision` particles where each particle died.
+  `Kill` shapes may be inverted and notify a `Collision` emitter.
 - Music: `Audio/SceneIntro.wav`, then `Audio/SceneLoop.wav` repeating, both 16-bit PCM;
   `audioIntroOverlap` is 0.
 

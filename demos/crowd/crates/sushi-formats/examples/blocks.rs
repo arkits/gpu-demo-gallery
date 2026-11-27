@@ -1,5 +1,5 @@
-//! Lists the data block kinds of every object and animation in an archive.
-use sushi_formats::{anim, archive::Archive, object};
+//! Lists the data blocks of every object and animation in an archive.
+use sushi_formats::{anim, archive::Archive, object, transfer};
 fn main() {
     let a = Archive::open(&std::fs::read(std::env::args().nth(1).unwrap()).unwrap()).unwrap();
     for n in a.names() {
@@ -17,6 +17,23 @@ fn main() {
                     b.raw_id,
                     data.len()
                 );
+                if *kind != transfer::TRANSFER {
+                    continue;
+                }
+                match transfer::read_transfer(data) {
+                    Ok(t) => println!(
+                        "  order {} clusters {} lights {:?} projected {} samples {} first {:?}",
+                        t.order,
+                        t.clusters.len(),
+                        t.lights,
+                        t.projected_lights.len(),
+                        t.samples.len(),
+                        t.projected_lights
+                            .first()
+                            .map(|l| &l[0][..4.min(l[0].len())])
+                    ),
+                    Err(e) => println!("  {e}"),
+                }
             }
         }
     }

@@ -1014,10 +1014,10 @@ impl<'a> Emitter<'a> {
     fn sample(&mut self, name: &str, args: &[Expr]) -> Result<Typed> {
         let sampler = args.first().ok_or("missing sampler")?;
         if let Expr::Index(array, index) = sampler {
-            if name != "tex2D" || args.len() != 2 {
-                return unsupported("sampler array lookup other than tex2D");
+            if !matches!(name, "tex2D" | "tex2Dbias") || args.len() != 2 {
+                return unsupported("sampler array lookup other than tex2D and tex2Dbias");
             }
-            return self.sample_array(array, index, &args[1]);
+            return self.sample_array(array, index, &args[1], name == "tex2Dbias");
         }
         let texture = self.texture_name(sampler)?;
         let cube = name.starts_with("texCUBE");
@@ -1081,7 +1081,15 @@ impl<'a> Emitter<'a> {
     }
 
     /// Sushi names consecutive D3D sampler slots with a numeric suffix.
-    fn sample_array(&mut self, array: &Expr, index: &Expr, coord: &Expr) -> Result<Typed> {
+    /// With `biased`, the coordinates are four numbers and the last is a level-of-detail bias,
+    /// as for `tex2Dbias`.
+    fn sample_array(
+        &mut self,
+        array: &Expr,
+        index: &Expr,
+        coord: &Expr,
+        biased: bool,
+    ) -> Result<Typed> {
         let Expr::Var(name) = array else {
             return unsupported("computed sampler array");
         };
@@ -1095,8 +1103,17 @@ impl<'a> Emitter<'a> {
         let index = self.expr(index)?;
         let index = self.convert(index, &Ty::INT)?;
         let coords = self.expr(coord)?;
-        let coords = self.convert(coords, &Ty::float(2))?;
-        let uv = self.hold(&coords);
+        let (uv, extra) = if biased {
+            let all = self.convert(coords, &Ty::float(4))?;
+            let h = self.hold(&all);
+            (
+                self.hold(&Typed::new(format!("{h}.xy"), Ty::float(2))),
+                Some(format!("{h}.w")),
+            )
+        } else {
+            let coords = self.convert(coords, &Ty::float(2))?;
+            (self.hold(&coords), None)
+        };
         let gradients = (self.stage == Stage::Pixel).then(|| {
             let dx = self.hold(&Typed::new(format!("dpdx({uv})"), Ty::float(2)));
             let dy = self.hold(&Typed::new(format!("dpdy({uv})"), Ty::float(2)));
@@ -1110,6 +1127,11 @@ impl<'a> Emitter<'a> {
             self.samplers.insert((tex.clone(), false));
             let sample = if let Some((dx, dy)) = &gradients {
                 let scale = number(f64::from((self.biases)(&tex).exp2()));
+                // A bias of b samples as if the footprint were 2^b times larger.
+                let scale = match &extra {
+                    Some(b) => format!("({scale} * exp2({b}))"),
+                    None => scale,
+                };
                 format!("textureSampleGrad(t_{tex}, s_{tex}, {uv}, {dx} * {scale}, {dy} * {scale})")
             } else {
                 format!("textureSampleLevel(t_{tex}, s_{tex}, {uv}, 0.0)")

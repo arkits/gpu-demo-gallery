@@ -72,7 +72,8 @@ impl Player {
         let show = demo.chapters().iter().map(|c| f64::from(c.duration()));
         let fades = &demo.settings;
         let fades = (f64::from(fades.fade_in), f64::from(fades.fade_out));
-        let show = Show::new(show.collect(), fades);
+        let mut show = Show::new(show.collect(), fades);
+        show.controls = demo.settings.controls.clone();
         Ok(Self {
             gpu,
             surface,

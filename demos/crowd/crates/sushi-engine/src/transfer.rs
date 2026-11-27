@@ -118,11 +118,13 @@ impl Harmonics {
         out
     }
 
-    /// `D3DXSHEvalDirectionalLight`: a surface facing the light shows its color.
+    /// `AtiSHEvalDirectionalLight` (0x450230 in the X800 SushiDX.exe): a surface facing
+    /// the light shows its color. The normalisation is ATI's table at 0x54b840.
     pub fn directional(&self, d: Vec3, color: Vec3) -> [Vec<f32>; 3] {
         let pi = std::f64::consts::PI;
         let scale = match self.order {
-            0..=2 => pi,
+            0 | 1 => 4.0 * pi,
+            2 => 4.0 * pi / 3.0,
             3 | 4 => 16.0 * pi / 17.0,
             _ => 32.0 * pi / 31.0,
         };
@@ -131,6 +133,100 @@ impl Harmonics {
         color
             .to_array()
             .map(|c| b[..n].iter().map(|v| (v * scale) as f32 * c).collect())
+    }
+}
+
+/// Light for `PrtCPCABuffer` sources computed while running (0x45b010 in the X800
+/// SushiDX.exe), in the object's space.
+#[derive(Debug, Clone, Default)]
+pub struct Source {
+    /// `Runtime`: the block's named scene lights, as directional lights seen from the centroid.
+    pub runtime: bool,
+    /// `Cubemap`: the environment the exporter projected into the block.
+    pub cubemap: bool,
+    pub scale: Option<f32>,
+    /// `Rotate x y z`: an axis scaled by an angle in radians.
+    pub rotate: Option<Vec3>,
+    pub centroid: Option<Vec3>,
+}
+
+impl Source {
+    /// The words after the vector index: `"Runtime"`, `Scale, 2.0`, `Rotate, 0, -1.9, 0`, ...
+    pub fn parse(args: &[String]) -> Option<Self> {
+        let mut s = Self::default();
+        let number = |i: usize| args.get(i)?.trim_matches('"').parse::<f32>().ok();
+        let mut i = 0;
+        while i < args.len() {
+            match args[i].trim_matches('"').to_ascii_lowercase().as_str() {
+                "runtime" => s.runtime = true,
+                "cubemap" => s.cubemap = true,
+                "presampled" => return None,
+                "scale" => {
+                    s.scale = number(i + 1);
+                    i += 1;
+                }
+                "rotate" => {
+                    let v = Vec3::new(number(i + 1)?, number(i + 2)?, number(i + 3)?);
+                    // Further rotations add up (0x45a210).
+                    s.rotate = Some(s.rotate.unwrap_or(Vec3::ZERO) + v);
+                    i += 3;
+                }
+                "centroid" => {
+                    s.centroid = Some(Vec3::new(number(i + 1)?, number(i + 2)?, number(i + 3)?));
+                    i += 3;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        (s.runtime || s.cubemap).then_some(s)
+    }
+
+    /// Spherical harmonics of the light, by color, in the object's space. `world` turns the
+    /// object's directions into the world's; `centroid` is the default place to look from.
+    pub fn light<'a>(
+        &self,
+        t: &Transfer,
+        h: &Harmonics,
+        lights: impl Iterator<Item = &'a crate::light::Light> + Clone,
+        world: Mat3,
+        centroid: Vec3,
+    ) -> [Vec<f32>; 3] {
+        let n = t.order * t.order;
+        let mut out: [Vec<f32>; 3] = std::array::from_fn(|_| vec![0.0; n]);
+        let add = |out: &mut [Vec<f32>; 3], v: &[Vec<f32>; 3]| {
+            for (o, v) in out.iter_mut().zip(v) {
+                o.iter_mut().zip(v).for_each(|(o, v)| *o += v);
+            }
+        };
+        let to_object = world.inverse();
+        if self.runtime {
+            let from = self.centroid.unwrap_or(centroid);
+            for name in &t.lights {
+                let Some(l) = lights.clone().find(|l| l.name.eq_ignore_ascii_case(name)) else {
+                    continue;
+                };
+                let d = (to_object * (l.position - from).normalize_or_zero()).normalize_or_zero();
+                add(&mut out, &h.directional(d, l.color * l.intensity));
+            }
+        }
+        if self.cubemap && !t.projected_lights.is_empty() {
+            let rotation = h.rotation(to_object);
+            for p in &t.projected_lights {
+                let p: [Vec<f32>; 3] = std::array::from_fn(|c| turn(&rotation, &p[c][..n]));
+                add(&mut out, &p);
+            }
+        }
+        if let Some(k) = self.scale {
+            out.iter_mut().flatten().for_each(|v| *v *= k);
+        }
+        // The axis-angle matrix (0x44d2c0) is transposed before AtiSHRotate, so light from
+        // d ends up at the axis turned by minus the angle.
+        if let Some(v) = self.rotate.filter(|v| v.length() > 1e-3) {
+            let rotation = h.rotation(Mat3::from_axis_angle(v.normalize(), -v.length()));
+            out = std::array::from_fn(|c| turn(&rotation, &out[c]));
+        }
+        out
     }
 }
 
@@ -198,6 +294,16 @@ pub fn around(t: &Transfer, time: f64, h: &Harmonics, world: Mat3) -> Around {
 /// `PrtCPCABuffer`: light times each cluster's mean and principal components. Every
 /// cluster has the mean's color, then the components' red, green and blue parts.
 pub fn cluster_buffer(t: &Transfer, vectors: usize, light: &Around, scale: f32) -> Vec<[f32; 4]> {
+    cluster_buffer_of(t, vectors, &light.colors, scale)
+}
+
+/// [`cluster_buffer`] for light given as coefficients by color.
+pub fn cluster_buffer_of(
+    t: &Transfer,
+    vectors: usize,
+    colors: &[Vec<f32>; 3],
+    scale: f32,
+) -> Vec<[f32; 4]> {
     let n = t.order * t.order;
     let stride = n * 3 * (1 + vectors * 4);
     let mut out = Vec::new();
@@ -205,7 +311,7 @@ pub fn cluster_buffer(t: &Transfer, vectors: usize, light: &Around, scale: f32) 
         let dot = |block: usize, color: usize| -> f32 {
             let v = &c[(block * 3 + color) * n..][..n];
             v.iter()
-                .zip(&light.colors[color])
+                .zip(&colors[color])
                 .map(|(a, b)| a * b)
                 .sum::<f32>()
                 * scale

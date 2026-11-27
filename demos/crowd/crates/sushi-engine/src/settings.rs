@@ -35,6 +35,8 @@ pub struct Settings {
     pub fade_out: f32,
     pub overlap: f32,
     pub chapters: Vec<Entry>,
+    /// Interactive cameras, in order.
+    pub controls: Vec<crate::camera::Control>,
 }
 
 /// Words, where quotes and parentheses keep several together. Quoted ones start with `"`.
@@ -179,6 +181,14 @@ impl Settings {
             fade_out: number("fadeOutTime", 0.0)?,
             overlap: number("audioIntroOverlap", 0.0)?,
             chapters,
+            controls: lines
+                .iter()
+                .filter(|l| l.0 == "control")
+                .map(|l| {
+                    crate::camera::Control::parse(&words(&l.1))
+                        .ok_or_else(|| format!("Sushi2.ini: bad control line {:?}", l.1))
+                })
+                .collect::<Result<_, _>>()?,
         })
     }
 }
@@ -186,6 +196,31 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_controls() {
+        let s = Settings::parse(
+            "scene = A.ati\nscript = N.sds Draw A.pth\n\
+             control = LAt(0,305,0) D(50,200, 110) P(-15,90,8) Y(-180,180,-180) Fr(1350) \
+             FDst(59)  Fstop(2.8) FLn(21) Seq(2)\n\
+             control = LookAt(1528, 1407, 2557) Dist(900, 2500) Pitch(11.5, 30, 15) FOV(65)",
+        )
+        .unwrap();
+        let [a, b] = s.controls.as_slice() else {
+            panic!()
+        };
+        assert_eq!(a.target, glam::Vec3::new(0.0, 305.0, 0.0));
+        assert_eq!(
+            (a.distance, a.yaw[2], a.sequence),
+            ([50.0, 200.0, 110.0], -180.0, Some(1))
+        );
+        assert_eq!(a.focus, [Some(59.0), Some(2.8), Some(21.0)]);
+        assert_eq!(
+            (b.distance[2], b.fov, b.sequence),
+            (1700.0, Some(65.0), None)
+        );
+        assert!(b.in_chapter(5) && a.in_chapter(1) && !a.in_chapter(0));
+    }
 
     #[test]
     fn reads_chapters_of_several_parts() {

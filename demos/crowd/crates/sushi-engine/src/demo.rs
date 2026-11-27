@@ -1,4 +1,5 @@
 //! The whole demo: loaded data plus everything needed to draw one frame.
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
@@ -71,7 +72,8 @@ struct Mesh {
     /// Seconds after which the shapes repeat.
     shapes_end: f32,
     weights: Option<Weighted>,
-    transfer: Option<(Transfer, Harmonics, usize)>,
+    /// Light transfer blocks, with the shader's PCA weight vectors (groups of four) each.
+    transfer: Vec<(Transfer, Harmonics, usize)>,
     /// Vectors from the object's data blocks, by parameter name.
     vectors: Vec<(String, [f32; 4])>,
 }
@@ -321,8 +323,39 @@ struct Context<'a> {
     overrides: &'a BTreeMap<String, [f32; 4]>,
     edited: &'a [Edited],
     around: Option<&'a (Around, Vec<[f32; 4]>)>,
+    prt: Option<&'a Prt<'a>>,
     center: Vec3,
     tile: [f32; 2],
+}
+
+/// Light transfer of one draw, for `PrtCPCABuffer` sources other than `Presampled`.
+struct Prt<'a> {
+    blocks: &'a [(Transfer, Harmonics, usize)],
+    /// The object's directions to the world's.
+    world: Mat3,
+    /// Where `Runtime` lights are seen from unless a `Centroid` is given.
+    centroid: Vec3,
+    /// By the words of the `AppUpdate`.
+    buffers: RefCell<HashMap<Vec<String>, Rc<Vec<[f32; 4]>>>>,
+}
+
+impl Prt<'_> {
+    /// `PrtCPCABuffer block index source...`: the buffer, or `None` for a presampled source.
+    fn buffer(&self, args: &[String], lights: &[&Light]) -> Option<Rc<Vec<[f32; 4]>>> {
+        let block = args.first()?.parse::<usize>().ok()?;
+        let key: Vec<String> = std::iter::once(args[0].clone())
+            .chain(args.iter().skip(2).cloned())
+            .collect();
+        if let Some(b) = self.buffers.borrow().get(&key) {
+            return Some(b.clone());
+        }
+        let source = transfer::Source::parse(args.get(2..)?)?;
+        let (t, h, vectors) = self.blocks.get(block)?;
+        let light = source.light(t, h, lights.iter().copied(), self.world, self.centroid);
+        let buffer = Rc::new(transfer::cluster_buffer_of(t, *vectors, &light, 1.0));
+        self.buffers.borrow_mut().insert(key, buffer.clone());
+        Some(buffer)
+    }
 }
 
 impl<'a> Context<'a> {
@@ -347,6 +380,7 @@ impl<'a> Context<'a> {
             overrides: none,
             edited: &[],
             around: None,
+            prt: None,
             center: Vec3::ZERO,
             tile: [1.0; 2],
         }
@@ -1213,18 +1247,33 @@ impl Demo {
                 .filter(|b| b.0 == blocks::VECTOR)
                 .map(|b| blocks::read_vector(&b.1).map_err(|e| format!("{}: {e}", m.shader)))
                 .collect::<std::result::Result<Vec<_>, _>>()?;
-            let transfer = match find(&o.blocks, blocks::TRANSFER) {
-                Some(d) => {
-                    let t = blocks::read_transfer(&d).map_err(|e| format!("{}: {e}", m.shader))?;
-                    let parts = m.header.streams.iter().flat_map(|s| &s.elements);
-                    let vectors = parts
-                        .filter(|e| e.source.starts_with("PrtPCAWeight"))
-                        .count();
+            // One per `PrtReceiver<k>` of the shader, in order.
+            let transfer = o
+                .blocks
+                .iter()
+                .filter(|b| b.raw_id as usize == number)
+                .flat_map(|b| &b.blocks)
+                .filter(|b| b.0 == blocks::TRANSFER)
+                .enumerate()
+                .map(|(k, (_, d))| {
+                    let t = blocks::read_transfer(d).map_err(|e| format!("{}: {e}", m.shader))?;
+                    let vectors = self.shaders[shader]
+                        .misc
+                        .get(&format!("PrtReceiver{k}"))
+                        .and_then(|w| {
+                            let at = w.iter().position(|w| w == "PCAWeightVectors")?;
+                            w.get(at + 1)?.parse::<usize>().ok()
+                        })
+                        .unwrap_or_else(|| {
+                            let parts = m.header.streams.iter().flat_map(|s| &s.elements);
+                            parts
+                                .filter(|e| e.source.starts_with("PrtPCAWeight"))
+                                .count()
+                        });
                     let h = Harmonics::new(t.order);
-                    Some((t, h, vectors))
-                }
-                None => None,
-            };
+                    Ok::<_, String>((t, h, vectors))
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             let gaps: Vec<f64> = m
                 .frame_keys
                 .iter()
@@ -1778,7 +1827,7 @@ impl Demo {
         let setting = wgsl::Setting {
             element: &|s, i| layout.find(s, i),
             unfiltered: &reads_depth,
-            sampler: &|n| f.samplers.get(n).cloned(),
+            sampler: &|n| f.samplers.get(&texture_alias(f, n)).cloned(),
             depth_only,
         };
         let id = match wgsl::translate(p, &setting) {
@@ -1818,6 +1867,7 @@ impl Demo {
         fill(&mut ps, &module.ps, file, ctx);
         let mut textures = Vec::new();
         for (name, ..) in &module.samplers {
+            let name = &texture_alias(file, name);
             let decl = file.textures.iter().find(|t| t.name == *name);
             let target = decl.and_then(|d| {
                 if let Some(t) = &d.target {
@@ -1846,6 +1896,7 @@ impl Demo {
         }
         let (vertices, indices, start, count) = geometry;
         let samplers = |n: &str| {
+            let n = &texture_alias(file, n);
             pass.samplers
                 .get(n)
                 .or_else(|| file.samplers.get(n))
@@ -1907,6 +1958,17 @@ fn matrix_registers(m: Mat4) -> Vec<[f32; 4]> {
     m.transpose().to_cols_array_2d().to_vec()
 }
 
+/// The texture a sampler means. Sushi binds the registers of `sampler t[n]` to textures
+/// `t0`..; so a lone `sampler tSky` takes `tSky0` when there is no `tSky`.
+fn texture_alias(file: &ShaderFile, name: &str) -> String {
+    let has = |n: &str| file.textures.iter().any(|t| t.name == n);
+    if !has(name) && has(&format!("{name}0")) {
+        format!("{name}0")
+    } else {
+        name.to_string()
+    }
+}
+
 fn fill(out: &mut [[f32; 4]], uniforms: &[Uniform], file: &ShaderFile, ctx: &Context) {
     for u in uniforms {
         let direct = file.vars.get(&u.name);
@@ -1915,8 +1977,8 @@ fn fill(out: &mut [[f32; 4]], uniforms: &[Uniform], file: &ShaderFile, ctx: &Con
         let begin = u.at as usize;
         let dst = &mut out[begin..begin + count * stride];
         // Replicated declarations become individual engine parameters in .ssh files,
-        // while the HLSL still addresses them as elements of one array.
-        if count > 1 && direct.is_none() {
+        // while the HLSL still addresses them as elements of one array, even of one.
+        if u.count.is_some() && direct.is_none() {
             let first = usize::from(!file.vars.contains_key(&format!("{}0", u.name)));
             if let Some(var) = file.vars.get(&format!("{}{first}", u.name)) {
                 if fill_array(dst, stride, var, ctx) {
@@ -1937,6 +1999,21 @@ fn fill(out: &mut [[f32; 4]], uniforms: &[Uniform], file: &ShaderFile, ctx: &Con
 /// number, without going through every element's name.
 fn fill_array(out: &mut [[f32; 4]], stride: usize, first: &Var, ctx: &Context) -> bool {
     let source = first.source.as_deref();
+    if let Some([kind, block, number, rest @ ..]) = source
+        && kind.eq_ignore_ascii_case("PrtCPCABuffer")
+        && stride == 1
+        && let Ok(number) = number.parse::<usize>()
+        && let Some(prt) = ctx.prt
+        && let Some(buffer) = prt.buffer(
+            &[[block.clone(), number.to_string()].as_slice(), rest].concat(),
+            ctx.lights,
+        )
+    {
+        for (i, to) in out.iter_mut().enumerate() {
+            *to = buffer.get(number + i).copied().unwrap_or([0.0; 4]);
+        }
+        return true;
+    }
     if let Some([kind, _, number, rest @ ..]) = source
         && kind.eq_ignore_ascii_case("PrtCPCABuffer")
         && let (Ok(number), Some((_, light)), 1) = (number.parse::<usize>(), ctx.around, stride)
@@ -2154,6 +2231,9 @@ fn builtin(name: &str, args: &[String], ctx: &Context) -> Option<Vec<[f32; 4]>> 
         "pstextile" | "particletexturescale" => vec![[ctx.tile[0], ctx.tile[1], 0.0, 0.0]],
         "prtcpcabuffer" => {
             let i = args.get(1)?.parse::<usize>().ok()?;
+            if let Some(buffer) = ctx.prt.and_then(|p| p.buffer(args, ctx.lights)) {
+                return Some(vec![buffer.get(i).copied().unwrap_or([0.0; 4])]);
+            }
             let scale = scale_of(args);
             vec![ctx.around?.1.get(i)?.map(|v| v * scale)]
         }
@@ -3006,15 +3086,23 @@ impl Demo {
                 }
                 let params = own.as_ref().unwrap_or(&params);
                 let morph = m.weights.as_ref().map_or_else(Vec::new, |w| w.at(t));
-                let around = m.transfer.as_ref().map(|(transfer, harmonics, vectors)| {
-                    let world = bones
-                        .first()
-                        .map_or(Mat3::IDENTITY, |b| Mat3::from_mat4(b.matrix));
-                    let light =
-                        transfer::around(transfer, f64::from(d.frame.time), harmonics, world);
-                    let buffer = transfer::cluster_buffer(transfer, *vectors, &light, 1.0);
-                    (light, buffer)
-                });
+                let world = bones
+                    .first()
+                    .map_or(Mat3::IDENTITY, |b| Mat3::from_mat4(b.matrix));
+                let around = m.transfer.iter().find(|(t, ..)| !t.samples.is_empty()).map(
+                    |(transfer, harmonics, vectors)| {
+                        let light =
+                            transfer::around(transfer, f64::from(d.frame.time), harmonics, world);
+                        let buffer = transfer::cluster_buffer(transfer, *vectors, &light, 1.0);
+                        (light, buffer)
+                    },
+                );
+                let prt = Prt {
+                    blocks: &m.transfer,
+                    world,
+                    centroid: center,
+                    buffers: RefCell::default(),
+                };
                 let shape_time = if m.shapes_end > 0.0 {
                     t.rem_euclid(m.shapes_end)
                 } else {
@@ -3075,6 +3163,7 @@ impl Demo {
                                     overrides: &params,
                                     edited: &edits,
                                     around: around.as_ref(),
+                                    prt: Some(&prt),
                                     center: model.center,
                                     tile: [1.0; 2],
                                 };
