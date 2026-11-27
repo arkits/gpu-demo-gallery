@@ -3,45 +3,55 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Live Rust ports of graphics demos from ATI Radeon 8500 and NVIDIA GeForce 7.">
-  <title>GPU Demo Gallery</title>
+  <meta name="color-scheme" content="dark">
   <link rel="icon" href="data:,">
+  <title>{{title}} · GPU Demo Gallery</title>
   <link rel="stylesheet" href="/player.css">
 </head>
-<body>
-  <header class="top"><a href="https://gpu-demo-gallery.pages.dev/">← GPU Demo Gallery</a>
-    <a href="https://github.com/arkits/gpu-demo-gallery/tree/main/demos/radeon-8500">Source ↗</a></header>
-  <main>
-    <nav aria-label="Graphics demos" id="demos"></nav>
-    <section id="viewer" hidden aria-label="Demo player">
-      <div class="heading"><h1 id="title"></h1><p id="hardware"></p></div>
-      <div id="stage">
-        <canvas id="canvas" width="960" height="720" aria-label="Live graphics demonstration"></canvas>
-        <p id="status" role="status">Loading original content…</p>
-      </div>
-      <div id="controls" aria-label="Playback controls">
-        <button id="pause" disabled>Pause</button><button id="restart" disabled>Restart</button>
+<body data-demo="{{slug}}">
+  <main id="viewer">
+    <header class="masthead">
+      <a class="gallery" href="https://gpu-demo-gallery.pages.dev/">← <span>Gallery</span></a>
+      <div class="identity"><h1>{{title}}</h1><p>{{hardware}}</p></div>
+      <a class="source" href="https://github.com/arkits/gpu-demo-gallery/tree/main/demos/radeon-8500">Source ↗</a>
+    </header>
+    <div id="stage">
+      <canvas id="canvas" width="960" height="720" aria-label="{{title}} live rendering"></canvas>
+      <p id="status" role="status" aria-live="polite">Loading original content…</p>
+    </div>
+    <div class="transport" aria-label="Playback controls">
+      <div class="playback">
+        <button id="pause" disabled>Pause</button>
+        <button id="restart" disabled>Restart</button>
         <button id="sound" hidden>Unmute</button>
+      </div>
+      <div class="scene-controls">
         <button id="truform" hidden aria-pressed="true">TruForm</button>
-        <button id="preset" hidden>Next deformation</button>
-        <button id="stencil" hidden>Next stencil</button>
-        <label id="load-audio" hidden>Use an audio file<input id="audio-file" type="file" accept="audio/*"></label>
+        <button id="preset" hidden aria-label="Next deformation">Deform</button>
+        <button id="stencil" hidden aria-label="Next stencil">Stencil</button>
+        <label id="load-audio" hidden>Audio file<input id="audio-file" type="file" accept="audio/*"></label>
         <label id="chest-select" hidden>Showpiece
           <select id="chest-object">
-            <option value="0">Chest</option><option value="1">Reflective sphere</option>
-            <option value="2">Angel</option><option value="3">Bump-mapped sphere</option>
-            <option value="4">Stained glass</option><option value="5">Chalice</option>
-            <option value="6">Skull</option><option value="7">Tiles</option>
+            <option value="0">Chest</option>
+            <option value="1">Reflective sphere</option>
+            <option value="2">Angel</option>
+            <option value="3">Bump-mapped sphere</option>
+            <option value="4">Stained glass</option>
+            <option value="5">Chalice</option>
+            <option value="6">Skull</option>
+            <option value="7">Tiles</option>
           </select>
         </label>
-        <button id="fullscreen">Fullscreen</button>
       </div>
-      <p id="keyboard"></p>
-    </section>
-    <section id="directory" hidden>
-      <h1>Radeon 8500 &amp; GeoForms</h1>
-      <p>Eight graphics demonstrations, running live in Rust. Select a demo to start.</p>
-    </section>
+      <div class="view-controls">
+        <details class="help">
+          <summary>Controls</summary>
+          <p id="keyboard"></p>
+        </details>
+        <button id="fullscreen" disabled>Fullscreen</button>
+      </div>
+      <p id="notice" role="status" hidden></p>
+    </div>
   </main>
   <script type="module" src="/player.js"></script>
 </body>

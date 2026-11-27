@@ -2,7 +2,7 @@
 
 One Rust player for ATI Dolphin, Nature, Rachel, Island 1–3 and Treasure Chest, and NVIDIA GeoForms. The same WGSL renderer runs in a native window, WebGPU and WebGL2.
 
-[Play the demos on Cloudflare Pages](https://radeon-8500-port.pages.dev/)
+[Browse the demos in the GPU Demo Gallery](https://gpu-demo-gallery.pages.dev/)
 
 ## Local build
 
@@ -28,6 +28,8 @@ scripts/deploy-cloudflare.sh
 ```
 
 Cloudflare Pages publishes the web build and the original content packs. Larger archives are served as chunks under the Pages per-file limit. Local assets and generated files are Git-ignored.
+
+`web/index.html` is the shared player template. The build fills in the title, hardware and content identifier for each route from `scripts/stage-content.py`. All routes share the layout in `web/player.css` and the controls in `web/player.js`.
 
 Generate a native frame with `cargo run --release -- nature --shot 39 frame.png`. Use `--inspect` to check that the packaged data loads and list its geometry and texture counts.
 

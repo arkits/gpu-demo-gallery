@@ -11,5 +11,5 @@ fi
 mkdir -p dist/pkg
 "$bindgen" --target web --no-typescript --out-dir dist/pkg \
   target/wasm32-unknown-unknown/release/radeon_8500.wasm
-cp web/index.html web/player.css web/player.js dist/
+cp web/player.css web/player.js dist/
 python3 scripts/stage-content.py

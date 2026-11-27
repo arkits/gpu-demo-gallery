@@ -1,5 +1,5 @@
 struct Frame {
-    centers: array<vec4f, 6>,
+    centers: array<vec4f, 8>,
     options: vec4f,
     aspect_fov: vec4f,
 };
@@ -57,58 +57,75 @@ fn field(p: vec3f) -> f32 {
         q *= 1.0 + (0.06 * audio + 0.025) * sin(length(p) * 10.0 - t * 3.1 - 1.0);
     } else if mode == 2.0 {
         let r = length(p);
-        q *= mix(1.0, floor(r * 11.0) / max(r * 11.0, 0.0001), audio * 0.55);
+        let bands = r * 11.0;
+        let steps = floor(bands) + smoothstep(0.15, 0.85, fract(bands));
+        q *= mix(1.0, steps / max(bands, 0.0001), 0.22 + audio * 0.24);
     } else if mode == 3.0 {
         q += 0.10 * sin(p.yzx * 5.3 + p.zxy * 2.1 + t * 1.5);
     }
+    if frame.options.w > 0.5 {
+        let turn = sin(t * 0.39) * 0.45;
+        let xy = vec3f(cos(turn) * q.x + sin(turn) * q.z, q.y, cos(turn) * q.z - sin(turn) * q.x);
+        let plane = vec2f(xy.x / max(frame.aspect_fov.w, 0.35), -xy.y);
+        let uv = plane / 2.5 + 0.5;
+        let border = max(abs(uv.x - 0.5), abs(uv.y - 0.5)) - 0.485;
+        let map = textureSampleLevel(stencil, linear_sampler, clamp(uv, vec2f(0.003), vec2f(0.997)), 0.0);
+        let silhouette = max((map.r - 0.5) * 0.84, border * 2.5);
+        let half_depth = (0.105 + 0.24 * map.g) * (1.0 + 0.22 * audio);
+        let z = abs(xy.z + 0.10 * sin(5.0 * xy.y - t * 1.7)) - half_depth;
+        let d = vec2f(silhouette, z) + 0.035;
+        return length(max(d, vec2f(0.0))) + min(max(d.x, d.y), 0.0) - 0.035;
+    }
     var d = 100.0;
-    for (var i = 0u; i < 6u; i += 1u) {
+    for (var i = 0u; i < 8u; i += 1u) {
         let ball = frame.centers[i];
         d = smooth_union(d, length(q - ball.xyz) - ball.w, 0.38 + audio * 0.18);
     }
     return d;
 }
 
-fn contour(screen: vec2f, t: f32) -> vec3f {
-    let uv = vec2f(screen.x, -screen.y) * 0.53 + 0.5;
-    let filtered = textureSampleLevel(stencil, linear_sampler, clamp(uv, vec2f(0.0), vec2f(1.0)), 0.0).r;
-    let inside = all(uv > vec2f(0.0)) && all(uv < vec2f(1.0));
-    let mask = select(0.0, smoothstep(0.29, 0.62, filtered + 0.07 * sin(t * 1.9 + uv.y * 16.0)), inside);
-    return vec3f(mask, filtered, mask * (1.0 - filtered));
-}
-
 @fragment fn fs_geo(v: Out) -> @location(0) vec4f {
     let t = frame.options.x;
     let audio = frame.options.y;
-    let screen = v.screen * vec2f(frame.aspect_fov.x, 1.0);
+    let aspect = frame.aspect_fov.x;
+    let screen = v.screen * vec2f(aspect, 1.0) * max(1.0, 1.05 / aspect);
     let ray = normalize(vec3f(screen * tan(frame.aspect_fov.y * 0.5), -1.0));
     let eye = vec3f(0.0, 0.0, 6.1);
     let bg = background(ray, t);
-    var travel = 3.15;
+    let relative = dot(eye, ray);
+    let discriminant = relative * relative - dot(eye, eye) + 3.15 * 3.15;
+    var travel = -relative - sqrt(max(discriminant, 0.0));
+    let end = -relative + sqrt(max(discriminant, 0.0));
     var hit = false;
-    for (var i = 0; i < 64; i += 1) {
-        let step = field(eye + ray * travel);
-        if step < 0.004 {
-            hit = true;
-            break;
+    if discriminant > 0.0 {
+        for (var i = 0; i < 62; i += 1) {
+            let step = field(eye + ray * travel);
+            if step < 0.003 {
+                hit = true;
+                break;
+            }
+            travel += max(step * 0.69, 0.004);
+            if travel > end { break; }
         }
-        travel += max(step * 0.60, 0.005);
-        if travel > 9.0 { break; }
     }
     var col = bg;
     if hit {
         let p = eye + ray * travel;
-        let e = 0.007;
-        let dx = vec3f(e, 0.0, 0.0);
-        let dy = dx.yxz;
-        let dz = dx.yzx;
-        let n0 = normalize(vec3f(field(p + dx) - field(p - dx), field(p + dy) - field(p - dy), field(p + dz) - field(p - dz)));
+        let e = 0.008;
+        let a = vec3f(1.0, -1.0, -1.0);
+        let b = vec3f(-1.0, -1.0, 1.0);
+        let c = vec3f(-1.0, 1.0, -1.0);
+        let d = vec3f(1.0, 1.0, 1.0);
+        let n0 = normalize(a * field(p + e * a) + b * field(p + e * b)
+            + c * field(p + e * c) + d * field(p + e * d));
         let texture_color = noise3(p * 0.35 + vec3f(0.0, 0.019 * t, 0.05 * t));
         let n = normalize(n0 + (texture_color - 0.5) * 0.13);
         let edge = 1.0 - clamp(dot(n, -ray), 0.0, 1.0);
         let fresnel = pow(edge, 1.7);
         let refracted = background(normalize(ray + vec3f(n.xy, 0.0) * (0.15 + edge * 0.37)), t);
-        let reflected = background(reflect(ray, n), t);
+        let reflection = reflect(ray, n);
+        let reflected = mix(background(reflection, t),
+            background(normalize(reflection + vec3f(0.14, 0.08, -0.05)), t), 0.35);
         let hue = 0.52 + 0.46 * cos(vec3f(2.0, 0.2, 3.8) + t * 0.26);
         let ramp = hue * (0.72 + 0.28 * texture_color.x);
         let light = normalize(vec3f(sin(t * 0.53), 0.65, 1.0));
@@ -123,11 +140,6 @@ fn contour(screen: vec2f, t: f32) -> vec3f {
         let body = ramp * (0.24 + scatter) * (1.0 - exp(-thickness * 3.1));
         col = refracted * absorption * (0.73 - fresnel * 0.54) + body * (0.89 - fresnel * 0.53)
             + reflected * (0.15 + fresnel * 0.91) + spec * vec3f(1.0, 0.92, 0.78);
-    }
-    if frame.options.w > 0.5 {
-        let mask = contour(screen, t);
-        let rim = mask.z * vec3f(0.32, 0.85, 0.96);
-        col = mix(bg, col + rim + mask.y * vec3f(0.12, 0.22, 0.32), mask.x);
     }
     col *= 1.07 - 0.22 * dot(v.screen, v.screen);
     col = clamp(col, vec3f(0.0), vec3f(1.0));

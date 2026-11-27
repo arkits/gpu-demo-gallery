@@ -119,8 +119,10 @@ pub(crate) enum Effect {
     Unlit,
     Terrain,
     PortalWater,
-    FallsFoam,
     CloudSky,
+    StainedGlass,
+    Teleporter,
+    DistortedSprite,
 }
 
 #[derive(Clone, Copy)]
@@ -174,6 +176,7 @@ pub(crate) enum Motion {
         skin: Vec<sushi::Skin>,
     },
     ChestLid,
+    ChestShowpiece,
 }
 
 pub struct Scene {

@@ -1,43 +1,53 @@
 :root {
   color-scheme: dark;
-  --background: #121316;
-  --panel: #1d1f23;
-  --line: #383a40;
-  --text: #eae8e0;
-  --muted: #a7a9ab;
-  --accent: #f1bb72;
-  font: 15px/1.5 Georgia, serif;
-  color: var(--text);
-  background: var(--background);
+  --ink: #f1eee6;
+  --muted: #b8b5ab;
+  --panel: #151719;
+  --line: #34383b;
+  --signal: #efbc7d;
+  font: 13px/1.35 ui-monospace, "SFMono-Regular", Consolas, monospace;
+  color: var(--ink);
+  background: #08090a;
 }
 * { box-sizing: border-box }
 [hidden] { display: none !important }
-body { margin: 0 }
-a { color: inherit }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px }
-.top { display: flex; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: 1rem max(1rem, calc((100vw - 1060px) / 2)); font: 12px/1.4 ui-monospace, monospace }
-.top a { text-decoration: none }
-.top a:hover, #demos a:hover { color: var(--accent) }
-main { max-width: 1092px; margin: 0 auto; padding: 1.1rem 1rem 3rem; }
-#demos { display: flex; flex-wrap: wrap; gap: .45rem 1.05rem; font: 12px/1.5 ui-monospace, monospace }
-#demos a { color: var(--muted); text-decoration: none; padding: .3rem 0; border-bottom: 1px solid transparent }
-#demos a[aria-current] { color: var(--accent); border-color: var(--accent) }
-.heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 1rem; margin-top: 1rem }
-h1 { margin: .3rem 0 .7rem; font-size: clamp(2rem, 5vw, 3.5rem); line-height: 1.1; font-weight: normal; letter-spacing: -.045em }
-#hardware, #keyboard { color: var(--muted); margin: 0 0 .7rem; font: 12px/1.5 ui-monospace, monospace }
-#stage { position: relative; overflow: hidden; border: 1px solid var(--line); background: #090a0c; aspect-ratio: 4 / 3; width: 100%; max-height: 75vh; }
-#stage:fullscreen { border: 0; max-height: none; width: 100%; height: 100%; aspect-ratio: auto }
-#canvas { display: block; height: 100%; width: 100%; touch-action: none }
-#status { position: absolute; inset: 0; display: grid; place-content: center; margin: 0; padding: 1.5rem; text-align: center; font: 14px/1.6 ui-monospace, monospace; background: #0b0c0edb; overflow-wrap: anywhere }
-#controls { display: flex; flex-wrap: wrap; gap: .5rem; padding: .75rem 0 }
-#controls button, #load-audio { appearance: none; border: 1px solid var(--line); border-radius: 0; color: var(--text); background: var(--panel); padding: .55rem .8rem; font: 12px/1.5 ui-monospace, monospace; cursor: pointer }
-#controls :is(button:hover, label:hover):not(:disabled) { border-color: var(--accent); color: var(--accent) }
-#controls button:disabled { opacity: .5; cursor: default }
-#load-audio input { width: 0; height: 0; opacity: 0; position: absolute }
-#load-audio:focus-within { outline: 2px solid var(--accent); outline-offset: 3px }
-#directory { margin-top: 3.5rem; padding: 1.75rem 0; border-top: 1px solid var(--line) }
-
-#controls button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent) }
-
-#chest-select { color: var(--muted); align-self: center; font: 12px/1.5 ui-monospace, monospace }
-#chest-object { color: var(--text); border: 1px solid var(--line); background: var(--panel); padding: .5rem; font: inherit }
+body, h1, p { margin: 0 }
+#viewer { height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto }
+.masthead, .transport { background: var(--panel); position: relative; z-index: 1 }
+.masthead { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: .65rem; padding: .5rem clamp(.65rem, 2vw, 1.55rem); border-bottom: 1px solid var(--line) }
+.masthead a { color: var(--muted); text-decoration: none; width: max-content; padding: .35rem 0 }
+.source { justify-self: end }
+.identity { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 0 .8rem; text-align: center }
+h1 { font: 500 clamp(1.05rem, 2.1vw, 1.45rem)/1.1 Georgia, serif }
+.identity p { color: var(--muted); font-size: .82rem }
+#stage { position: relative; min-width: 0; min-height: 0; background: #08090a }
+#canvas { display: block; width: 100%; height: 100%; touch-action: none }
+#status { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; background: #08090ae0; padding: 2rem }
+.transport { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .85rem; min-height: 3.35rem; padding: .42rem clamp(.55rem, 2vw, 1.55rem) max(.42rem, env(safe-area-inset-bottom)); border-top: 1px solid var(--line) }
+.playback, .scene-controls, .view-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem }
+.view-controls { margin-inline-start: auto }
+button, select, summary, #load-audio { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); padding: .44rem .62rem; min-height: 2.25rem; cursor: pointer }
+button:disabled { opacity: .45; cursor: default }
+button[aria-pressed="true"], .masthead a:hover, button:enabled:hover, summary:hover, #load-audio:hover { color: var(--signal) }
+button[aria-pressed="true"] { border-color: var(--signal) }
+:focus-visible, #load-audio:focus-within { outline: 2px solid var(--signal); outline-offset: 2px }
+#chest-select { display: flex; align-items: center; gap: .45rem; color: var(--muted) }
+#load-audio { position: relative; display: inline-flex; align-items: center }
+#load-audio input { position: absolute; width: 1px; height: 1px; opacity: 0 }
+.help { position: relative }
+.help summary { list-style: none }
+.help summary::-webkit-details-marker { display: none }
+.help p, #notice { position: absolute; bottom: calc(100% + .55rem); right: 0; width: min(23rem, 77vw); padding: .8rem; border: 1px solid var(--line); background: var(--panel); color: var(--ink); box-shadow: 0 5px 25px #0008 }
+#notice { right: .65rem }
+@media (max-width: 560px) {
+  .identity { display: grid; gap: .15rem }
+  .identity p { font-size: .7rem }
+  button, select, summary, #load-audio { min-height: 2.6rem; padding-inline: .5rem }
+  .scene-controls { order: 3; flex-basis: 100% }
+  .scene-controls:not(:has(:not([hidden]))) { display: none }
+  #chest-select { font-size: .85rem }
+}
+@media (max-width: 360px) {
+  button, select, summary, #load-audio { padding-inline: .4rem; font-size: .92rem }
+  .transport { column-gap: .35rem }
+}

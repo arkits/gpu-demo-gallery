@@ -1,35 +1,14 @@
 import init, { WebPlayer } from "/pkg/radeon_8500.js";
 
-const demos = {
-  dolphin: ["ATI Dolphin", "ATI Radeon 8500 · 2001"],
-  nature: ["ATI Nature", "ATI Radeon 8500 · 2001"],
-  rachel: ["ATI Rachel", "ATI Radeon 8500 · 2001"],
-  island1: ["ATI Island 1", "ATI Radeon 8500 · 2001"],
-  island2: ["ATI Island 2", "ATI Radeon 8500 · 2001"],
-  island3: ["ATI Island 3", "ATI Radeon 8500 · 2001"],
-  "treasure-chest": ["ATI Treasure Chest", "ATI Radeon 8500 · 2001"],
-  geoforms: ["GeoForms", "NVIDIA GeForce 7 · 2006"],
-};
-
-const slug = location.pathname.split("/")[1];
+const slug = document.body.dataset.demo;
 const byId = (name) => document.getElementById(name);
-for (const [id, [title]] of Object.entries(demos)) {
-  const link = Object.assign(document.createElement("a"), { href: `/${id}/`, textContent: title });
-  if (id === slug) link.setAttribute("aria-current", "page");
-  byId("demos").append(link);
-}
 
-if (Object.hasOwn(demos, slug)) {
-  const [title, hardware] = demos[slug];
-  document.title = `${title} · GPU Demo Gallery`;
-  byId("title").textContent = title;
-  byId("hardware").textContent = hardware;
-  byId("viewer").hidden = false;
-  start().catch((error) => {
-    byId("status").textContent = error instanceof Error ? error.message : String(error);
-  });
-} else {
-  byId("directory").hidden = false;
+start().catch(showError);
+
+function showError(error) {
+  const status = byId("status");
+  status.textContent = error instanceof Error ? error.message : String(error);
+  status.hidden = false;
 }
 
 async function download(config) {
@@ -51,6 +30,11 @@ async function start() {
   const canvas = byId("canvas");
   const stage = byId("stage");
   const status = byId("status");
+  const notice = byId("notice");
+  function notify(message) {
+    notice.textContent = message;
+    notice.hidden = false;
+  }
   const geo = slug === "geoforms";
   const [, config] = await Promise.all([
     init(),
@@ -62,9 +46,12 @@ async function start() {
   const content = await download(config);
   status.textContent = "Preparing the GPU…";
   function canvasSize() {
-    const resolution = Math.min(devicePixelRatio, 1.5);
-    return [Math.max(1, Math.round(stage.clientWidth * resolution)),
-      Math.max(1, Math.round(stage.clientHeight * resolution))];
+    const width = Math.max(1, stage.clientWidth);
+    const height = Math.max(1, stage.clientHeight);
+    // Keep the full viewport while bounding fragment work on Retina displays.
+    const pixelBudget = geo ? 720 * 720 : 1920 * 1080;
+    const resolution = Math.min(devicePixelRatio, 1.5, Math.sqrt(pixelBudget / (width * height)));
+    return [Math.max(1, Math.round(width * resolution)), Math.max(1, Math.round(height * resolution))];
   }
   [canvas.width, canvas.height] = canvasSize();
   const player = await WebPlayer.create(canvas, slug, content);
@@ -159,31 +146,46 @@ async function start() {
         frequency = new Uint8Array(analyser.frequencyBinCount);
         audioContext.createMediaElementSource(audio).connect(analyser).connect(audioContext.destination);
       }
+      notice.hidden = true;
       if (audioUrl) URL.revokeObjectURL(audioUrl);
       audioUrl = URL.createObjectURL(file.files[0]);
       audio.src = audioUrl;
       try {
         await audioContext.resume();
         if (playing) await audio.play();
-      } catch (error) {
-        byId("keyboard").textContent = "This audio file could not be played. Try MP3 or WAV.";
+      } catch {
+        notify("This audio file could not be played.");
       }
     };
   }
 
   const fullscreen = async () => {
-    if (document.fullscreenElement) await document.exitFullscreen();
-    else await stage.requestFullscreen();
+    if (!document.fullscreenEnabled) return;
+    notice.hidden = true;
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await byId("viewer").requestFullscreen();
+    } catch {
+      notify("Fullscreen is unavailable.");
+    }
   };
-  byId("fullscreen").onclick = () => fullscreen().catch(() => {});
+  const fullscreenButton = byId("fullscreen");
+  fullscreenButton.hidden = !document.fullscreenEnabled;
+  fullscreenButton.disabled = false;
+  fullscreenButton.onclick = fullscreen;
+  document.addEventListener("fullscreenchange", () => {
+    fullscreenButton.textContent = document.fullscreenElement ? "Exit fullscreen" : "Fullscreen";
+  });
   byId("keyboard").textContent = geo
     ? "Space pauses · R restarts · M changes deformation · S changes stencil"
     : "Drag to look · Scroll to zoom · Space pauses · Arrow keys seek · R restarts"
-      + (slug === "dolphin" ? " · T toggles TruForm" : "");
+      + (slug === "dolphin" ? " · T toggles TruForm" : "")
+      + (slug === "treasure-chest" ? " · 0–7 select a showpiece" : "");
   document.addEventListener("keydown", (event) => {
-    if (event.target.matches("button,input,select") || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.target.matches("button,input,select,summary") || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key.toLowerCase() === "f") {
-      fullscreen().catch(() => {});
+      if (document.fullscreenEnabled) event.preventDefault();
+      fullscreen();
       return;
     }
     if (event.key.toLowerCase() === "r") reset();
@@ -221,11 +223,15 @@ async function start() {
       level = Math.max(signal, level * 0.92);
       player.audio(level);
     }
-    if (player.frame(now / 1000)) {
-      status.hidden = true;
-      stage.dataset.ready = "true";
+    try {
+      if (player.frame(now / 1000)) {
+        status.hidden = true;
+        stage.dataset.ready = "true";
+      }
+      requestAnimationFrame(frame);
+    } catch (error) {
+      showError(error);
     }
-    requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 }

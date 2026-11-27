@@ -6,13 +6,15 @@ use sushi_formats::{
     archive::Archive,
     path::{FlyPath, PathFrame},
     reader::{Reader, f32_at, u32_at},
+    texture::Level,
 };
 
-use crate::{Demo, Effect, Material, Mesh, Motion, Result, Scene, Vertex, asset, image_texture};
+use crate::{Demo, Effect, Material, Mesh, Motion, Result, Scene, Vertex, asset};
 
 pub(crate) struct Settings {
     pub path: FlyPath,
     pub lights: Vec<FlyPath>,
+    pub environment: usize,
 }
 
 #[derive(Default)]
@@ -90,6 +92,7 @@ pub(crate) fn load(files: &Archive) -> Result<Scene> {
             .into_iter()
             .map(|name| path(asset(files, &format!("paths/{name}.pth"))?))
             .collect::<Result<_>>()?,
+        environment: 0,
     });
     scene.far = 250.0;
     scene.clear = [0.017, 0.018, 0.020];
@@ -109,7 +112,29 @@ pub(crate) fn load(files: &Archive) -> Result<Scene> {
                 } else {
                     image::ImageFormat::Bmp
                 };
-                let index = image_texture(scene, asset(files, &path)?, format)?;
+                let mut image =
+                    image::load_from_memory_with_format(asset(files, &path)?, format)?.into_rgba8();
+                let mut levels = Vec::new();
+                loop {
+                    let (width, height) = image.dimensions();
+                    let next = (width > 1 || height > 1).then(|| {
+                        image::imageops::resize(
+                            &image,
+                            (width / 2).max(1),
+                            (height / 2).max(1),
+                            image::imageops::FilterType::Triangle,
+                        )
+                    });
+                    levels.push(Level {
+                        width: width as usize,
+                        height: height as usize,
+                        rgba: image.into_raw(),
+                    });
+                    let Some(smaller) = next else { break };
+                    image = smaller;
+                }
+                let index = scene.textures.len();
+                scene.textures.push(levels);
                 v.insert(index);
                 Ok(index)
             }
@@ -173,20 +198,6 @@ pub(crate) fn load(files: &Archive) -> Result<Scene> {
             Effect::Lit,
             [1.0; 4],
         ),
-        (
-            "window",
-            "stainedglass_rgb.bmp",
-            "stainedglass_bump.bmp",
-            Effect::Unlit,
-            [0.68, 0.67, 0.85, 1.0],
-        ),
-        (
-            "chalice",
-            "chaliceuv_rgb.bmp",
-            "chaliceuv_bump.bmp",
-            Effect::Metal,
-            [1.0; 4],
-        ),
     ];
     let specimens = [
         (
@@ -233,6 +244,7 @@ pub(crate) fn load(files: &Archive) -> Result<Scene> {
         ),
         ("box", "tiles.tga", "tilesheight.tga", Effect::Lit, [1.0; 4]),
     ];
+    let mut room = Vec::new();
     for (showcase, (name, base, bump, effect, tint)) in
         stage.into_iter().map(|part| (0, part)).chain(
             specimens
@@ -241,22 +253,41 @@ pub(crate) fn load(files: &Archive) -> Result<Scene> {
                 .map(|(i, part)| (i as u8 + 1, part)),
         )
     {
+        let reflect = match (name, showcase) {
+            ("ball", 1) | ("skull", _) => "rustchrome_reflect_rgb.bmp",
+            ("ball", 3) => "ground2gloss.bmp",
+            ("chalice", _) => "chaliceuv_reflect.bmp",
+            ("angel_head", _) => "angel_reflect.bmp",
+            ("window", _) => "stainedglass_trans.bmp",
+            ("box", _) => "tilesspecexp.tga",
+            _ => "",
+        };
+        let bump_scale = match name {
+            "chest_bot_metal" | "chest_top_metal" => 0.22,
+            "angel_head" | "chalice" | "window" => 0.40,
+            _ => 0.54,
+        };
         let material = Material {
             texture: texture(&mut scene, base)?,
             detail: texture(&mut scene, bump)?,
-            third: 0,
-            effect,
+            third: texture(&mut scene, reflect)?,
+            effect: if name == "window" {
+                Effect::StainedGlass
+            } else {
+                effect
+            },
             alpha_cut: 0.0,
             blend: false,
-            strength: if bump.is_empty() { 0.0 } else { 0.25 },
+            strength: if bump.is_empty() { 0.0 } else { bump_scale },
             tint,
         };
-        let (scale, offset) = match name {
-            "window" => (1.0, [0.0, -13.6, 7.6]),
-            "chalice" => (0.014, [0.0, 0.0, 1.97]),
-            _ => (1.0, [0.0; 3]),
+        let motion = if showcase > 0 {
+            let index = scene.motions.len();
+            scene.motions.push(Motion::ChestShowpiece);
+            Some(index)
+        } else {
+            name.starts_with("chest_top").then_some(0)
         };
-        let motion = (showcase == 0 && name.starts_with("chest_top")).then_some(0);
         let asset_parts = parts(asset(files, &format!("pof/{name}.pof"))?)?;
         let mut max = Vec3::splat(f32::NEG_INFINITY);
         let mut min = Vec3::splat(f32::INFINITY);
@@ -283,10 +314,9 @@ pub(crate) fn load(files: &Archive) -> Result<Scene> {
                 .map(|i| {
                     let pos = [0, 8, 4].map(|o| f32_at(part.positions, i * 12 + o));
                     let pos = if showcase > 0 {
-                        ((Vec3::from(pos) - center) * normalization + Vec3::new(-2.8, 2.65, 5.6))
-                            .into()
+                        ((Vec3::from(pos) - center) * normalization).into()
                     } else {
-                        [0, 1, 2].map(|j| pos[j] * scale + offset[[0, 2, 1][j]])
+                        pos
                     };
                     let normal = [0, 8, 4].map(|o| f32_at(part.normals, i * 12 + o));
                     let uv = if part.coords.is_empty() {
@@ -305,6 +335,9 @@ pub(crate) fn load(files: &Archive) -> Result<Scene> {
             if indices.iter().any(|&index| index as usize >= count) {
                 return Err(format!("POF index outside vertices in {name}").into());
             }
+            if showcase == 0 && name.starts_with("keep_") {
+                room.push(scene.meshes.len());
+            }
             scene.meshes.push(Mesh {
                 vertices,
                 indices,
@@ -314,5 +347,101 @@ pub(crate) fn load(files: &Archive) -> Result<Scene> {
             });
         }
     }
+    let environment = capture_room(&scene, &room);
+    scene.chest.as_mut().unwrap().environment = scene.textures.len();
+    scene.textures.push(vec![environment]);
     Ok(scene)
+}
+
+/// The original cube map is rendered from (0, 2.5, 0). Capture the static
+/// masonry from the same point, in a 2D panorama shareable by both web backends.
+fn capture_room(scene: &Scene, room: &[usize]) -> Level {
+    struct Triangle {
+        pos: Vec3,
+        edge_a: Vec3,
+        edge_b: Vec3,
+        vertices: [Vertex; 3],
+        texture: usize,
+        tint: [f32; 4],
+    }
+    let origin = Vec3::new(0.0, 2.5, 0.0);
+    let mut triangles = Vec::new();
+    for &index in room {
+        let mesh = &scene.meshes[index];
+        for indices in mesh.indices.chunks_exact(3) {
+            let vertices = [indices[0], indices[1], indices[2]].map(|i| mesh.vertices[i as usize]);
+            let [a, b, c] = vertices.map(|v| Vec3::from(v.pos));
+            triangles.push(Triangle {
+                pos: a,
+                edge_a: b - a,
+                edge_b: c - a,
+                vertices,
+                texture: mesh.material.texture,
+                tint: mesh.material.tint,
+            });
+        }
+    }
+
+    let (width, height) = (160, 80);
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        let theta = (y as f32 + 0.5) / height as f32 * std::f32::consts::PI;
+        for x in 0..width {
+            let phi = ((x as f32 + 0.5) / width as f32 - 0.5) * std::f32::consts::TAU;
+            let ray = Vec3::new(
+                phi.cos() * theta.sin(),
+                theta.cos(),
+                phi.sin() * theta.sin(),
+            );
+            let mut closest = 100.0;
+            let mut hit = None;
+            for triangle in &triangles {
+                let p = ray.cross(triangle.edge_b);
+                let determinant = p.dot(triangle.edge_a);
+                if determinant.abs() < 0.00001 {
+                    continue;
+                }
+                let delta = origin - triangle.pos;
+                let u = delta.dot(p) / determinant;
+                if !(0.0..=1.0).contains(&u) {
+                    continue;
+                }
+                let q = delta.cross(triangle.edge_a);
+                let v = ray.dot(q) / determinant;
+                if v < 0.0 || u + v > 1.0 {
+                    continue;
+                }
+                let distance = triangle.edge_b.dot(q) / determinant;
+                if distance > 0.01 && distance < closest {
+                    closest = distance;
+                    hit = Some((triangle, [1.0 - u - v, u, v]));
+                }
+            }
+            let color = if let Some((triangle, weights)) = hit {
+                let uv = [0, 1].map(|i| {
+                    triangle
+                        .vertices
+                        .iter()
+                        .zip(weights)
+                        .map(|(v, w)| v.uv[i] * w)
+                        .sum::<f32>()
+                });
+                let map = &scene.textures[triangle.texture][0];
+                let texel =
+                    |value: f32, size: usize| (value.rem_euclid(1.0) * size as f32) as usize % size;
+                let pixel = (texel(uv[1], map.height) * map.width + texel(uv[0], map.width)) * 4;
+                let brightness = 0.42 + 0.58 / (1.0 + closest * closest * 0.016);
+                [0, 1, 2]
+                    .map(|i| (f32::from(map.rgba[pixel + i]) * triangle.tint[i] * brightness) as u8)
+            } else {
+                [32, 34, 39]
+            };
+            rgba.extend([color[0], color[1], color[2], 255]);
+        }
+    }
+    Level {
+        width,
+        height,
+        rgba,
+    }
 }

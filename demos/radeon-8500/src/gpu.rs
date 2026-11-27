@@ -28,7 +28,7 @@ struct MeshUniform {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GeoUniform {
-    centers: [[f32; 4]; 6],
+    centers: [[f32; 4]; 8],
     options: [f32; 4],
     aspect_fov: [f32; 4],
 }
@@ -252,7 +252,7 @@ fn build_geo(
     });
     let frame = uniform(device, std::mem::size_of::<GeoUniform>());
     let binds = std::iter::once(0)
-        .chain(settings.stencils.iter().copied())
+        .chain(settings.stencils.iter().map(|&(texture, _)| texture))
         .map(|stencil| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("GeoForms volume and stencil"),
@@ -333,6 +333,7 @@ fn build_geometry(
             texture_entry(2),
             sampler_entry(3),
             texture_entry(4),
+            texture_entry(5),
         ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -427,6 +428,12 @@ fn build_geometry(
                     entry(2, wgpu::BindingResource::TextureView(&textures[mat.detail])),
                     entry(3, wgpu::BindingResource::Sampler(sampler)),
                     entry(4, wgpu::BindingResource::TextureView(&textures[mat.third])),
+                    entry(
+                        5,
+                        wgpu::BindingResource::TextureView(
+                            &textures[scene.chest.as_ref().map_or(0, |c| c.environment)],
+                        ),
+                    ),
                 ],
             });
             let subdivision = match mesh.motion.map(|m| &scene.motions[m]) {
@@ -672,7 +679,7 @@ pub struct Controls {
     pub stencil: usize,
     pub flat_triangles: bool,
     pub showcase: u8,
-    pub showcase_started: f32,
+    pub showcase_started: Option<f32>,
     last: Option<f64>,
 }
 
@@ -693,8 +700,10 @@ impl Controls {
             "s" | "S" => self.stencil = self.stencil.wrapping_add(1),
             "t" | "T" => self.flat_triangles = !self.flat_triangles,
             "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" => {
+                if self.showcase != key.as_bytes()[0] - b'0' {
+                    self.showcase_started = Some(self.time);
+                }
                 self.showcase = key.as_bytes()[0] - b'0';
-                self.showcase_started = self.time;
             }
             _ => return false,
         }
@@ -791,26 +800,29 @@ impl Renderer {
         match &self.pass {
             Pass::Geo(geo) => {
                 let settings = self.scene.geo.as_ref().unwrap();
-                let rhythm = (time * 2.1).fract();
-                let energy = controls
-                    .audio
-                    .unwrap_or(0.18 + (-rhythm * 5.0).exp() * 0.75);
+                let pulse = 0.5 + 0.5 * (time * std::f32::consts::TAU * 1.8).cos();
+                let energy = controls.audio.unwrap_or(0.17 + 0.65 * pulse.powi(5));
                 let centers = std::array::from_fn(|i| {
-                    let shift = i as f32 * std::f32::consts::FRAC_PI_3;
-                    let phase = time * (0.45 + i as f32 * 0.023) + shift;
-                    let radius = 0.93 + 0.32 * (phase * 0.78).sin() + energy * 0.26;
+                    let group = if i < 4 { -1.0 } else { 1.0 };
+                    let shift = (i % 4) as f32 * std::f32::consts::FRAC_PI_2;
+                    let phase = time * (0.66 + i as f32 * 0.019) + shift + group;
+                    let distance = 0.90 + 0.54 * (time * 0.48).sin();
+                    let radius = 0.38 + 0.18 * (phase * 0.64).sin() + energy * 0.22;
                     [
-                        (phase * 1.03).cos() * radius,
-                        (phase * 1.27).sin() * radius * 0.74,
-                        (phase * 1.83).cos() * 0.63,
-                        0.51 + 0.13 * (phase * 1.59).cos() + energy * 0.25,
+                        group * distance + phase.cos() * radius,
+                        phase.sin() * (0.65 + radius) + group * (time * 0.42).sin() * 0.32,
+                        (phase * 1.04 + time * 0.36).cos() * 0.52,
+                        0.42 + 0.13 * (phase * 1.59).cos() + energy * 0.23,
                     ]
                 });
                 let stencil = controls.stencil % geo.binds.len();
+                let stencil_aspect = stencil
+                    .checked_sub(1)
+                    .map_or(1.0, |i| settings.stencils[i].1);
                 let data = GeoUniform {
                     centers,
                     options: [time, energy, (controls.preset % 4) as f32, stencil as f32],
-                    aspect_fov: [aspect, settings.fov, srgb, 0.0],
+                    aspect_fov: [aspect, settings.fov, srgb, stencil_aspect],
                 };
                 self.queue.write_buffer(&geo.frame, 0, bytes_of(&data));
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -824,10 +836,13 @@ impl Renderer {
             }
             Pass::Geometry(geometry) => {
                 let is_chest = self.scene.demo == Demo::TreasureChest;
+                let showcase_elapsed = controls
+                    .showcase_started
+                    .map_or(3.0, |start| (controls.time - start).max(0.0));
                 let (path, camera_time) = if let Some(chest) = &self.scene.chest
                     && controls.showcase > 0
                 {
-                    (&chest.path, controls.time - controls.showcase_started)
+                    (&chest.path, showcase_elapsed)
                 } else {
                     (&self.scene.path, time)
                 };
@@ -842,16 +857,20 @@ impl Renderer {
                 let zoom = controls.zoom.exp().clamp(0.35, 2.5);
                 let rotation_delta =
                     Quat::from_euler(glam::EulerRot::YXZ, controls.yaw, controls.pitch, 0.0);
+                let original_aspect = 4.0 / 3.0;
+                let original_y =
+                    (fov.to_radians() * 0.5).tan() / if is_chest { 1.0 } else { original_aspect };
+                let vertical =
+                    2.0 * (original_y * zoom * (original_aspect / aspect).max(1.0)).atan();
                 let (projection, view) = if is_chest {
                     (
-                        perspective(fov.to_radians() * zoom, aspect, 0.035, self.scene.far, 1.0),
+                        perspective(vertical, aspect, 0.035, self.scene.far, 1.0),
                         Mat4::from_quat((rotation * rotation_delta).conjugate())
                             * Mat4::from_translation(-eye),
                     )
                 } else {
-                    let vertical = 2.0 * ((fov.to_radians() * 0.5).tan() / (4.0 / 3.0)).atan();
                     (
-                        perspective(vertical * zoom, aspect, 2.0, self.scene.far, -1.0),
+                        perspective(vertical, aspect, 2.0, self.scene.far, -1.0),
                         Mat4::from_quat(rotation_delta * rotation) * Mat4::from_translation(-eye),
                     )
                 };
@@ -882,13 +901,30 @@ impl Renderer {
                     };
                     let vertices: Vec<Vertex> = match motion {
                         Motion::ChestLid => {
-                            let cycle = time.rem_euclid(13.0);
-                            let open = ((cycle - 2.5) / 2.0).clamp(0.0, 1.0)
-                                * ((12.5 - cycle) / 2.0).clamp(0.0, 1.0);
-                            let pivot = Vec3::new(0.0, 2.49, 0.97);
+                            let transition = (showcase_elapsed / 3.0).clamp(0.0, 1.0);
+                            let angle = -(transition * std::f32::consts::PI).sin()
+                                * std::f32::consts::FRAC_PI_2;
+                            let pivot = Vec3::new(0.0, 2.5, -1.05);
                             let matrix = Mat4::from_translation(pivot)
-                                * Mat4::from_rotation_x(-open * 0.88)
+                                * Mat4::from_rotation_x(angle)
                                 * Mat4::from_translation(-pivot);
+                            src.vertices
+                                .iter()
+                                .map(|&v| transform_vertex(v, matrix))
+                                .collect()
+                        }
+                        Motion::ChestShowpiece => {
+                            let elapsed = showcase_elapsed;
+                            let t = (elapsed / 3.0).clamp(0.0, 1.0);
+                            let travel = t * t * (3.0 - 2.0 * t);
+                            let mut position = Vec3::new(0.0, 2.12, 0.0)
+                                .lerp(Vec3::new(-2.86, 2.85, 5.62), travel);
+                            position.y += (std::f32::consts::PI * t).sin() * 1.85;
+                            let matrix = Mat4::from_scale_rotation_translation(
+                                Vec3::splat(0.42 + 0.58 * travel),
+                                Quat::from_rotation_y(elapsed * 0.58),
+                                position,
+                            );
                             src.vertices
                                 .iter()
                                 .map(|&v| transform_vertex(v, matrix))

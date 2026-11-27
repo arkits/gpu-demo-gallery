@@ -7,7 +7,7 @@ use sushi_formats::{
     archive::Archive,
     path::read_path,
     reader::{Reader, Result as ReadResult, count_at, cstr, f32_at, u32_at},
-    texture::Texture,
+    texture::{Level, Texture},
 };
 
 use crate::{Demo, Effect, Material, Mesh, Motion, Result, Scene, Vertex, asset};
@@ -58,7 +58,9 @@ fn textures(scene: &mut Scene, r: &mut Reader<'_>, records: &[&[u8]]) -> ReadRes
         .map(|record| {
             let bytes = r.bytes(count_at(record, 0x108))?;
             let faces = record[0x11a].max(1);
-            if bytes.is_empty() || faces != 1 {
+            let name = cstr(&record[..0x100]);
+            let ocean_cube = faces == 6 && name.to_ascii_lowercase().ends_with("oc00.bmp");
+            if bytes.is_empty() || (faces != 1 && !ocean_cube) {
                 return Ok(0);
             }
             // The DX9 format uses the same texel ordering but relocated the fields.
@@ -67,7 +69,7 @@ fn textures(scene: &mut Scene, r: &mut Reader<'_>, records: &[&[u8]]) -> ReadRes
             raw[0x1d0..0x1d4].copy_from_slice(&record[0x114..0x118]);
             raw[0x1d4] = faces;
             let texture = Texture {
-                name: cstr(&record[..0x100]),
+                name,
                 raw,
                 texels: bytes.to_vec(),
             };
@@ -76,10 +78,56 @@ fn textures(scene: &mut Scene, r: &mut Reader<'_>, records: &[&[u8]]) -> ReadRes
             }
             let mut decoded = texture.decode()?;
             let index = scene.textures.len();
-            scene.textures.push(decoded.remove(0));
+            scene.textures.push(if ocean_cube {
+                vec![cube_panorama(&decoded)]
+            } else {
+                decoded.remove(0)
+            });
             Ok(index)
         })
         .collect()
+}
+
+/// Flatten the shipped Direct3D cubemap for the common two-dimensional material bindings.
+fn cube_panorama(cube: &[Vec<Level>]) -> Level {
+    let width = 4 * cube[0][0].width;
+    let height = width / 2;
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for row in 0..height {
+        let theta = (row as f32 + 0.5) * std::f32::consts::PI / height as f32;
+        for col in 0..width {
+            let phi = ((col as f32 + 0.5) / width as f32 - 0.5) * std::f32::consts::TAU;
+            let (x, y, z) = (
+                theta.sin() * phi.cos(),
+                theta.sin() * phi.sin(),
+                theta.cos(),
+            );
+            let (a, b, c) = (x.abs(), y.abs(), z.abs());
+            let (face, u, v, major) = if a >= b && a >= c {
+                if x > 0.0 {
+                    (0, -z, -y, a)
+                } else {
+                    (1, z, -y, a)
+                }
+            } else if b >= c {
+                if y > 0.0 { (2, x, z, b) } else { (3, x, -z, b) }
+            } else if z > 0.0 {
+                (4, x, -y, c)
+            } else {
+                (5, -x, -y, c)
+            };
+            let level = &cube[face][0];
+            let tx = ((u / major * 0.5 + 0.5) * level.width as f32) as usize;
+            let ty = ((v / major * 0.5 + 0.5) * level.height as f32) as usize;
+            let offset = (ty.min(level.height - 1) * level.width + tx.min(level.width - 1)) * 4;
+            rgba.extend_from_slice(&level.rgba[offset..offset + 4]);
+        }
+    }
+    Level {
+        width,
+        height,
+        rgba,
+    }
 }
 
 fn vec3(bytes: &[u8], offset: usize) -> Vec3 {
@@ -102,8 +150,9 @@ fn static_vertices(bytes: &[u8], stride: usize, layout: u8) -> Vec<Vertex> {
         0x1d => (Some(12), Some(24), Some(28)),
         0x34 => (Some(stride.saturating_sub(12)), Some(12), Some(20)),
         0x3a | 0x41 => (Some(12), None, Some(24)),
-        0x3e | 0x38 => (Some(12), Some(24), Some(28)),
-        0x40 => (Some(12), None, Some(24)),
+        0x3e => (Some(12), Some(24), Some(28)),
+        0x38 => (Some(12), Some(24), Some(32)),
+        0x40 => (Some(12), Some(24), Some(28)),
         _ => (
             None,
             (stride >= 16).then_some(12),
@@ -126,12 +175,13 @@ fn static_vertices(bytes: &[u8], stride: usize, layout: u8) -> Vec<Vertex> {
                 0x05 => Some(24),
                 0x19 => Some(28),
                 0x34 => Some(28),
-                0x38 => Some(36),
+                0x3e => Some(36),
+                0x38 => Some(40),
                 _ => None,
             };
             if let Some(offset) = extra.filter(|o| o + 8 <= v.len()) {
                 let [x, y] = [f32_at(v, offset), f32_at(v, offset + 4)];
-                let bump = if matches!(layout, 0x19 | 0x38) && offset + 16 <= v.len() {
+                let bump = if matches!(layout, 0x19 | 0x38 | 0x3e) && offset + 16 <= v.len() {
                     [f32_at(v, offset + 8), f32_at(v, offset + 12)]
                 } else {
                     [uv[0], uv[1]]
@@ -151,13 +201,17 @@ fn material(shader: &str, base: usize, detail: usize, has_vertex_color: bool) ->
     let waterfall = name.starts_with("rfalls");
     let water = name.contains("oceanwater");
     let portal = waterfall || name.starts_with("rwater");
-    let foam = name.contains("foam") || name.contains("perturbationfire");
+    let foam = name == "rfallslowerfoam.ssh";
+    let distorted_sprite = name.contains("perturbationfire");
     let sky = name.contains("skys") || name.contains("cloudsky");
+    let teleporter = name.starts_with("steleporter");
     let glass = name.contains("vlighttrans") || name.contains("glass") || name.contains("cornea");
-    let effect = if foam {
-        Effect::FallsFoam
+    let effect = if distorted_sprite {
+        Effect::DistortedSprite
     } else if portal {
         Effect::PortalWater
+    } else if teleporter {
+        Effect::Teleporter
     } else if name.contains("terrain1") {
         Effect::Terrain
     } else if name == "scloudsky.ssh" {
@@ -189,12 +243,14 @@ fn material(shader: &str, base: usize, detail: usize, has_vertex_color: bool) ->
         } else {
             0.0
         },
-        strength: if name.contains("dot3") || name.contains("bumpy") || effect == Effect::Skin {
+        strength: if foam {
+            1.0
+        } else if name.contains("dot3") || name.contains("bumpy") || effect == Effect::Skin {
             0.65
         } else {
             0.0
         },
-        blend: glass || foam,
+        blend: glass || teleporter || distorted_sprite,
         tint: if glass {
             [1.0, 1.0, 1.0, 0.5]
         } else if waterfall {
@@ -294,7 +350,7 @@ fn read_scene(scene: &mut Scene, data: &[u8]) -> Result<()> {
         let mut mat = material(&shader, texture(0usize), texture(1usize), color);
         mat.third = texture(2usize);
         if shader.eq_ignore_ascii_case("rFallsLowerFoam.ssh") {
-            mat.texture = texture(3usize);
+            mat.third = texture(3usize);
         }
         if mat.effect == Effect::Water {
             mat.texture = texture(1usize);
@@ -763,6 +819,11 @@ pub(crate) fn load(demo: Demo, files: &Archive) -> Result<Scene> {
     };
     let stem = scene_name.split_once('.').unwrap().0;
     scene.fov = default_fov;
+    scene.initial_time = match demo {
+        Demo::Island1 => 12.0,
+        Demo::Island2 | Demo::Island3 => 6.0,
+        _ => 0.0,
+    };
     scene.clear = clear;
     scene.path = read_path(std::str::from_utf8(asset(
         files,
@@ -817,6 +878,16 @@ pub(crate) fn load(demo: Demo, files: &Archive) -> Result<Scene> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wet_terrain_and_ocean_uvs_follow_the_original_vertex_declarations() {
+        for (layout, stride, uv_offset) in [(0x38, 92, 32), (0x40, 60, 28)] {
+            let mut bytes = vec![0; stride];
+            bytes[uv_offset..uv_offset + 4].copy_from_slice(&0.25f32.to_le_bytes());
+            bytes[uv_offset + 4..uv_offset + 8].copy_from_slice(&0.75f32.to_le_bytes());
+            assert_eq!(static_vertices(&bytes, stride, layout)[0].uv, [0.25, 0.75]);
+        }
+    }
 
     #[test]
     fn rachel_combined_stream_keeps_weights_normals_and_uvs_distinct() {
