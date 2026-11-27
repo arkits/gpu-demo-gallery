@@ -1,0 +1,94 @@
+#!/bin/sh
+# Development and testing in one place. Nothing here opens a window except
+# `run` and `open`. Needs the unpacked demo in data/, or POS_DATA.
+#
+#   scripts/dev.sh run [args]      build and open the native player in front
+#   scripts/dev.sh open            build and open the macOS app
+#   scripts/dev.sh web [port]      build and serve the browser version (8080)
+#   scripts/dev.sh check           format, lints (native and wasm) and tests
+#   scripts/dev.sh shot [args]     render one frame (see examples/shot.rs)
+#   scripts/dev.sh smoke [secs]    run the native player in a hidden window
+#   scripts/dev.sh webtest         drive the browser version (WebGPU and WebGL2)
+#   scripts/dev.sh compare         same frames natively, in WebGPU and in WebGL2
+#   scripts/dev.sh package         macOS app and Windows exe
+#   scripts/dev.sh all             check, smoke, webtest, compare
+set -eu
+cd "$(dirname "$0")/.."
+POS_DATA=${POS_DATA:-$PWD/data}
+export POS_DATA
+OUT=target/devtest
+PORT=8097
+mkdir -p "$OUT"
+
+need_data() {
+  [ -f "$POS_DATA/models/metal_logo_dds.nmb" ] || { echo "demo not found: $POS_DATA" >&2; exit 1; }
+}
+shot() { cargo run -q --release --example shot -- "$POS_DATA" "$@"; }
+# Installs the browser driver under target/, not globally; uses installed Chrome.
+driver() {
+  if [ ! -d target/tools/webtest/node_modules/playwright-core ]; then
+    npm install --silent --no-fund --no-audit --ignore-scripts \
+      --prefix target/tools/webtest playwright-core@1.64.1
+  fi
+  PLAYWRIGHT_FROM=$PWD/target/tools/webtest
+  export PLAYWRIGHT_FROM
+}
+# Runs webtest.mjs against a private server that always stops afterwards.
+browser() {
+  python3 scripts/serve.py "$PORT" >"$OUT/serve.log" 2>&1 &
+  server=$!
+  trap 'kill $server 2>/dev/null || true' EXIT INT TERM
+  i=0
+  until curl -sf "http://127.0.0.1:$PORT/" >/dev/null; do
+    i=$((i + 1)); [ $i -lt 50 ] || { echo "server did not start" >&2; exit 1; }
+    sleep 0.1
+  done
+  status=0
+  for run in "$@"; do
+    # shellcheck disable=SC2086 # words are separate arguments
+    node tools/webtest/webtest.mjs "http://127.0.0.1:$PORT/" "$OUT" $run || status=1
+  done
+  { kill $server && wait $server; } 2>/dev/null || true
+  trap - EXIT INT TERM
+  return $status
+}
+build_web() {
+  sh scripts/build-web.sh >"$OUT/build-web.log" 2>&1 || { cat "$OUT/build-web.log"; exit 1; }
+  sh scripts/pack.sh target/package/principles-of-shading.xz >"$OUT/pack.log" 2>&1 || { cat "$OUT/pack.log"; exit 1; }
+}
+
+command=${1:-help}
+[ $# -eq 0 ] || shift
+case $command in
+run) need_data; exec cargo run -q --release -- "$@" "$POS_DATA" ;;
+open) sh scripts/package-macos.sh >"$OUT/package.log" 2>&1 || { cat "$OUT/package.log"; exit 1; }
+  open "dist/Principles of Shading.app" ;;
+web) need_data; build_web; exec python3 scripts/serve.py "${1:-8080}" ;;
+check)
+  need_data
+  cargo fmt --check
+  cargo clippy -q --all-targets -- -D warnings
+  cargo clippy -q --lib --target wasm32-unknown-unknown -- -D warnings
+  cargo test -q --release
+  ;;
+shot) need_data; shot "$@" ;;
+smoke)
+  need_data
+  cargo build -q --release --bin principles-of-shading
+  target/release/principles-of-shading --smoke "${1:-5}" "$POS_DATA" | tee "$OUT/smoke.log"
+  # A hidden window cannot present, so frames are drawn offscreen.
+  grep -q '^frames [1-9][0-9]' "$OUT/smoke.log"
+  ;;
+webtest) need_data; driver; build_web; browser "show webgpu" "show webgl" ;;
+compare)
+  need_data; driver; build_web
+  for m in 0 1 2; do for s in 0 1 2 3 4 5; do shot $m $s 0.5 -0.3 "$OUT/native-$m$s.png" >/dev/null; done; done
+  browser "still webgpu" "still webgl"
+  for m in 0 1 2; do for s in 0 1 2 3 4 5; do
+    python3 tools/compare_png.py --max-mean 1.5 "$OUT/native-$m$s.png" "$OUT/webgpu-$m$s.png" "$OUT/webgl-$m$s.png"
+  done; done
+  ;;
+package) sh scripts/package-macos.sh; sh scripts/package-windows.sh ;;
+all) for c in check smoke webtest compare; do echo "== $c"; sh "$0" $c; done; echo "all passed" ;;
+*) sed -n '2,/^set/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
+esac
