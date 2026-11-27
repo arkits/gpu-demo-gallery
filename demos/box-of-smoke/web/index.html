@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Box of Smoke</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0c0708; color: #e4d8d4; font: 15px/1.5 system-ui, sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+  #start { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; text-align: center; gap: 14px; padding: 16px; overflow: auto; }
+  [hidden] { display: none !important; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; }
+  label, button { font: inherit; color: inherit; background: none; border: 1px solid #77564f; border-radius: 6px; padding: 10px 18px; cursor: pointer; }
+  button.primary { background: #d9b27a; border-color: #d9b27a; color: #1a1006; font-weight: 600; }
+  label:hover, button:hover { filter: brightness(1.2); }
+  :focus-visible, label:focus-within { outline: 2px solid #f3d6a6; outline-offset: 2px; }
+  label input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  p { margin: 0; max-width: 54ch; color: #b09c96; }
+  kbd { font: 12px ui-monospace, monospace; border: 1px solid #5f4842; border-radius: 4px; padding: 1px 5px; }
+  progress { width: min(320px, 80vw); accent-color: #d9b27a; }
+  #status[data-error] { color: #ff9d8a; }
+  #modes { position: fixed; left: 50%; transform: translateX(-50%); bottom: max(14px, env(safe-area-inset-bottom)); display: flex; gap: 8px; }
+  #modes button { background: #140c0cb0; padding: 8px 16px; min-height: 44px; }
+</style>
+<!-- Cloudflare Pages adds its analytics script to an explicit body. -->
+<body>
+<canvas id="view" tabindex="0" aria-label="Glass box of simulated smoke"></canvas>
+<div id="modes" hidden>
+  <button data-key="s">Smoke</button><button data-key="w">Water</button><button data-key="n">Logo</button>
+</div>
+<main id="start">
+  <h1>Box of Smoke</h1>
+  <button id="play" class="primary" hidden>Start</button>
+  <label id="choose">Choose demo folder <input id="folder" type="file" webkitdirectory></label>
+  <p id="need">Needs the unpacked files of NVIDIA's demo. They stay on this computer.</p>
+  <p>Drag to move the smoke. <kbd>Ctrl</kbd> or <kbd>Shift</kbd> drag, or two fingers, to turn the box. Scroll or pinch to zoom.</p>
+  <p><kbd>S</kbd> smoke &nbsp; <kbd>W</kbd> water &nbsp; <kbd>N</kbd> logo &nbsp; <kbd>B</kbd> sharper or softer &nbsp; <kbd>(</kbd> <kbd>)</kbd> color &nbsp; <kbd>[</kbd> <kbd>]</kbd> size &nbsp; <kbd>{</kbd> <kbd>}</kbd> fade &nbsp; <kbd>A</kbd> smooth edges &nbsp; <kbd>Space</kbd> pause &nbsp; <kbd>Enter</kbd> full screen</p>
+  <p>NVIDIA's “Box of Smoke” demo, 2006: real-time fluid dynamics on the GPU.</p>
+  <progress id="progress" hidden></progress>
+  <p id="status" role="status"></p>
+</main>
+<script type="module">
+  import init, { WebFiles, WebPlayer } from "./pkg/box_of_smoke.js";
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("view");
+  const status = (text, error) => {
+    $("status").textContent = text;
+    $("status").toggleAttribute("data-error", !!error);
+  };
+  const size = () => {
+    const s = window.devicePixelRatio || 1;
+    return [Math.round(canvas.clientWidth * s), Math.round(canvas.clientHeight * s)];
+  };
+  // ?steps=N&key=K runs exactly N steps and stops, for checking frames.
+  const params = new URLSearchParams(location.search);
+  const steps = params.has("steps") ? Number(params.get("steps")) : null;
+  let files = null, player = null;
+
+  function offer() {
+    $("play").hidden = false;
+    $("play").focus();
+    status("");
+    if (steps !== null) start();
+  }
+
+  async function start() {
+    if (player) return;
+    $("play").disabled = true;
+    status("Loading…");
+    await new Promise((r) => setTimeout(r));
+    try {
+      [canvas.width, canvas.height] = size();
+      player = await WebPlayer.create(canvas, files);
+    } catch (e) {
+      console.error(e);
+      $("play").disabled = false;
+      return status(`Could not start: ${e.message ?? e}`, true);
+    }
+    status("Preparing graphics…");
+    while (!player.ready()) await new Promise((r) => setTimeout(r, 30));
+    $("start").hidden = true;
+    $("modes").hidden = steps !== null;
+    canvas.focus();
+    run();
+  }
+
+  function run() {
+    let last = size().join(), n = 0;
+    if (params.get("key")) player.key(params.get("key"));
+    const tick = (now) => {
+      const [w, h] = size();
+      if (`${w},${h}` !== last) {
+        last = `${w},${h}`;
+        [canvas.width, canvas.height] = [w, h];
+        player.resize(w, h);
+      }
+      player.frame(steps === null ? now / 1000 : n / 60);
+      n++;
+      if (steps === null || n < steps) requestAnimationFrame(tick);
+      else document.documentElement.dataset.done = n;
+    };
+    requestAnimationFrame(tick);
+
+    addEventListener("keydown", (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "Enter" && e.target.tagName !== "BUTTON") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+      else if (e.key === " " && e.target.tagName === "BUTTON" || !player.key(e.key)) return;
+      e.preventDefault();
+    });
+    for (const b of $("modes").children) b.addEventListener("click", () => { player.key(b.dataset.key); canvas.focus(); });
+
+    const at = (e) => [e.clientX / canvas.clientWidth, e.clientY / canvas.clientHeight];
+    const touches = new Map();
+    const gesture = () => {
+      const [a, b] = [...touches.values()];
+      return { x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2, d: Math.hypot(a[0] - b[0], a[1] - b[1]) };
+    };
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      touches.set(e.pointerId, at(e));
+      if (touches.size === 1) player.press(e.button === 0, e.ctrlKey || e.shiftKey, ...at(e));
+      else player.release();
+    });
+    const up = (e) => {
+      if (!touches.delete(e.pointerId)) return;
+      player.release();
+    };
+    for (const t of ["pointerup", "pointercancel"]) canvas.addEventListener(t, up);
+    canvas.addEventListener("pointermove", (e) => {
+      if (!touches.has(e.pointerId)) return;
+      if (touches.size === 1) {
+        touches.set(e.pointerId, at(e));
+        return player.motion(...at(e));
+      }
+      if (touches.size !== 2) return;
+      const before = gesture();
+      touches.set(e.pointerId, at(e));
+      const now = gesture();
+      player.rotate(now.x - before.x, now.y - before.y);
+      player.zoom((now.d - before.d) * 2);
+    });
+    canvas.addEventListener("wheel", (e) => { e.preventDefault(); player.zoom(-e.deltaY * 0.002); }, { passive: false });
+    // For automated checks.
+    window.demo = { player };
+  }
+
+  async function take(list) {
+    const found = new WebFiles();
+    const missing = [];
+    for (const name of WebFiles.names()) {
+      const f = list.find((f) => (f.webkitRelativePath || f.name).toLowerCase().endsWith(name));
+      if (f) found.insert(name, new Uint8Array(await f.arrayBuffer()));
+      else missing.push(name);
+    }
+    if (missing.length) return status(`Not in that folder: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""}`, true);
+    files = found;
+    offer();
+  }
+
+  try {
+    await init();
+  } catch (e) {
+    console.error(e);
+    status(`Could not load the player: ${e.message ?? e}`, true);
+  }
+  $("play").addEventListener("click", start);
+  $("folder").addEventListener("change", (e) => take([...e.target.files]));
+  // Content served with the page: scripts/serve.py locally, or a bundled deployment.
+  const mb = (n) => (n / 1e6).toFixed(1);
+  try {
+    const url = "./local/box-of-smoke.xz";
+    const r = await fetch(url).catch(() => null);
+    // Some hosts answer unknown paths with a page.
+    if (r?.ok && !r.headers.get("content-type")?.includes("text/html")) {
+      for (const id of ["choose", "need"]) $(id).hidden = true;
+      $("progress").hidden = false;
+      const total = Number(r.headers.get("content-length")) || 0;
+      const parts = [];
+      let done = 0;
+      for (const reader = r.body.getReader(); ; ) {
+        const { done: end, value } = await reader.read();
+        if (end) break;
+        parts.push(value);
+        done += value.length;
+        if (total) [$("progress").max, $("progress").value] = [total, Math.min(done, total)];
+        status(`Downloading ${mb(done)}${total ? ` of ${mb(total)}` : ""} MB…`);
+      }
+      files = WebFiles.open(new Uint8Array(await new Blob(parts).arrayBuffer()));
+      offer();
+    }
+  } catch (e) {
+    console.error(e);
+    for (const id of ["choose", "need"]) $(id).hidden = false;
+    status(`Download failed: ${e.message ?? e}`, true);
+  }
+  $("progress").hidden = true;
+</script>
+</body>
+</html>

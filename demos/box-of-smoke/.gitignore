@@ -1,0 +1,13 @@
+/target
+/dist
+/data
+.DS_Store
+/.wrangler
+# Original demo content: never commit.
+*.exe
+*.obj
+*.lxo
+*.raw
+*.cg
+*.xz
+*.pack
