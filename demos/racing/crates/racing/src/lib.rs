@@ -1,0 +1,14 @@
+//! Port of the Racing ATB demo. See `docs/ENGINE.md`.
+pub mod data;
+pub mod demo;
+pub mod gl;
+pub mod image;
+pub mod pe;
+mod player;
+pub mod render;
+#[cfg(target_arch = "wasm32")]
+mod web;
+
+pub use player::Player;
+
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
