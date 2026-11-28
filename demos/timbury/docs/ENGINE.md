@@ -82,6 +82,18 @@ per use and a fragment function per program.
   (`modulate_by` + (1 - `modulate_by`) * bits) multiplicatively over it;
   rendering either opaque covers the iris with a white shell. [I] for the
   exact original order.
+- The eyeball joints (`BL_EYE_Ball_*`, `BL_EYE_Wetball_*`) rotate about
+  their filed pivots at the ball centers: the geometry sits centered on the
+  pivot with live rotation tracks, so composing about the joint origin
+  swings the whole eye out of its socket mid-dance. Every other transform
+  keeps the offset composition: the camera rig's keyed aim matches it
+  (Camera1's forward is within a degree of the head at the sampled times),
+  while honoring the rig pivots would move Camera1 ~450 units and break
+  the authored framing [I].
+- The spectacle lenses (`glassLenses_f`) show a refraction of the eye
+  behind plus fresnel reflection in the original; with no refraction target
+  the port draws them translucent (alpha ~0.1 head-on, rising with fresnel)
+  over the real balls. The old flat 0.45 alpha washed the iris out.
 - Depth follows the filed `depthParams`: the skybox tests but never writes
   (`_DepthNoWrite`), the blur passes skip the test, everything else tests
   and writes.

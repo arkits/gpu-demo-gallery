@@ -102,14 +102,20 @@ fn fs_shadow(v: Vary) -> @location(0) vec4<f32> {
     return vec4<f32>(vec3<f32>(p.misc.y) + (1.0 - p.misc.y) * bits, 1.0);
 }
 
-// glassLenses.fp30, in outline: a dim tinted reflection.
+// glassLenses.fp30, in outline: the lens shows a refraction of the eye
+// behind it plus a fresnel reflection, and writes opaque. The port has no
+// refraction target, so the lens stays translucent: mostly the real eyeball
+// behind, with a reflection that strengthens toward grazing angles. The old
+// flat 0.45 alpha washed the iris out completely.
 @fragment
 fn fs_glass(v: Vary) -> @location(0) vec4<f32> {
-    let albedo = textureSample(t0, smp, v.uv);
     let wn = normalize(v.nrm);
+    let cos = saturate(dot(normalize(-v.eye), wn));
+    let fresnel = 0.7 * pow(1.0 - cos, 3.0);
     let refl = reflect(normalize(-v.eye), wn);
     let specular = textureSample(c1, smp, refl).xyz;
-    return vec4<f32>(albedo.xyz * 0.3 + specular * 0.5, 0.45);
+    let alpha = 0.10 + 0.45 * fresnel;
+    return vec4<f32>(specular * (0.25 + fresnel), alpha);
 }
 
 // lambert1.fp30, in outline: one directional light and ambient.
