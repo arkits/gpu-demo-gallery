@@ -1,5 +1,6 @@
 //! Port of NVIDIA's "Mad Mod Mike" demo (2002). See `docs/ENGINE.md`.
 pub mod anim;
+mod camera_collision;
 pub mod data;
 pub mod dds;
 pub mod demo;

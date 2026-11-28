@@ -154,6 +154,7 @@ pub struct Shape {
     pub name: String,
     pub geometry: Geometry,
     pub transform: Option<usize>,
+    pub(crate) primary: bool,
     /// Transforms, and whether they bend the mesh from its rest (or just carry it).
     pub bones: Vec<(usize, bool)>,
     /// The vertex and fragment programs, by the viewer's names.
@@ -420,7 +421,8 @@ impl Model {
                 if s.text("geometry").is_empty() {
                     continue;
                 }
-                let shape = model.read_shape(s, root, files);
+                let primary = g.kind != "ShapeGroup" || g.name.starts_with("nvNearPass_");
+                let shape = model.read_shape(s, root, files, primary);
                 model
                     .shapes
                     .push(shape.map_err(|e| format!("{}: {e}", s.name))?);
@@ -457,12 +459,12 @@ impl Model {
         &self.shapes[i]
     }
 
-    /// A model holding one shape.
-    pub fn lone(shape: Shape) -> Self {
+    /// A model with generated geometry and no scene nodes.
+    pub(crate) fn generated(shapes: Vec<Shape>) -> Self {
         Self {
             transforms: Vec::new(),
             rest: Vec::new(),
-            shapes: vec![shape],
+            shapes,
             textures: BTreeMap::new(),
             animations: Vec::new(),
             blends: BTreeMap::new(),
@@ -470,7 +472,13 @@ impl Model {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn read_shape(&self, s: &Node, root: &Node, files: &Files) -> Result<Shape, Error> {
+    fn read_shape(
+        &self,
+        s: &Node,
+        root: &Node,
+        files: &Files,
+        primary: bool,
+    ) -> Result<Shape, Error> {
         let settings = root
             .nodes("renderSettings")
             .iter()
@@ -647,6 +655,7 @@ impl Model {
             name: s.name.clone(),
             geometry: geo,
             transform: carry,
+            primary,
             bones: bones.into_iter().map(|(_, t, bend)| (t, bend)).collect(),
             vertex: vertex.trim_end_matches("_v").to_owned(),
             fragment: fragment.trim_end_matches("_f").to_owned(),

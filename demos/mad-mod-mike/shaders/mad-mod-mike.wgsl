@@ -117,7 +117,9 @@ fn fs_main(in: MeshOut) -> @location(0) vec4<f32> {
     let diffuse = textureSample(tex0, samp, in.uv);
     var normal = normalize(in.normal);
     let bump = textureSample(tex1, samp, in.uv).rgb * 2.0 - 1.0;
-    if (dot(bump, bump) > 0.01) {
+    // The 1×1 placeholder indicates that this material has no normal map.
+    if (any(textureDimensions(tex1) > vec2<u32>(1u))
+        && dot(bump, bump) > 0.01 && dot(in.tangent.xyz, in.tangent.xyz) > 0.0001) {
         let tangent = normalize(in.tangent.xyz);
         let binormal = cross(normal, tangent) * in.tangent.w;
         normal = normalize(tangent * bump.x + binormal * bump.y + normal * bump.z);
@@ -153,11 +155,12 @@ struct HairOut {
 
 @vertex
 fn vs_hair(@builtin(vertex_index) vertex: u32, in: HairIn) -> HairOut {
-    let p = select(in.a_position, in.b_position, vertex == 1u || vertex == 3u || vertex == 5u);
-    let tangent = normalize(select(in.a_tangent, in.b_tangent, vertex > 2u));
+    let end = vertex == 2u || vertex == 3u || vertex == 5u;
+    let p = select(in.a_position, in.b_position, end);
+    let local_tangent = select(in.a_tangent, in.b_tangent, end);
+    let tangent = normalize((bones[0] * vec4<f32>(local_tangent, 0.0)).xyz);
     let sway = sin(uniforms.time.x * 1.7 + p.x * 0.11 + p.y * 0.13) * 0.35;
-    var moved = p + vec3<f32>(sway, sway * 0.3, 0.0);
-    let eye = (uniforms.view * vec4<f32>(moved, 1.0)).xyz;
+    let moved = p + vec3<f32>(sway, sway * 0.3, 0.0);
     let side = normalize(cross(tangent, vec3<f32>(0.0, 0.0, 1.0)) + vec3<f32>(0.001, 0.0, 0.0));
     let width = 0.22;
     let corner = array<vec2<f32>, 6>(
@@ -166,14 +169,13 @@ fn vs_hair(@builtin(vertex_index) vertex: u32, in: HairIn) -> HairOut {
     );
     let c = corner[vertex];
     let across = (uniforms.view * vec4<f32>(side, 0.0)).xy;
-    let at = select(0.0, 1.0, vertex > 2u);
-    moved = mix(in.a_position, in.b_position, at) + vec3<f32>(sway, sway * 0.3, 0.0);
+
     var out: HairOut;
-    let clip = uniforms.projection * uniforms.view * vec4<f32>(moved, 1.0);
+    let clip = uniforms.projection * uniforms.view * bones[0] * vec4<f32>(moved, 1.0);
     out.clip = clip + vec4<f32>(across * c.x * width * 0.01 * clip.w, 0.0, 0.0);
     let diffuse = abs(dot(tangent, normalize(vec3<f32>(0.4, 0.8, 0.45))));
     out.shade = 0.25 + 0.75 * diffuse;
-    out.along = mix(in.a_color.y, in.b_color.y, at);
+    out.along = select(in.a_color.y, in.b_color.y, end);
     return out;
 }
 

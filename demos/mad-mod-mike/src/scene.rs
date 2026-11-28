@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use glam::{Mat4, Vec3};
 
 use crate::Error;
+use crate::camera_collision::{Obstacle, keep_clear};
 use crate::data::Files;
 use crate::gpu::{DEPTH, Gpu, SAMPLES, SLOT};
 use crate::model::{Fixed, Geometry, Model, Moving, Pass, Shape};
@@ -74,6 +75,7 @@ pub struct Scene {
     takes: Vec<crate::anim::Animation>,
     movie_rigs: Vec<Option<usize>>,
     visible_in_take: Vec<Vec<bool>>,
+    camera_obstacles: Vec<Obstacle>,
     uniforms: wgpu::Buffer,
     bones: wgpu::Buffer,
     constants: wgpu::BindGroup,
@@ -175,7 +177,13 @@ impl Loader<'_> {
             _ => None,
         };
         let t0 = file(pick(&["colorTex"]).or_else(|| shape.textures.values().next()));
-        let t1 = file(pick(&["bumpTex", "detailBumpTex", "faceNormalCubeTex"]));
+        // Room shaders use the bump map with shadow and radiance passes that
+        // are unavailable in the port. Use the mesh normal for this pass.
+        let t1 = if shape.fragment.starts_with("room_") {
+            None
+        } else {
+            file(pick(&["bumpTex", "detailBumpTex", "faceNormalCubeTex"]))
+        };
         let t2 = file(pick(&["detailColTex", "ambTex", "miscTex"]));
         let (v0, v1, v2, v3) = (
             self.view(t0)?,
@@ -295,11 +303,6 @@ impl Pipelines<'_> {
                     })],
                 }),
                 primitive: wgpu::PrimitiveState {
-                    topology: if s.vertex == "vs_hair" {
-                        wgpu::PrimitiveTopology::LineList
-                    } else {
-                        wgpu::PrimitiveTopology::TriangleList
-                    },
                     cull_mode: s.cull.then_some(wgpu::Face::Back),
                     ..Default::default()
                 },
@@ -350,7 +353,7 @@ impl Pipelines<'_> {
                 "fs_hair",
                 vec![Some(wgpu::VertexBufferLayout {
                     array_stride: 88,
-                    step_mode: wgpu::VertexStepMode::Vertex,
+                    step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &segment,
                 })],
             ),
@@ -526,6 +529,7 @@ impl Scene {
             .iter()
             .map(|take| world.find(take.camera))
             .collect();
+        let camera_obstacles = Obstacle::from_model(&world);
         let visible_in_take = demo::TAKES
             .iter()
             .map(|take| {
@@ -726,6 +730,7 @@ impl Scene {
             takes,
             movie_rigs,
             visible_in_take,
+            camera_obstacles,
             uniforms,
             bones,
             constants,
@@ -755,9 +760,8 @@ impl Scene {
     }
 
     /// The head joint for the helmet camera.
-    fn head(&self, world: &[Mat4]) -> Mat4 {
-        let at = self.world.model.find("MMM01_c_hed01_xx01_jjj").unwrap_or(0);
-        world[at]
+    fn head_joint(&self) -> usize {
+        self.world.model.find("MMM01_c_hed01_xx01_jjj").unwrap_or(0)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -802,10 +806,33 @@ impl Scene {
         let world = self.world.model.pose(Some((animation, seconds)), &[]);
         let scalp_world = self.scalp.model.pose(Some((animation, seconds)), &[]);
         let root = self.root(&world);
-        let head = self.head(&world);
+        let head_joint = self.head_joint();
+        let head = world[head_joint];
+        let hair_pose = head * self.world.model.rest()[head_joint].inverse();
         let focus = root.lerp(head.w_axis.truncate(), 0.55);
         let aspect = width / height;
         let fov = movie_fov(aspect);
+        let clear = |mut shot: Shot, anchor, radius| {
+            shot.place = keep_clear(
+                &self.camera_obstacles,
+                &self.world.model,
+                &self.visible_in_take[take],
+                &world,
+                anchor,
+                shot.place,
+                radius,
+            );
+            shot
+        };
+        let clear_lens = |shot: Shot| {
+            let eye = shot.place.w_axis.truncate();
+            let forward = -shot.place.z_axis.truncate().normalize();
+            // Preserve the composition of scripted shots while clearing their immediate foreground.
+            clear(shot, eye + forward * 24.0, 4.0)
+        };
+        let orbit = |target, yaw, pitch, distance| {
+            clear(Shot::orbit(target, yaw, pitch, distance, fov), target, 12.0)
+        };
         let shot = match frame.camera {
             Camera::Helmet => {
                 // The eyeballs sit along local +Y, with +Z forward and +X up.
@@ -814,7 +841,7 @@ impl Scene {
                 let forward = head.z_axis.truncate().normalize();
                 let up = head.x_axis.truncate().normalize();
                 let right = forward.cross(up).normalize();
-                Shot {
+                clear_lens(Shot {
                     place: Mat4::from_cols(
                         right.extend(0.0),
                         right.cross(forward).extend(0.0),
@@ -822,22 +849,22 @@ impl Scene {
                         eye.extend(1.0),
                     ),
                     fov,
-                }
+                })
             }
             Camera::Movie => match self.movie_rigs[take] {
                 Some(_) if info.set == demo::Set::None && frame.local >= 3.5 => {
-                    Shot::orbit(focus, -2.3, -0.24, 225.0, fov)
+                    orbit(focus, -2.3, -0.24, 225.0)
                 }
                 // These two cuts cross the old computer wall, where the port's
                 // simplified bedroom pass leaves props in front of the lens.
                 Some(at) if info.set == demo::Set::OldBedroom && world[at].w_axis.x > 280.0 => {
                     let yaw = if info.camera == "camera2" { 0.75 } else { -0.8 };
-                    Shot::orbit(focus, yaw, -0.28, 170.0, fov)
+                    orbit(focus, yaw, -0.28, 170.0)
                 }
-                Some(at) => Shot {
+                Some(at) => clear_lens(Shot {
                     place: world[at],
                     fov,
-                },
+                }),
                 None => {
                     let (yaw, pitch, distance) =
                         self.fallback_presets[take].map_or((-2.28, -0.38, 240.0), |preset| {
@@ -847,7 +874,7 @@ impl Scene {
                                 preset.distance.clamp(170.0, 800.0),
                             )
                         });
-                    Shot::orbit(focus, yaw, pitch, distance, fov)
+                    orbit(focus, yaw, pitch, distance)
                 }
             },
             Camera::Free {
@@ -855,7 +882,7 @@ impl Scene {
                 pitch,
                 distance,
                 pan,
-            } => Shot::orbit(focus + pan, yaw, pitch, distance, fov),
+            } => orbit(focus + pan, yaw, pitch, distance),
         };
         let eye = shot.place.w_axis.truncate();
         let view = shot.place.inverse();
@@ -917,16 +944,23 @@ impl Scene {
         );
         if info.set != demo::Set::None {
             for (n, overlay) in self.overlays.iter_mut().enumerate() {
-                backbone =
-                    draw_actor_static(2 + n, overlay, &view, gpu, &mut data, &mut calls, backbone);
+                backbone = draw_actor_static(
+                    2 + n,
+                    overlay,
+                    Mat4::IDENTITY,
+                    &view,
+                    &mut data,
+                    &mut calls,
+                    backbone,
+                );
             }
         }
         let hair = 2 + self.overlays.len();
         draw_actor_static(
             hair,
             &mut self.strands,
+            hair_pose,
             &view,
-            gpu,
             &mut data,
             &mut calls,
             backbone,
@@ -1004,7 +1038,7 @@ impl Scene {
                 }
                 Buffers::Hair { points, count } => {
                     pass.set_vertex_buffer(0, points.slice(..));
-                    pass.draw(0..*count, 0..1);
+                    pass.draw(0..6, 0..*count);
                 }
                 Buffers::Particles { points, count } => {
                     pass.set_vertex_buffer(0, points.slice(..));
@@ -1046,7 +1080,8 @@ fn draw_actor(
         .zip(actor.shapes.iter_mut())
         .enumerate()
     {
-        if shape.pass == Pass::Depth
+        if !shape.primary
+            || shape.pass == Pass::Depth
             || shape.pass == Pass::Skip
             || visibility.is_some_and(|visible| !visible[k])
         {
@@ -1093,12 +1128,12 @@ fn draw_actor(
     base
 }
 
-/// Submits an overlay or hair actor, whose shapes need no bones.
+/// Submits an overlay or hair actor with a single transform.
 fn draw_actor_static(
     id: usize,
     actor: &mut Actor,
+    transform: Mat4,
     view: &Mat4,
-    _gpu: &Gpu,
     data: &mut Vec<u8>,
     calls: &mut Vec<Call>,
     backbone: usize,
@@ -1111,12 +1146,12 @@ fn draw_actor_static(
         .zip(actor.shapes.iter())
         .enumerate()
     {
-        if shape.pass == crate::model::Pass::Depth || shape.pass == crate::model::Pass::Skip {
+        if !shape.primary || shape.pass == Pass::Depth || shape.pass == Pass::Skip {
             continue;
         }
-        let distance = (*view).transform_point3(shape.center).length();
+        let distance = (*view * transform).transform_point3(shape.center).length();
         let start = data.len();
-        data.extend_from_slice(bytemuck::bytes_of(&Mat4::IDENTITY.to_cols_array_2d()));
+        data.extend_from_slice(bytemuck::bytes_of(&transform.to_cols_array_2d()));
         data.resize(start + STRIDE as usize, 0);
         calls.push(Call {
             actor: id,
@@ -1253,42 +1288,41 @@ fn grow(files: &Files) -> Result<Model, Error> {
     };
     let head_p = files.text(head_params)?;
     let chin_p = files.text(chin_params)?;
-    let mut points = Vec::new();
-    let mut per_hair = 0;
+    let mut shapes = Vec::new();
     for (curves, params, set) in [
         (head_curves, head_p.as_str(), 0.0),
         (chin_curves, chin_p.as_str(), 1.0),
     ] {
-        let h = hair::Hair::new(
+        let hair = hair::Hair::new(
             &files.text(curves)?,
             number(params, "Numinterp") as usize,
             number(params, "Basicbezierdivide") as usize,
             number(params, "Radius"),
             set,
         )?;
-        per_hair = per_hair.max(h.per_hair);
-        points.extend(h.points);
+        shapes.push(Shape {
+            name: curves.to_owned(),
+            geometry: Geometry::Hair(hair),
+            transform: None,
+            primary: true,
+            bones: Vec::new(),
+            vertex: String::new(),
+            fragment: "hair".to_owned(),
+            textures: std::collections::BTreeMap::new(),
+            lights: Vec::new(),
+            matrices: Vec::new(),
+            misc: Vec::new(),
+            weights: Vec::new(),
+            system: None,
+            cull: false,
+            blend: crate::model::Blend::Alpha,
+            pass: Pass::Color,
+            set: 5,
+            far_first: false,
+            center: Vec3::new(0.0, 170.0, -8.0),
+        });
     }
-    Ok(Model::lone(crate::model::Shape {
-        name: "grown".to_owned(),
-        geometry: Geometry::Hair(hair::Hair { points, per_hair }),
-        transform: None,
-        bones: Vec::new(),
-        vertex: String::new(),
-        fragment: "hair".to_owned(),
-        textures: std::collections::BTreeMap::new(),
-        lights: Vec::new(),
-        matrices: Vec::new(),
-        misc: Vec::new(),
-        weights: Vec::new(),
-        system: None,
-        cull: false,
-        blend: crate::model::Blend::Alpha,
-        pass: Pass::Color,
-        set: 5,
-        far_first: false,
-        center: Vec3::new(0.0, 170.0, -8.0),
-    }))
+    Ok(Model::generated(shapes))
 }
 
 /// Menu buttons as NDC quads, grouped by their image.
@@ -1410,12 +1444,39 @@ mod tests {
         let new_computer = shape("MMB_NewComputer_SHAPEShape_nvNearPass");
         let is_visible = |shape, take: usize| visible(&model, shape, &demo::TAKES[take]);
 
-        assert!(bedroom_wall.cull);
+        assert!(bedroom_wall.cull && bedroom_wall.primary && workshop_wall.primary);
+        assert!(!shape("MMB_Wall_Door_SHAPEShape_nvRadianceCubePass").primary);
+        assert!(shape("MMM_PantsShapeShape_nvNearPass_0").primary);
         assert!(is_visible(bedroom_wall, 3) && !is_visible(workshop_wall, 3));
         assert!(is_visible(workshop_wall, 4) && !is_visible(bedroom_wall, 4));
         assert!(is_visible(old_computer, 5) && !is_visible(new_computer, 5));
         assert!(is_visible(new_computer, 6) && !is_visible(old_computer, 6));
         assert!(!is_visible(bedroom_wall, 8) && !is_visible(workshop_wall, 8));
+
+        // This orbit puts the lens beyond the deforming door frame in Karate.
+        let take = &demo::TAKES[1];
+        let animation = files.binary(take.file)?;
+        let animation = crate::anim::Animation::read(&animation.nodes("animations")[0])?;
+        let pose = model.pose(Some((&animation, take.start + 2.0)), &[]);
+        let joint = |name| pose[model.find(name).unwrap()].w_axis.truncate();
+        let focus = joint("MMM01_c_hip01_xx01_jjj").lerp(joint("MMM01_c_hed01_xx01_jjj"), 0.55);
+        let shot = Shot::orbit(focus, 0.0, -0.38, 240.0, movie_fov(4.0 / 3.0));
+        let visible: Vec<_> = model
+            .shapes
+            .iter()
+            .map(|shape| is_visible(shape, 1))
+            .collect();
+        let adjusted = keep_clear(
+            &Obstacle::from_model(&model),
+            &model,
+            &visible,
+            &pose,
+            focus,
+            shot.place,
+            12.0,
+        );
+        assert!(adjusted.w_axis.truncate().distance(focus) < 230.0);
+        assert_eq!(adjusted.z_axis, shot.place.z_axis);
         Ok(())
     }
 }

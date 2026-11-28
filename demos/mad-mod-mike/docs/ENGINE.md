@@ -81,15 +81,16 @@ in `docs/DEVELOPMENT.md`.
 - Hair grows from `hair_curves.txt` (212 quadratic guides) resampled per
   `hairclumpsparams.txt` (`Numinterp` strands a guide, jittered by `Radius`),
   and the goatee from `gotti_curves.txt` (10 cubic guides) with
-  `gotti_params.txt`; drawn as camera-facing ribbons, swaying slightly. The
-  original's gravity, drag and relaxation (`hairparams.txt`) are not simulated.
+  `gotti_params.txt`. The strands follow the head joint as camera-facing
+  ribbons. The original's gravity, drag and relaxation
+  (`hairparams.txt`) are not simulated.
 - Particles (`particles.nma`, eight systems): billboards around each emitter's
   rest transform, animated by the `time` uniform; smoke samples the `.t3d`
   volumes. Streaks and point sprites are points [I].
-- The room draws first, then opaque shapes, then transparent ones back to
-  front; `sortSet`/`sortType` are carried but only `back_to_front` reorders.
-  Shadow-caster, cube-blur, composite, blit, feedback and post passes are
-  skipped (see below); cards without runtime placement are skipped.
+- The player draws opaque shapes, then sorts transparent shapes back to
+  front. It uses the authored near color groups for the room and workshop.
+  The original's far, shadow, and reflection passes supply intermediate
+  buffers for its compositor.
 - Lights: a fixed rig (moon, omni, lamp, mermaid colors from the file) plus
   0.55 ambient [I: the original bakes most lighting into its textures and
   light maps, whose exact combination per `mike*.fp30` is approximated].
@@ -109,7 +110,9 @@ in `docs/DEVELOPMENT.md`.
   uses `cornerCam` for departure, then follows Mike against the shipped moon
   backdrop.
 - `c` switches between movie, free orbit around Mike's upper body, and the
-  head-mounted helmet view. `1`–`0` switch takes, arrows change expressions,
+  head-mounted helmet view. Orbit placement keeps the lens in front of opaque
+  walls and props. Scripted and helmet views check the immediate
+  foreground for clearance. `1`–`0` switch takes, arrows change expressions,
   space pauses, and `m` toggles the menu overlay.
 - The wet cornea layer (`mike_wetball_*`, opaque-blended by default in the
   files) draws as a transparent analytic gloss over the textured eyeball;
@@ -125,6 +128,6 @@ in `docs/DEVELOPMENT.md`.
   feedback/HDTV post chain, the menu buttons (drawn, not clickable), eye
   tracking, helmet, sparks physics, cloth physics, wireframe/point modes, the
   artist menu, screenshots and gamma control.
-- Free orbit has no prop collision. The movie uses replacement framing at the computer wall and during the flyaway.
+- Camera clearance samples the active set’s opaque geometry, including the posed door frame. The movie uses replacement framing at the computer wall and during the flyaway.
 - `rot
 ...[truncated 737 chars]

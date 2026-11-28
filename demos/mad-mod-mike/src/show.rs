@@ -100,7 +100,7 @@ pub struct Show {
 
 const HOME: (f32, f32, f32) = (-2.3, -0.38, 240.0);
 const FARTHEST: f32 = 800.0;
-const NEAREST: f32 = 8.0;
+const NEAREST: f32 = 36.0;
 
 impl Default for Show {
     fn default() -> Self {

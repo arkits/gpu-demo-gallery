@@ -124,7 +124,7 @@ impl Hair {
                     .enumerate()
                     .map(|(i, p)| {
                         let t = i as f32 / segments as f32;
-                        *p * fan + j * (0.2 + t)
+                        base[0] + (*p - base[0]) * fan + j * (0.2 + t)
                     })
                     .collect();
                 for (i, position) in strand.iter().enumerate() {
