@@ -1,0 +1,12 @@
+[package]
+name = "nv-engine"
+description = "The NVDemo framework of NVIDIA's 2003 demo viewers on wgpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+nv-scene = { path = "../nv-scene" }
+nv-asm = { path = "../nv-asm" }
+wgpu = "30.0.2"

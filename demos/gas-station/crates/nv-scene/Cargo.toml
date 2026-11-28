@@ -1,0 +1,9 @@
+[package]
+name = "nv-scene"
+description = "Reads the binary scene files of NVIDIA's 2003 NVDemo viewers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
