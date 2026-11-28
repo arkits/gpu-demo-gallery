@@ -30,9 +30,16 @@ paraboloid map (0x4249e0 builds its texture matrix). Culling is clockwise.
 
 Mirrors (0x419090) are drawn before the room the eye is in: their backdrop without depth
 writes, their reflected rooms cut by user clip planes through the eye and the mirror's four
-corners, reflected characters (only those standing in a room the mirror shows, and whose
-reflection lies behind its plane), then the surface added with a Fresnel weight
-((1 - v·n)² between the mirror's alpha and one, 0x419f50).
+corners, reflected characters (only those whose room is one the mirror shows, and whose
+box's far corner, reflected, lies on or behind its plane), then the surface added with a
+Fresnel weight ((1 - v·n)² between the mirror's alpha and one, 0x419f50).
+
+A character's room is state, not a lookup (+8, kept each frame by 0x415e91): it stays while
+the first corner of the character's animated box (0x40ff70) is inside that room's box, ends
+included, and only then is the first room holding the corner taken, or room 0. Rooms overlap
+at doorways, so looking it up afresh each frame flickers reflections on and off as she walks.
+The original's search reuses the characters' loop counter; the port keeps that quirk. It
+replays the watch at 60 frames a second from the start when time goes back.
 
 Exhibit tanks (a room's 0x120 records, 0x426490) are windows: what is behind is drawn
 through the window's edges with the world bent by M · L · M⁻¹, where M is the window's frame

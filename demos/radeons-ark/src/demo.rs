@@ -214,6 +214,8 @@ struct Character {
     animation: Animation,
     /// Where it was put (0x414f70): a room's tank, else drawn with the rooms.
     tank: Option<(usize, usize)>,
+    /// The room it was put in (+8 at 0x414f70), where the room watch starts.
+    home: usize,
     /// REFLECT in obj.ini: seen in mirrors.
     reflect: bool,
     /// The teleporter's texture coordinates by mesh and vertex (0x40ec40): round the body
@@ -288,6 +290,10 @@ pub struct Demo {
     path: Path,
     objects: Vec<ObjectData>,
     characters: Vec<Character>,
+    /// Each character's room as the frames have kept it (+8, 0x415e91), and the time they
+    /// were last kept to.
+    char_rooms: Vec<usize>,
+    rooms_time: f64,
     time: f64,
     /// Water steps taken.
     steps: u64,
@@ -392,6 +398,7 @@ impl Demo {
                 object: index,
                 animation: anim,
                 tank,
+                home: room.unwrap_or(0),
                 reflect,
                 uv1,
             });
@@ -405,7 +412,9 @@ impl Demo {
             noise,
             path,
             objects: objects.into_iter().map(|o| o.1).collect(),
+            char_rooms: characters.iter().map(|c| c.home).collect(),
             characters,
+            rooms_time: 0.0,
             time: 0.0,
             steps: 0,
             paused: false,
@@ -742,11 +751,10 @@ impl Demo {
                 .collect();
             self.draw_some(dev, t, refl, |c| {
                 c.reflect && c.tank.is_none() && {
-                    let at = c.animation.root_at(t).w_axis;
-                    let p = (refl * at).truncate();
-                    self.room_of(at.truncate())
-                        .is_some_and(|r| shown.contains(&r))
-                        && p.dot(n) + f(0x34) < 0.0
+                    let i = self.characters.iter().position(|x| std::ptr::eq(x, c));
+                    let room = i.and_then(|i| self.char_rooms.get(i).copied());
+                    let far = (refl * self.corners(c, t)[7].extend(1.0)).truncate();
+                    room.is_some_and(|r| shown.contains(&r)) && far.dot(n) + f(0x34) <= 0.0
                 }
             });
             dev.set_render_state(d3d::CULLMODE, 2);
@@ -1010,12 +1018,55 @@ impl Demo {
         self.draw_some(dev, t, world, |c| c.tank == tank);
     }
 
-    /// The first world room whose box holds `p`.
-    fn room_of(&self, p: Vec3) -> Option<usize> {
-        self.world.rooms.iter().position(|r| {
-            let (lo, hi) = r.bounds();
-            (0..3).all(|k| lo[k] <= p[k] && p[k] < hi[k])
+    /// The eight corners of a character's box at `t` (0x40ff70): the object's box (0x40f140,
+    /// corner k high in x, y, z by bits 2, 1, 0) through the lerped root matrix.
+    fn corners(&self, c: &Character, t: f32) -> [Vec3; 8] {
+        let (lo, hi) = self.objects[c.object].object.bounds;
+        let root = c.animation.root_at(t);
+        std::array::from_fn(|k| {
+            let p = Vec3::new(
+                if k & 4 != 0 { hi.x } else { lo.x },
+                if k & 2 != 0 { hi.y } else { lo.y },
+                if k & 1 != 0 { hi.z } else { lo.z },
+            );
+            (root * p.extend(1.0)).truncate()
         })
+    }
+
+    /// One frame's room watch (0x415e91): a character keeps its room while the first corner
+    /// of its box stays in that room's box (ends included); else it takes the first room that
+    /// holds the corner, or room 0. The original counts the rooms with the characters' own
+    /// counter, so after a change it carries on from the character after the room's number.
+    fn watch_rooms(&mut self, t: f32) {
+        let boxes: Vec<_> = self.world.rooms.iter().map(|r| r.bounds()).collect();
+        let inside = |r: usize, p: Vec3| {
+            boxes
+                .get(r)
+                .is_some_and(|(lo, hi)| (0..3).all(|k| lo[k] <= p[k] && p[k] <= hi[k]))
+        };
+        let mut i = 0;
+        while i < self.characters.len() {
+            let p = self.corners(&self.characters[i], t)[0];
+            if !inside(self.char_rooms[i], p) {
+                let found = (0..boxes.len()).find(|&r| inside(r, p));
+                self.char_rooms[i] = found.unwrap_or(0);
+                i = found.unwrap_or(boxes.len());
+            }
+            i += 1;
+        }
+    }
+
+    /// Brings the room watch to `t`, a frame each sixtieth of a second, from the start when
+    /// time has gone back.
+    fn keep_rooms(&mut self, t: f64) {
+        if t < self.rooms_time {
+            self.rooms_time = 0.0;
+            self.char_rooms = self.characters.iter().map(|c| c.home).collect();
+        }
+        while self.rooms_time < t {
+            self.rooms_time = (self.rooms_time + 1.0 / 60.0).min(t);
+            self.watch_rooms(self.rooms_time as f32);
+        }
     }
 
     fn draw_some(&self, dev: &mut Device, t: f32, world: Mat4, keep: impl Fn(&Character) -> bool) {
@@ -1260,6 +1311,7 @@ impl Demo {
         }) {
             self.room = i;
         }
+        self.keep_rooms(self.time);
         self.draw_mirrors(dev, eye, view);
         for r in &self.rooms {
             self.draw_opaque(dev, r, view);
