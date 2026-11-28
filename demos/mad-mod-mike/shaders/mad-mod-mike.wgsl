@@ -237,6 +237,14 @@ fn vs_card(@builtin(vertex_index) vertex: u32) -> CardOut {
 }
 
 @fragment
+fn fs_moon(in: CardOut) -> @location(0) vec4<f32> {
+    let aspect = uniforms.time.y / uniforms.time.z;
+    let scale = vec2<f32>(min(aspect / 1.25, 1.0), min(1.25 / aspect, 1.0));
+    let uv = (in.uv - vec2<f32>(0.5)) * scale + vec2<f32>(0.5);
+    return vec4<f32>(textureSample(tex0, samp, uv).rgb, 1.0);
+}
+
+@fragment
 fn fs_card(in: MeshOut) -> @location(0) vec4<f32> {
     let texel = textureSample(tex0, samp, in.uv);
     if (texel.a < 0.01) {

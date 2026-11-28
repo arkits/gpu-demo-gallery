@@ -153,6 +153,7 @@ pub enum Pass {
 pub struct Shape {
     pub name: String,
     pub geometry: Geometry,
+    pub transform: Option<usize>,
     /// Transforms, and whether they bend the mesh from its rest (or just carry it).
     pub bones: Vec<(usize, bool)>,
     /// The vertex and fragment programs, by the viewer's names.
@@ -443,6 +444,11 @@ impl Model {
         self.transforms.iter().position(|t| t.name == name)
     }
 
+    pub fn ancestors(&self, start: Option<usize>) -> impl Iterator<Item = &str> {
+        std::iter::successors(start, |&at| self.transforms[at].parent)
+            .map(|at| self.transforms[at].name.as_str())
+    }
+
     pub fn rest(&self) -> &[Mat4] {
         &self.rest
     }
@@ -640,6 +646,7 @@ impl Model {
         Ok(Shape {
             name: s.name.clone(),
             geometry: geo,
+            transform: carry,
             bones: bones.into_iter().map(|(_, t, bend)| (t, bend)).collect(),
             vertex: vertex.trim_end_matches("_v").to_owned(),
             fragment: fragment.trim_end_matches("_f").to_owned(),
@@ -649,7 +656,12 @@ impl Model {
             misc,
             weights: weights.into_iter().map(|w| w.1).collect(),
             system: system.clone(),
-            cull: s.int("cull") == 2,
+            // Movie rigs can shoot through the back of the room shell.
+            cull: s.int("cull") == 2
+                || self.ancestors(carry).next().is_some_and(|name| {
+                    name.starts_with("MMB_Wall_")
+                        || matches!(name, "MMW_BackWall" | "MMW_SideWall" | "MMW_SideWall2")
+                }),
             blend,
             pass: if vertex.starts_with("cast_") {
                 Pass::Depth

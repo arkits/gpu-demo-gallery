@@ -1,13 +1,13 @@
 //! GPU resources and frame submission shared by the native and browser players.
 use std::collections::HashMap;
 
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat4, Vec3};
 
 use crate::Error;
 use crate::data::Files;
 use crate::gpu::{DEPTH, Gpu, SAMPLES, SLOT};
 use crate::model::{Fixed, Geometry, Model, Moving, Pass, Shape};
-use crate::show::{Camera, Frame, Preset, Show};
+use crate::show::{Camera, Frame, Preset, Shot, Show};
 use crate::{dds, demo, hair, tga, tree};
 
 /// Bone matrices in the shader.
@@ -72,14 +72,18 @@ pub struct Scene {
     /// Grown hair and goatee.
     strands: Actor,
     takes: Vec<crate::anim::Animation>,
+    movie_rigs: Vec<Option<usize>>,
+    visible_in_take: Vec<Vec<bool>>,
     uniforms: wgpu::Buffer,
     bones: wgpu::Buffer,
     constants: wgpu::BindGroup,
     format: wgpu::TextureFormat,
     targets: Option<Targets>,
-    presets: Vec<Preset>,
+    fallback_presets: Vec<Option<Preset>>,
     menu: Menu,
     menu_pipeline: wgpu::RenderPipeline,
+    moon: wgpu::BindGroup,
+    moon_pipeline: wgpu::RenderPipeline,
 }
 
 struct MenuBatch {
@@ -474,6 +478,35 @@ struct Call {
     transparent: bool,
 }
 
+// The game sets the movie lens to 59 degrees at 5:4 and scales it by height/width.
+fn movie_fov(aspect: f32) -> f32 {
+    let reference = 59_f32.to_radians() / (0.8 * aspect.max(4.0 / 3.0));
+    if aspect < 4.0 / 3.0 {
+        // Preserve the 4:3 horizontal framing when the window is narrow.
+        2.0 * ((reference * 0.5).tan() * (4.0 / 3.0) / aspect).atan()
+    } else {
+        reference
+    }
+}
+
+fn visible(model: &Model, shape: &Shape, take: &demo::Take) -> bool {
+    use demo::Set;
+    model.ancestors(shape.transform).all(|name| match name {
+        "bedroom_set" | "bedroom_set_animated" => {
+            matches!(take.set, Set::OldBedroom | Set::NewBedroom)
+        }
+        "workshop_set" | "workshop_set_animated" => take.set == Set::Workshop,
+        "OldComputer" | "OldComputer_HI" | "MMB_COMP_Old" => take.set == Set::OldBedroom,
+        "NewComputer" | "NewComputer_HI" | "NewCompRot" => take.set == Set::NewBedroom,
+        "GrinderGroup" => take.grinder,
+        "MMB_Welder" => take.welder,
+        "MMB_DoorSwing_C" | "MMB_Door" => take.door,
+        "MMB_NewCompCardAsm" => take.graphics_card,
+        name if name.starts_with("MMB_DoorHinge") => take.hinges,
+        _ => true,
+    })
+}
+
 impl Scene {
     pub fn new(gpu: &Gpu, files: &Files, format: wgpu::TextureFormat) -> Result<Self, Error> {
         let device = &gpu.device;
@@ -489,48 +522,44 @@ impl Scene {
                 .ok_or_else(|| format!("{}: no animation", take.file))?;
             takes.push(crate::anim::Animation::read(a)?);
         }
+        let movie_rigs: Vec<_> = demo::TAKES
+            .iter()
+            .map(|take| world.find(take.camera))
+            .collect();
+        let visible_in_take = demo::TAKES
+            .iter()
+            .map(|take| {
+                world
+                    .shapes
+                    .iter()
+                    .map(|shape| visible(&world, shape, take))
+                    .collect()
+            })
+            .collect();
         let presets = presets(files).unwrap_or_default();
-        // Each take uses the preset whose look-at is nearest to where Mike
-        // stands two seconds in; the shipped presets belong to animations,
-        // not to these files, so this keeps every take framed [I].
-        let mut framed = Vec::new();
-        for animation in takes.iter() {
-            let pose = world.pose(Some((animation, 2.0)), &[]);
-            let hip = world
-                .find("MMM01_c_hip01_xx01_jjj")
-                .map(|at| pose[at].transform_point3(Vec3::ZERO))
-                .unwrap_or(Vec3::new(0.0, 150.0, 0.0));
-            let mut best = Preset {
-                yaw: -2.28,
-                pitch: -0.38,
-                distance: 240.0,
-                look: Vec3::new(28.0, 143.0, -12.0),
-                animation: None,
-                anchor: hip,
-            };
-            let mut near = f32::MAX;
-            for p in &presets {
-                let d = (p.look - hip).length();
-                if d < near {
-                    near = d;
-                    best = *p;
+        let fallback_presets = demo::TAKES
+            .iter()
+            .zip(&takes)
+            .zip(&movie_rigs)
+            .map(|((take, animation), rig)| {
+                if rig.is_some() {
+                    return None;
                 }
-            }
-            // Shipped distances run ~21-242; keep them, staying inside the room.
-            best.distance = best.distance.clamp(8.0, 800.0);
-            best.anchor = hip;
-            framed.push(best);
-        }
-        let mut overlays = Vec::new();
-        for file in [
-            demo::CARDS,
-            demo::QUADS,
-            demo::MENU,
-            demo::HULA,
-            demo::CUBE_BLUR,
-        ] {
-            overlays.push(Model::new(&files.scene(file)?, files)?);
-        }
+                let seconds = take.start + 2.0 * f64::from(animation.scale);
+                let pose = world.pose(Some((animation, seconds)), &[]);
+                let hip = world
+                    .find("MMM01_c_hip01_xx01_jjj")
+                    .map(|at| pose[at].w_axis.truncate())
+                    .unwrap_or(Vec3::new(0.0, 150.0, 0.0));
+                presets.iter().copied().min_by(|a, b| {
+                    a.look
+                        .distance_squared(hip)
+                        .total_cmp(&b.look.distance_squared(hip))
+                })
+            })
+            .collect();
+        // Cards and post-processing quads are in screen space.
+        let hula = Model::new(&files.scene(demo::HULA)?, files)?;
         let buffer = |dynamic, size| wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: dynamic,
@@ -602,6 +631,14 @@ impl Scene {
             cull: false,
             depth: None,
         });
+        let moon_pipeline = pipelines.make(Style {
+            vertex: "vs_card",
+            fragment: "fs_moon",
+            buffers: &[],
+            blend: crate::model::Blend::None,
+            cull: false,
+            depth: None,
+        });
         let mut loader = Loader {
             gpu,
             files,
@@ -630,19 +667,19 @@ impl Scene {
         let empty: HashMap<String, Vec3> = HashMap::new();
         let world = Actor::new(gpu, world, &mut loader, &mut pipelines, &empty)?;
         let scalp = Actor::new(gpu, scalp, &mut loader, &mut pipelines, &empty)?;
-        let mut overlay_actors = Vec::new();
-        for model in overlays {
-            overlay_actors.push(Actor::new(
-                gpu,
-                model,
-                &mut loader,
-                &mut pipelines,
-                &emitters,
-            )?);
-        }
+        let overlay_actors = vec![Actor::new(
+            gpu,
+            hula,
+            &mut loader,
+            &mut pipelines,
+            &emitters,
+        )?];
         let strands = Actor::new(gpu, grown, &mut loader, &mut pipelines, &empty)?;
         let menu_model = Model::new(&files.scene(demo::MENU)?, files)?;
         let menu = menu_batches(&mut loader, files, &menu_model)?;
+        let moon = loader.view(Some("textures/moon_bkg.dds"))?;
+        let blank = loader.view(None)?;
+        let moon = loader.group(vec![moon, blank.clone(), blank.clone(), blank]);
 
         let slots: usize = [&world, &scalp]
             .into_iter()
@@ -687,14 +724,18 @@ impl Scene {
             overlays: overlay_actors,
             strands,
             takes,
+            movie_rigs,
+            visible_in_take,
             uniforms,
             bones,
             constants,
             format,
             targets: None,
-            presets: framed,
+            fallback_presets,
             menu,
             menu_pipeline,
+            moon,
+            moon_pipeline,
         })
     }
 
@@ -761,88 +802,66 @@ impl Scene {
         let world = self.world.model.pose(Some((animation, seconds)), &[]);
         let scalp_world = self.scalp.model.pose(Some((animation, seconds)), &[]);
         let root = self.root(&world);
-        let preset = self.presets.get(take).copied().unwrap_or(Preset {
-            yaw: -2.28,
-            pitch: -0.38,
-            distance: 240.0,
-            look: Vec3::new(28.0, 143.0, -12.0),
-            animation: None,
-            anchor: root,
-        });
+        let head = self.head(&world);
+        let focus = root.lerp(head.w_axis.truncate(), 0.55);
+        let aspect = width / height;
+        let fov = movie_fov(aspect);
         let shot = match frame.camera {
-            Camera::Helmet => crate::show::Shot {
-                place: self.head(&world),
-                fov: 55_f32.to_radians(),
-            },
-            // The movie camera is the take's own rig (`args.txt` flag 6).
-            // Three takes can't use theirs: take 5's camera2 stares into
-            // a board inches away, and takes 2 and 8 animate no usable
-            // rig. Those fall back instead: take 2 keeps the shipped
-            // preset as is (verified to frame him), take 5 uses a fixed
-            // offset that frames him (verified), and take 8 re-anchors
-            // the nearest preset onto him (verified: jetpack detail) [I].
-            Camera::Movie => {
-                const FALLBACK: &[usize] = &[2, 5, 8];
-                let rig = if info.camera.is_empty() || FALLBACK.contains(&frame.take) {
-                    None
-                } else {
-                    self.world
-                        .model
-                        .find(info.camera)
-                        .filter(|_| animation.channels.iter().any(|c| c.node == info.camera))
-                };
-                match rig {
-                    Some(at) => crate::show::Shot {
-                        place: world[at],
-                        fov: 40_f32.to_radians(),
-                    },
-                    None if frame.take == 2 => {
-                        let yaw = preset.yaw + frame.local as f32 * 0.008;
-                        let turn = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(preset.pitch);
-                        let target = preset.look + (root - preset.anchor);
-                        crate::show::Shot {
-                            place: Mat4::from_rotation_translation(
-                                turn,
-                                target + turn * Vec3::new(0.0, 0.0, preset.distance),
-                            ),
-                            fov: 40_f32.to_radians(),
-                        }
-                    }
-                    None if frame.take == 5 => {
-                        let target = root + Vec3::new(0.0, 30.0, 0.0);
-                        let turn = Quat::from_rotation_y(-2.3) * Quat::from_rotation_x(-0.38);
-                        crate::show::Shot {
-                            place: Mat4::from_rotation_translation(
-                                turn,
-                                target + turn * Vec3::new(0.0, 0.0, 240.0),
-                            ),
-                            fov: 40_f32.to_radians(),
-                        }
-                    }
-                    None => {
-                        let target = root + Vec3::new(0.0, 30.0, 0.0);
-                        let turn =
-                            Quat::from_rotation_y(preset.yaw) * Quat::from_rotation_x(preset.pitch);
-                        crate::show::Shot {
-                            place: Mat4::from_rotation_translation(
-                                turn,
-                                target + turn * Vec3::new(0.0, 0.0, preset.distance),
-                            ),
-                            fov: 40_f32.to_radians(),
-                        }
-                    }
+            Camera::Helmet => {
+                // The eyeballs sit along local +Y, with +Z forward and +X up.
+                // Place the lens just beyond the helmet brim.
+                let eye = head.transform_point3(Vec3::new(5.0, 0.0, 15.0));
+                let forward = head.z_axis.truncate().normalize();
+                let up = head.x_axis.truncate().normalize();
+                let right = forward.cross(up).normalize();
+                Shot {
+                    place: Mat4::from_cols(
+                        right.extend(0.0),
+                        right.cross(forward).extend(0.0),
+                        (-forward).extend(0.0),
+                        eye.extend(1.0),
+                    ),
+                    fov,
                 }
             }
-            other => other.shot(preset, root, frame.local),
+            Camera::Movie => match self.movie_rigs[take] {
+                Some(_) if info.set == demo::Set::None && frame.local >= 3.5 => {
+                    Shot::orbit(focus, -2.3, -0.24, 225.0, fov)
+                }
+                // These two cuts cross the old computer wall, where the port's
+                // simplified bedroom pass leaves props in front of the lens.
+                Some(at) if info.set == demo::Set::OldBedroom && world[at].w_axis.x > 280.0 => {
+                    let yaw = if info.camera == "camera2" { 0.75 } else { -0.8 };
+                    Shot::orbit(focus, yaw, -0.28, 170.0, fov)
+                }
+                Some(at) => Shot {
+                    place: world[at],
+                    fov,
+                },
+                None => {
+                    let (yaw, pitch, distance) =
+                        self.fallback_presets[take].map_or((-2.28, -0.38, 240.0), |preset| {
+                            (
+                                preset.yaw,
+                                preset.pitch,
+                                preset.distance.clamp(170.0, 800.0),
+                            )
+                        });
+                    Shot::orbit(focus, yaw, pitch, distance, fov)
+                }
+            },
+            Camera::Free {
+                yaw,
+                pitch,
+                distance,
+                pan,
+            } => Shot::orbit(focus + pan, yaw, pitch, distance, fov),
         };
         let eye = shot.place.w_axis.truncate();
         let view = shot.place.inverse();
         let projection =
-            glam::camera::rh::proj::directx::perspective(shot.fov, width / height, 1.0, 4000.0);
+            glam::camera::rh::proj::directx::perspective(shot.fov, aspect, 1.0, 4000.0);
         let mut lights = [[0.0; 4]; 16];
-        if let Some(shape) = self.world.model.shapes.first() {
-            let _ = shape;
-        }
         // Moon, omni, lamp and mermaid lights from the world file.
         for (i, (color, position)) in [
             (Vec3::new(0.34, 0.37, 0.49), Vec3::new(60.0, 220.0, -80.0)),
@@ -873,6 +892,7 @@ impl Scene {
         backbone = draw_actor(
             0,
             &mut self.world,
+            Some(&self.visible_in_take[take]),
             &world,
             &view,
             &values,
@@ -885,6 +905,7 @@ impl Scene {
         backbone = draw_actor(
             1,
             &mut self.scalp,
+            None,
             &scalp_world,
             &view,
             &values,
@@ -894,9 +915,11 @@ impl Scene {
             &mut calls,
             backbone,
         );
-        for (n, overlay) in self.overlays.iter_mut().enumerate() {
-            backbone =
-                draw_actor_static(2 + n, overlay, &view, gpu, &mut data, &mut calls, backbone);
+        if info.set != demo::Set::None {
+            for (n, overlay) in self.overlays.iter_mut().enumerate() {
+                backbone =
+                    draw_actor_static(2 + n, overlay, &view, gpu, &mut data, &mut calls, backbone);
+            }
         }
         let hair = 2 + self.overlays.len();
         draw_actor_static(
@@ -941,6 +964,11 @@ impl Scene {
             ..Default::default()
         });
         pass.set_bind_group(0, &self.constants, &[0]);
+        if info.set == demo::Set::None {
+            pass.set_pipeline(&self.moon_pipeline);
+            pass.set_bind_group(1, &self.moon, &[]);
+            pass.draw(0..3, 0..1);
+        }
         let hair = 2 + self.overlays.len();
         for i in order {
             let call = &calls[i];
@@ -1000,6 +1028,7 @@ impl Scene {
 fn draw_actor(
     id: usize,
     actor: &mut Actor,
+    visibility: Option<&[bool]>,
     world: &[Mat4],
     view: &Mat4,
     values: &HashMap<String, f32>,
@@ -1017,7 +1046,10 @@ fn draw_actor(
         .zip(actor.shapes.iter_mut())
         .enumerate()
     {
-        if shape.pass == crate::model::Pass::Depth || shape.pass == crate::model::Pass::Skip {
+        if shape.pass == Pass::Depth
+            || shape.pass == Pass::Skip
+            || visibility.is_some_and(|visible| !visible[k])
+        {
             continue;
         }
         let bones = if shape.bones.is_empty() {
@@ -1179,7 +1211,6 @@ fn presets(files: &Files) -> Result<Vec<Preset>, Error> {
                     look.get(2).copied().unwrap_or(-12.0),
                 ),
                 animation,
-                anchor: Vec3::ZERO,
             });
         }
     }
@@ -1241,6 +1272,7 @@ fn grow(files: &Files) -> Result<Model, Error> {
     Ok(Model::lone(crate::model::Shape {
         name: "grown".to_owned(),
         geometry: Geometry::Hair(hair::Hair { points, per_hair }),
+        transform: None,
         bones: Vec::new(),
         vertex: String::new(),
         fragment: "hair".to_owned(),
@@ -1345,4 +1377,45 @@ fn menu_batches(loader: &mut Loader<'_>, files: &Files, menu: &Model) -> Result<
         .gpu
         .buffer(bytemuck::cast_slice(&data), wgpu::BufferUsages::VERTEX);
     Ok(Menu { points, batches })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn narrow_view_keeps_the_movie_horizontal_framing() {
+        let horizontal = |aspect| (movie_fov(aspect) * 0.5).tan() * aspect;
+        let reference = horizontal(4.0 / 3.0);
+        assert!((horizontal(9.0 / 16.0) - reference).abs() < 1e-6);
+    }
+
+    #[test]
+    fn storyboard_switches_rooms_and_computers() -> Result<(), Error> {
+        let Some(path) = std::env::var_os(demo::DATA_ENV) else {
+            return Ok(());
+        };
+        let files = Files::from_dir(std::path::Path::new(&path))?;
+        let model = Model::new(&files.binary(demo::GEOM)?, &files)?;
+        let shape = |name: &str| {
+            model
+                .shapes
+                .iter()
+                .find(|shape| shape.name == name)
+                .unwrap()
+        };
+        let bedroom_wall = shape("MMB_Wall_Computer_SHAPEShape_nvNearPass");
+        let workshop_wall = shape("MMW_BackWall_SHAPEShape_nvNearPass");
+        let old_computer = shape("MMB_COMP_OldMainboard_SHAPEShape_nvNearPass");
+        let new_computer = shape("MMB_NewComputer_SHAPEShape_nvNearPass");
+        let is_visible = |shape, take: usize| visible(&model, shape, &demo::TAKES[take]);
+
+        assert!(bedroom_wall.cull);
+        assert!(is_visible(bedroom_wall, 3) && !is_visible(workshop_wall, 3));
+        assert!(is_visible(workshop_wall, 4) && !is_visible(bedroom_wall, 4));
+        assert!(is_visible(old_computer, 5) && !is_visible(new_computer, 5));
+        assert!(is_visible(new_computer, 6) && !is_visible(old_computer, 6));
+        assert!(!is_visible(bedroom_wall, 8) && !is_visible(workshop_wall, 8));
+        Ok(())
+    }
 }

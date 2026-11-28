@@ -84,6 +84,14 @@ pub const TEXT_FILES: &[&str] = &[
 pub const SOUND_DIR: &str = "audio";
 pub const DATA_ENV: &str = "MADMODMIKE_DATA";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Set {
+    OldBedroom,
+    Workshop,
+    NewBedroom,
+    None,
+}
+
 /// One take: its scene file, and how long the port plays it (`0x4...` loops
 /// the animation; lengths below are the animation spans, see ENGINE.md).
 pub struct Take {
@@ -99,6 +107,13 @@ pub struct Take {
     /// The movie camera rig for this take (`args.txt` flag 6: `camera1`,
     /// `camera2`, `cornerCam`); empty when the take animates none [I].
     pub camera: &'static str,
+    // Set and prop visibility from args.txt.
+    pub set: Set,
+    pub grinder: bool,
+    pub welder: bool,
+    pub door: bool,
+    pub hinges: bool,
+    pub graphics_card: bool,
 }
 
 pub const TAKES: &[Take] = &[
@@ -108,6 +123,12 @@ pub const TAKES: &[Take] = &[
         start: 175.0 / 30.0,
         stop: 20.5,
         camera: "camera1",
+        set: Set::OldBedroom,
+        grinder: false,
+        welder: false,
+        door: true,
+        hinges: true,
+        graphics_card: false,
     },
     Take {
         name: "Karate",
@@ -115,6 +136,12 @@ pub const TAKES: &[Take] = &[
         start: 793.0 / 30.0,
         stop: 5.16666666667,
         camera: "camera1",
+        set: Set::OldBedroom,
+        grinder: false,
+        welder: false,
+        door: false,
+        hinges: false,
+        graphics_card: false,
     },
     Take {
         name: "Mermaid",
@@ -122,6 +149,12 @@ pub const TAKES: &[Take] = &[
         start: 28.4,
         stop: 3.2,
         camera: "",
+        set: Set::OldBedroom,
+        grinder: false,
+        welder: false,
+        door: false,
+        hinges: false,
+        graphics_card: false,
     },
     Take {
         name: "Cutting open the case",
@@ -129,6 +162,12 @@ pub const TAKES: &[Take] = &[
         start: 1106.0 / 30.0,
         stop: 9.95833333333,
         camera: "camera1",
+        set: Set::OldBedroom,
+        grinder: true,
+        welder: false,
+        door: false,
+        hinges: false,
+        graphics_card: false,
     },
     Take {
         name: "Tooth fairy",
@@ -136,6 +175,12 @@ pub const TAKES: &[Take] = &[
         start: 0.0,
         stop: 12.79166666667,
         camera: "camera1",
+        set: Set::Workshop,
+        grinder: false,
+        welder: false,
+        door: false,
+        hinges: false,
+        graphics_card: false,
     },
     Take {
         name: "Pulling computer apart",
@@ -143,6 +188,12 @@ pub const TAKES: &[Take] = &[
         start: 1788.0 / 30.0,
         stop: 5.25,
         camera: "camera2",
+        set: Set::OldBedroom,
+        grinder: false,
+        welder: false,
+        door: false,
+        hinges: false,
+        graphics_card: false,
     },
     Take {
         name: "Welding",
@@ -150,6 +201,12 @@ pub const TAKES: &[Take] = &[
         start: 1945.0 / 30.0,
         stop: 2.875,
         camera: "camera1",
+        set: Set::NewBedroom,
+        grinder: false,
+        welder: true,
+        door: false,
+        hinges: false,
+        graphics_card: false,
     },
     Take {
         name: "Posters",
@@ -157,6 +214,12 @@ pub const TAKES: &[Take] = &[
         start: 2.0 / 30.0,
         stop: 21.41666666667,
         camera: "camera1",
+        set: Set::NewBedroom,
+        grinder: false,
+        welder: false,
+        door: false,
+        hinges: false,
+        graphics_card: true,
     },
     Take {
         name: "Flies away",
@@ -164,6 +227,12 @@ pub const TAKES: &[Take] = &[
         start: 1.0 / 30.0,
         stop: 12.0,
         camera: "cornerCam",
+        set: Set::None,
+        grinder: false,
+        welder: false,
+        door: false,
+        hinges: false,
+        graphics_card: true,
     },
     Take {
         name: "Mermaid",
@@ -171,6 +240,12 @@ pub const TAKES: &[Take] = &[
         start: 0.0,
         stop: 4.41666666667,
         camera: "camera1",
+        set: Set::NewBedroom,
+        grinder: false,
+        welder: false,
+        door: false,
+        hinges: false,
+        graphics_card: true,
     },
 ];
 

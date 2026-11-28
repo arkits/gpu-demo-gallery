@@ -41,9 +41,6 @@ pub struct Preset {
     pub look: Vec3,
     /// The animation the shipped file saved this preset for, if any.
     pub animation: Option<usize>,
-    /// Where Mike stood when this preset was chosen; the movie camera
-    /// follows his movement relative to it.
-    pub anchor: Vec3,
 }
 
 pub struct Shot {
@@ -52,41 +49,13 @@ pub struct Shot {
     pub fov: f32,
 }
 
-impl Camera {
-    /// `movie` is the scripted camera; the free one looks at `root`.
-    pub fn shot(&self, preset: Preset, root: Vec3, seconds: f64) -> Shot {
-        match *self {
-            Camera::Movie => {
-                // The shipped yaw, pitch and distance, aimed at the shipped
-                // look-at and following Mike as he moves [I: the shipped
-                // look-ats belong to animation slots, not to these files].
-                let yaw = preset.yaw + seconds as f32 * 0.008;
-                let turn = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(preset.pitch);
-                let target = preset.look + (root - preset.anchor);
-                let eye = target + turn * Vec3::new(0.0, 0.0, preset.distance);
-                Shot {
-                    place: Mat4::from_rotation_translation(turn, eye),
-                    fov: 40_f32.to_radians(),
-                }
-            }
-            Camera::Free {
-                yaw,
-                pitch,
-                distance,
-                pan,
-            } => {
-                let turn = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
-                let eye = root + pan + turn * Vec3::new(0.0, 0.0, distance);
-                Shot {
-                    place: Mat4::from_rotation_translation(turn, eye),
-                    fov: 40_f32.to_radians(),
-                }
-            }
-            Camera::Helmet => Shot {
-                // Replaced by the head joint in `scene.rs`.
-                place: Mat4::IDENTITY,
-                fov: 55_f32.to_radians(),
-            },
+impl Shot {
+    pub fn orbit(target: Vec3, yaw: f32, pitch: f32, distance: f32, fov: f32) -> Self {
+        let turn = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+        let eye = target + turn * Vec3::new(0.0, 0.0, distance);
+        Self {
+            place: Mat4::from_rotation_translation(turn, eye),
+            fov,
         }
     }
 }
@@ -166,6 +135,9 @@ impl Show {
 
     fn home(&mut self) {
         (self.yaw, self.pitch, self.distance) = HOME;
+        if TAKES[self.take].set == demo::Set::Workshop {
+            self.yaw = 1.55;
+        }
         self.pan = Vec3::ZERO;
     }
 
@@ -182,6 +154,9 @@ impl Show {
     fn set(&mut self, mode: Mode, take: usize) {
         if self.take != take % TAKES.len() {
             self.begin(take);
+        }
+        if mode == Mode::Free && self.mode != Mode::Free {
+            self.home();
         }
         self.mode = mode;
         self.paused = false;

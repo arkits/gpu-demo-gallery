@@ -101,15 +101,16 @@ in `docs/DEVELOPMENT.md`.
   each take plays its own master-timeline segment and loops). Takes without
   a storyboard slot (`scene6.nmb`) play their key span [I]. `anim_reset.nma`
   and `poses.nma` parse but are not performed [I: reset pose and pose cycling].
-- The movie camera is the take's own rig (`args.txt` flag 6: `camera1`,
-  take 5's `camera2`, take 8's `cornerCam`). Takes that can't use theirs
-  fall back instead: take 2 keeps the shipped preset as is, take 5 uses a
-  fixed offset, take 8 re-anchors the nearest preset onto Mike (each
-  verified in stills; the shipped look-ats belong to other animation slots
-  and the flagged rigs stare into a board / sit inside him) [I]. `c`
-  switches to free orbit and helmet cam (the head joint). `1`–`0` switch
-  takes, arrows change expressions, space pauses, `m` toggles the menu
-  overlay [I].
+- The movie uses the take's camera rig from `args.txt` flag 6 and the
+  original's aspect-scaled lens. Only the active set and props draw, using
+  the transform hierarchy and storyboard flags. The two old-computer cuts
+  use an orbit shot when their rig crosses the computer wall. The unrigged
+  `scene6.nmb` take follows Mike from a shipped preset angle. The flyaway
+  uses `cornerCam` for departure, then follows Mike against the shipped moon
+  backdrop.
+- `c` switches between movie, free orbit around Mike's upper body, and the
+  head-mounted helmet view. `1`–`0` switch takes, arrows change expressions,
+  space pauses, and `m` toggles the menu overlay.
 - The wet cornea layer (`mike_wetball_*`, opaque-blended by default in the
   files) draws as a transparent analytic gloss over the textured eyeball;
   drawn opaque it covers the iris with a white shell.
@@ -124,6 +125,6 @@ in `docs/DEVELOPMENT.md`.
   feedback/HDTV post chain, the menu buttons (drawn, not clickable), eye
   tracking, helmet, sparks physics, cloth physics, wireframe/point modes, the
   artist menu, screenshots and gamma control.
-- The movie camera does not collide with the set; it can sit inside machines.
+- Free orbit has no prop collision. The movie uses replacement framing at the computer wall and during the flyaway.
 - `rot
 ...[truncated 737 chars]

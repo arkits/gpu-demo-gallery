@@ -82,6 +82,10 @@ const commands = {
     await page.waitForTimeout(700);
     await shot("phone");
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "fits a phone");
+    await page.keyboard.press("c");
+    check(await page.evaluate(() => window.demo.player.mode()) === "Helmet", "helmet camera");
+    await page.keyboard.press("c");
+    check(await page.evaluate(() => window.demo.player.mode()) === "Movie", "movie camera");
   },
   async still() {
     // Seconds, take and key of the still, matching scripts/dev.sh STILLS.
