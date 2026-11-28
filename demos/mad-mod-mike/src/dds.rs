@@ -7,7 +7,7 @@ pub enum Format {
     Dxt1,
     Dxt3,
     Dxt5,
-    /// Two bytes a texel: luminance and alpha.
+    /// Two signed normal components stored in a luminance-alpha DDS.
     L8A8,
 }
 
@@ -77,8 +77,10 @@ impl<'a> Image<'a> {
         if self.format == Format::L8A8 {
             let mut out = vec![255; w * h * 4];
             for (i, b) in self.levels[k].chunks_exact(2).enumerate() {
-                out[i * 4] = b[0];
-                out[i * 4 + 1] = b[1];
+                // NVIDIA uploaded these bytes as SIGNED_HILO. Bias them for
+                // UNORM sampling so interpolation across zero stays linear.
+                out[i * 4] = b[0] ^ 0x80;
+                out[i * 4 + 1] = b[1] ^ 0x80;
             }
             return (w, h, out);
         }
@@ -146,6 +148,17 @@ fn decode_block(format: Format, b: &[u8]) -> [[u8; 4]; 16] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_hilo_has_a_linear_zero() {
+        let image = Image {
+            format: Format::L8A8,
+            width: 2,
+            height: 1,
+            levels: vec![&[255, 1, 0, 0]],
+        };
+        assert_eq!(image.decode(0).2, [127, 129, 255, 255, 128, 128, 255, 255]);
+    }
 
     #[test]
     fn reads_and_decodes() {

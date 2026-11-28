@@ -1,5 +1,5 @@
 //! A scene: transforms, meshes, morph targets, shapes and what they are drawn with.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use glam::{EulerRot, Mat4, Vec3, Vec4};
 
@@ -102,6 +102,7 @@ pub struct Mesh {
     pub fixed: Vec<Fixed>,
     pub indices: Vec<u32>,
     pub morphs: Vec<Morph>,
+    normal_groups: Option<Vec<usize>>,
 }
 
 impl Mesh {
@@ -115,9 +116,15 @@ impl Mesh {
                 v.normal = (Vec4::from(v.normal) + weight * normal).into();
             }
         }
-        for v in &mut out {
-            let n = Vec4::from(v.normal);
-            v.normal = n.truncate().normalize_or_zero().extend(n.w).into();
+        if let Some(groups) = &self.normal_groups
+            && !weights.is_empty()
+        {
+            smooth_normals(&mut out, &self.indices, groups);
+        } else {
+            for v in &mut out {
+                let n = Vec4::from(v.normal);
+                v.normal = n.truncate().normalize_or_zero().extend(n.w).into();
+            }
         }
         out
     }
@@ -199,6 +206,7 @@ pub enum Texture {
 
 pub struct Model {
     transforms: Vec<Transform>,
+    by_name: HashMap<String, usize>,
     rest: Vec<Mat4>,
     pub shapes: Vec<Shape>,
     pub textures: BTreeMap<String, Texture>,
@@ -249,6 +257,25 @@ fn triangles(kind: u32, indices: &[u32], out: &mut Vec<u32>) -> Result<(), Error
     Ok(())
 }
 
+// Maya's processed meshes include UV seams as duplicate vertices. Accumulate
+// area-weighted normals across those duplicates when the file has no normals.
+fn smooth_normals(vertices: &mut [Moving], indices: &[u32], groups: &[usize]) {
+    let mut normals = vec![Vec3::ZERO; vertices.len()];
+    for tri in indices.chunks_exact(3) {
+        let [a, b, c] = std::array::from_fn(|i| Vec3::from(vertices[tri[i] as usize].position));
+        let normal = (b - a).cross(c - a);
+        for &index in tri {
+            normals[groups[index as usize]] += normal;
+        }
+    }
+    for (vertex, &group) in vertices.iter_mut().zip(groups) {
+        vertex.normal = normals[group]
+            .normalize_or_zero()
+            .extend(vertex.normal[3])
+            .into();
+    }
+}
+
 fn mesh(n: &Node) -> Result<Mesh, Error> {
     let arrays: Vec<Node> = n.nodes("data").to_vec();
     let stream = |wanted: &str| -> Option<(Vec<f32>, usize)> {
@@ -286,7 +313,7 @@ fn mesh(n: &Node) -> Result<Mesh, Error> {
         Ok(data.chunks_exact(width).map(vector).collect())
     };
     let normals = vectors(&["objNormal", "worldNormal"], Vec4::ZERO)?;
-    let tangents = vectors(&["objTangent", "worldTangent"], Vec4::X + Vec4::W)?;
+    let tangents = vectors(&["objTangent", "worldTangent"], Vec4::ZERO)?;
     let uvs = vectors(&["texture", "bumpTex"], Vec4::ZERO)?;
     // Two sets of up to four influences fill the eight slots.
     let weights: Vec<[f32; 8]> = {
@@ -358,11 +385,25 @@ fn mesh(n: &Node) -> Result<Mesh, Error> {
     if indices.iter().any(|i| *i as usize >= count) {
         return Err("bad vertex index".into());
     }
+    let normal_groups =
+        if normals.iter().all(|n| n.truncate() == Vec3::ZERO) && stream("boneWeights0").is_some() {
+            let mut welds = HashMap::new();
+            let groups: Vec<_> = moving
+                .iter()
+                .enumerate()
+                .map(|(i, vertex)| *welds.entry(vertex.position.map(f32::to_bits)).or_insert(i))
+                .collect();
+            smooth_normals(&mut moving, &indices, &groups);
+            Some(groups)
+        } else {
+            None
+        };
     Ok(Mesh {
         moving,
         fixed,
         indices,
         morphs,
+        normal_groups,
     })
 }
 
@@ -370,6 +411,7 @@ impl Model {
     pub fn new(root: &Node, files: &Files) -> Result<Self, Error> {
         let mut model = Self {
             transforms: Vec::new(),
+            by_name: HashMap::new(),
             rest: Vec::new(),
             shapes: Vec::new(),
             textures: BTreeMap::new(),
@@ -436,6 +478,7 @@ impl Model {
 
     fn walk(&mut self, n: &Node, parent: Option<usize>) {
         let at = self.transforms.len();
+        self.by_name.entry(n.name.clone()).or_insert(at);
         self.transforms.push(Transform::read(n, parent));
         for child in n.nodes("children") {
             self.walk(child, Some(at));
@@ -443,7 +486,7 @@ impl Model {
     }
 
     pub fn find(&self, name: &str) -> Option<usize> {
-        self.transforms.iter().position(|t| t.name == name)
+        self.by_name.get(name).copied()
     }
 
     pub fn ancestors(&self, start: Option<usize>) -> impl Iterator<Item = &str> {
@@ -463,6 +506,7 @@ impl Model {
     pub(crate) fn generated(shapes: Vec<Shape>) -> Self {
         Self {
             transforms: Vec::new(),
+            by_name: HashMap::new(),
             rest: Vec::new(),
             shapes,
             textures: BTreeMap::new(),
@@ -512,6 +556,7 @@ impl Model {
                     fixed: Vec::new(),
                     indices: Vec::new(),
                     morphs: Vec::new(),
+                    normal_groups: None,
                 }),
                 Some(geometry.to_owned()),
             ),

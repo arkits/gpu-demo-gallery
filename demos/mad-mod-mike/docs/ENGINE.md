@@ -84,16 +84,28 @@ in `docs/DEVELOPMENT.md`.
   `gotti_params.txt`. The strands follow the head joint as camera-facing
   ribbons. The original's gravity, drag and relaxation
   (`hairparams.txt`) are not simulated.
-- Particles (`particles.nma`, eight systems): billboards around each emitter's
-  rest transform, animated by the `time` uniform; smoke samples the `.t3d`
-  volumes. Streaks and point sprites are points [I].
-- The player draws opaque shapes, then sorts transparent shapes back to
-  front. It uses the authored near color groups for the room and workshop.
-  The original's far, shadow, and reflection passes supply intermediate
-  buffers for its compositor.
-- Lights: a fixed rig (moon, omni, lamp, mermaid colors from the file) plus
-  0.55 ambient [I: the original bakes most lighting into its textures and
-  light maps, whose exact combination per `mike*.fp30` is approximated].
+- The player draws the authored near color groups. Opaque materials write
+  view depth for the compositor, and transparent materials preserve that
+  depth. The compositor applies focus-dependent softness, highlight glow and
+  the original desaturation blend.
+- Room materials use their ambient-occlusion maps and DXT5 normal components
+  in alpha/green. Mike's HILO maps store signed byte pairs, which are biased
+  before filtering. Where the asset omits normals, the port builds smooth
+  normals across duplicated vertices and updates them after morphing.
+- Moon, bedroom lamp, workshop lamp and effect lights resolve from
+  `geom.nmb` into the animated pose. The direct and bounce gains follow
+  storyboard flags 10 and 11. The active key casts a perspective shadow map.
+  The upgraded monitor projects the current frame into the room, while the
+  CRT uses the rolling amber noise equation from `screen_old.fp30`.
+- The display reads the original ten 3×3 mermaid tiles and plays the 87-frame
+  sequence. The screen shader uses the original XWY channel order, edge
+  color and texture layout.
+- Jet heat draws the two animated flame cones into a depth-tested mask.
+  `composite_heat.fp30` supplies the noise scales, refraction taps and
+  hot-color terms. Jet smoke and streaks, grinder sparks, and welder sparks
+  use the filed emitters in `particles.nma`, with the animated nozzle and
+  tool transforms sampled at 30 Hz for deterministic trails. The smoke pass
+  uses the original jet smoke sprite.
 
 ## Running
 
@@ -123,11 +135,15 @@ in `docs/DEVELOPMENT.md`.
 
 ## Left out or approximate
 
-- Shadow maps (hard omni, soft cube, radiance), depth of field, HDR glow,
-  cube-Blur reflections, adaptive subdivision (control cages draw as quads),
-  feedback/HDTV post chain, the menu buttons (drawn, not clickable), eye
-  tracking, helmet, sparks physics, cloth physics, wireframe/point modes, the
-  artist menu, screenshots and gamma control.
+- NVIDIA's full 25-pass pipeline uses omnidirectional shadow and radiance
+  cubemaps, planar shadow maps, a two-layer depth-of-field compositor,
+  and a separate highlight chain. This port uses one projected shadow map,
+  a bounce-light approximation, and a compact depth/glow compositor.
+  Particle activation ranges and bounce are reconstructed from the storyboard,
+  footage and available collider fields.
+- Cube reflections, adaptive subdivision, screen feedback mode, clickable
+  original menus, eye tracking, cloth physics, artist controls, and the
+  original motion-graphics interludes remain unported.
 - Camera clearance samples the active set’s opaque geometry, including the posed door frame. The movie uses replacement framing at the computer wall and during the flyaway.
 - `rot
 ...[truncated 737 chars]

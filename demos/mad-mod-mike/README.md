@@ -1,7 +1,7 @@
 # Mad Mod Mike
 
-A native and web port of NVIDIA's “Mad Mod Mike” demo for the GeForce FX (2003,
-OpenGL with Cg) using Rust and wgpu. A moddel with morphed expressions and
+A native and web port of NVIDIA's “Mad Mod Mike” demo for the GeForce 7 series (2005,
+OpenGL with Cg) using Rust and wgpu. A character with morphed expressions and
 grown hair acts out ten takes in a bedroom and a workshop, with rocket flames,
 sparks, mermaid projections and menu cards.
 

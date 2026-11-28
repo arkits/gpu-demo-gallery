@@ -6,7 +6,9 @@ use glam::{Mat4, Vec3};
 use crate::Error;
 use crate::camera_collision::{Obstacle, keep_clear};
 use crate::data::Files;
+use crate::effects::{self, Effects, MAX_PARTICLES, Particle};
 use crate::gpu::{DEPTH, Gpu, SAMPLES, SLOT};
+use crate::lighting::Rig;
 use crate::model::{Fixed, Geometry, Model, Moving, Pass, Shape};
 use crate::show::{Camera, Frame, Preset, Shot, Show};
 use crate::{dds, demo, hair, tga, tree};
@@ -23,6 +25,8 @@ struct Uniforms {
     projection: [[f32; 4]; 4],
     eye: [f32; 4],
     time: [f32; 4],
+    effects: [f32; 4],
+    shadow_view_proj: [[f32; 4]; 4],
     /// Up to eight lights: color and intensity, then position and eyespace flag.
     lights: [[f32; 4]; 16],
 }
@@ -61,6 +65,9 @@ struct Targets {
     size: (u32, u32),
     color: wgpu::TextureView,
     depth: wgpu::TextureView,
+    scene: wgpu::TextureView,
+    heat: wgpu::TextureView,
+    post_group: wgpu::BindGroup,
 }
 
 pub struct Scene {
@@ -86,6 +93,103 @@ pub struct Scene {
     menu_pipeline: wgpu::RenderPipeline,
     moon: wgpu::BindGroup,
     moon_pipeline: wgpu::RenderPipeline,
+    lights: Rig,
+    monitor_frames: Vec<wgpu::BindGroup>,
+    shadow: ShadowMap,
+    post_pipeline: wgpu::RenderPipeline,
+    texture_layout: wgpu::BindGroupLayout,
+    post_sampler: wgpu::Sampler,
+    noise: wgpu::TextureView,
+    effects: Effects,
+    note_focus: Vec3,
+    particles: ParticleGpu,
+}
+
+struct ShadowMap {
+    depth: wgpu::TextureView,
+    pipeline: wgpu::RenderPipeline,
+}
+
+impl ShadowMap {
+    fn new(gpu: &Gpu, uniforms: &wgpu::BindGroupLayout, shader: &wgpu::ShaderModule) -> Self {
+        let depth = gpu
+            .device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("primary light shadow map"),
+                size: wgpu::Extent3d {
+                    width: 1024,
+                    height: 1024,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: DEPTH,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let layout = gpu
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("shadow uniforms"),
+                bind_group_layouts: &[Some(uniforms)],
+                ..Default::default()
+            });
+        let fixed = wgpu::vertex_attr_array![
+            2 => Float32x4, 3 => Float32x2, 4 => Float32x4, 5 => Float32x4,
+            6 => Float32x4, 7 => Float32x4
+        ];
+        let moving = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
+        let pipeline = gpu
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("skinned shadow casters"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_shadow"),
+                    compilation_options: Default::default(),
+                    buffers: &[
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: size_of::<Moving>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &moving,
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: size_of::<Fixed>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &fixed,
+                        }),
+                    ],
+                },
+                fragment: None,
+                primitive: Default::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 1.5,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+        Self { depth, pipeline }
+    }
+}
+
+struct ParticleGpu {
+    smoke: wgpu::RenderPipeline,
+    streak: wgpu::RenderPipeline,
+    group: wgpu::BindGroup,
+    buffer: wgpu::Buffer,
 }
 
 struct MenuBatch {
@@ -146,25 +250,7 @@ impl Loader<'_> {
                 ..Default::default()
             })
         });
-        let mut entries: Vec<_> = planes
-            .iter()
-            .enumerate()
-            .map(|(i, v)| wgpu::BindGroupEntry {
-                binding: i as u32,
-                resource: wgpu::BindingResource::TextureView(v),
-            })
-            .collect();
-        entries.push(wgpu::BindGroupEntry {
-            binding: 4,
-            resource: wgpu::BindingResource::Sampler(sampler),
-        });
-        self.gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.layout,
-                entries: &entries,
-            })
+        texture_group(&self.gpu.device, &self.layout, &planes, sampler)
     }
 
     fn material(&mut self, model: &Model, shape: &Shape) -> Result<wgpu::BindGroup, Error> {
@@ -176,15 +262,12 @@ impl Loader<'_> {
             Some(Tex::Plane { file, .. }) | Some(Tex::Volume { file }) => Some(file.as_str()),
             _ => None,
         };
-        let t0 = file(pick(&["colorTex"]).or_else(|| shape.textures.values().next()));
-        // Room shaders use the bump map with shadow and radiance passes that
-        // are unavailable in the port. Use the mesh normal for this pass.
-        let t1 = if shape.fragment.starts_with("room_") {
-            None
-        } else {
-            file(pick(&["bumpTex", "detailBumpTex", "faceNormalCubeTex"]))
+        let t0 = match shape.fragment.as_str() {
+            "screen_old" => Some("textures/noise2d.tga"),
+            _ => file(pick(&["colorTex", "cardTex"]).or_else(|| shape.textures.values().next())),
         };
-        let t2 = file(pick(&["detailColTex", "ambTex", "miscTex"]));
+        let t1 = file(pick(&["bumpTex", "detailBumpTex"]));
+        let t2 = file(pick(&["ambTex"]));
         let (v0, v1, v2, v3) = (
             self.view(t0)?,
             self.view(t1)?,
@@ -193,6 +276,31 @@ impl Loader<'_> {
         );
         Ok(self.group(vec![v0, v1, v2, v3]))
     }
+}
+
+fn texture_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    views: &[wgpu::TextureView],
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    let mut entries: Vec<_> = views
+        .iter()
+        .enumerate()
+        .map(|(i, view)| wgpu::BindGroupEntry {
+            binding: i as u32,
+            resource: wgpu::BindingResource::TextureView(view),
+        })
+        .collect();
+    entries.push(wgpu::BindGroupEntry {
+        binding: 4,
+        resource: wgpu::BindingResource::Sampler(sampler),
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout,
+        entries: &entries,
+    })
 }
 
 /// A `.t3d` smoke volume: 64 frames of 64 by 64 bytes.
@@ -236,14 +344,6 @@ fn volume(gpu: &Gpu, data: &[u8]) -> Result<wgpu::Texture, Error> {
     Ok(texture)
 }
 
-fn samples(coverage: bool) -> wgpu::MultisampleState {
-    wgpu::MultisampleState {
-        count: SAMPLES,
-        alpha_to_coverage_enabled: coverage,
-        ..Default::default()
-    }
-}
-
 struct Pipelines<'a> {
     gpu: &'a Gpu,
     layout: wgpu::PipelineLayout,
@@ -260,11 +360,15 @@ struct Style<'a> {
     blend: crate::model::Blend,
     cull: bool,
     depth: Option<bool>,
+    samples: u32,
 }
 
 impl Pipelines<'_> {
     fn make(&mut self, s: Style<'_>) -> wgpu::RenderPipeline {
-        let key = format!("{} {} {} {}", s.vertex, s.fragment, s.blend as u8, s.cull);
+        let key = format!(
+            "{} {} {} {} {} {:?}",
+            s.vertex, s.fragment, s.blend as u8, s.cull, s.samples, s.depth
+        );
         if let Some((_, p)) = self.made.iter().find(|m| m.0 == key) {
             return p.clone();
         }
@@ -275,7 +379,11 @@ impl Pipelines<'_> {
         };
         use crate::model::Blend;
         use wgpu::BlendFactor::{One, OneMinusSrcAlpha, SrcAlpha};
-        let both = |c| wgpu::BlendState { color: c, alpha: c };
+        // The opaque pass leaves view depth in alpha for the compositor.
+        let blend = |color| wgpu::BlendState {
+            color,
+            alpha: component(wgpu::BlendFactor::Zero, One),
+        };
         let pipeline = self
             .gpu
             .device
@@ -296,8 +404,8 @@ impl Pipelines<'_> {
                         format: self.format,
                         blend: match s.blend {
                             Blend::None => None,
-                            Blend::Alpha => Some(both(component(SrcAlpha, OneMinusSrcAlpha))),
-                            Blend::Add => Some(both(component(One, One))),
+                            Blend::Alpha => Some(blend(component(SrcAlpha, OneMinusSrcAlpha))),
+                            Blend::Add => Some(blend(component(One, One))),
                         },
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -306,9 +414,9 @@ impl Pipelines<'_> {
                     cull_mode: s.cull.then_some(wgpu::Face::Back),
                     ..Default::default()
                 },
-                depth_stencil: Some(wgpu::DepthStencilState {
+                depth_stencil: (s.samples == SAMPLES).then_some(wgpu::DepthStencilState {
                     format: DEPTH,
-                    depth_write_enabled: Some(s.depth.is_some()),
+                    depth_write_enabled: Some(s.depth.unwrap_or(false)),
                     depth_compare: Some(match s.depth {
                         Some(_) => wgpu::CompareFunction::LessEqual,
                         None => wgpu::CompareFunction::Always,
@@ -316,7 +424,10 @@ impl Pipelines<'_> {
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
-                multisample: samples(false),
+                multisample: wgpu::MultisampleState {
+                    count: s.samples,
+                    ..Default::default()
+                },
                 multiview_mask: None,
                 cache: None,
             });
@@ -366,7 +477,20 @@ impl Pipelines<'_> {
                     "fs_wetball"
                 } else {
                     match shape.pass {
+                        Pass::Card if shape.fragment == "flames" => "fs_flame_mask",
                         Pass::Card => "fs_card",
+                        _ if shape.fragment == "screen_old" => "fs_screen_old",
+                        _ if shape.fragment == "screen" => "fs_screen",
+                        _ if shape.name.starts_with("MMB_NewKeyboardPanels_") => "fs_keyboard",
+                        _ if shape.fragment.starts_with("room_ill_") => "fs_emissive",
+                        _ if shape.fragment.starts_with("room_")
+                            && shape.blend != crate::model::Blend::None =>
+                        {
+                            "fs_room_alpha"
+                        }
+                        _ if shape.fragment.starts_with("room_") => "fs_room",
+                        _ if shape.fragment.starts_with("mike_skin") => "fs_skin",
+                        _ if shape.blend != crate::model::Blend::None => "fs_main_alpha",
                         _ => "fs_main",
                     }
                 },
@@ -383,13 +507,15 @@ impl Pipelines<'_> {
         } else {
             shape.blend
         };
+        let flame = shape.fragment == "flames";
         self.make(Style {
-            vertex,
+            vertex: if flame { "vs_flame" } else { vertex },
             fragment,
             buffers: &buffers,
             blend,
             cull: shape.cull,
-            depth: Some(true),
+            depth: Some(!flame),
+            samples: SAMPLES,
         })
     }
 }
@@ -513,7 +639,33 @@ fn visible(model: &Model, shape: &Shape, take: &demo::Take) -> bool {
 impl Scene {
     pub fn new(gpu: &Gpu, files: &Files, format: wgpu::TextureFormat) -> Result<Self, Error> {
         let device = &gpu.device;
-        let world = Model::new(&files.binary(demo::GEOM)?, files)?;
+        let geometry = files.binary(demo::GEOM)?;
+        let world = Model::new(&geometry, files)?;
+        let lights = Rig::read(&geometry, &world);
+        let note_focus = world
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                if !shape.primary || !shape.name.starts_with("MMB_BedNote") {
+                    return None;
+                }
+                let (Geometry::Mesh(mesh) | Geometry::Cage(mesh)) = &shape.geometry else {
+                    return None;
+                };
+                let center = mesh
+                    .moving
+                    .iter()
+                    .map(|v| Vec3::from(v.position))
+                    .sum::<Vec3>()
+                    / mesh.moving.len().max(1) as f32;
+                Some(
+                    world
+                        .bones(shape, world.rest())
+                        .first()
+                        .map_or(center, |bone| bone.transform_point3(center)),
+                )
+            })
+            .unwrap_or(Vec3::new(-50.0, 94.0, 10.0));
         let scalp = Model::new(&files.binary(demo::HAIR_MESH)?, files)?;
         let grown = grow(files)?;
         let mut takes = Vec::new();
@@ -606,9 +758,38 @@ impl Scene {
             label: None,
             entries: &textures,
         });
+        let sampled_depth = entry(
+            1,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+        );
+        let scene_resources = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("mermaid animation and key light shadow"),
+            entries: &[
+                textures[0],
+                wgpu::BindGroupLayoutEntry {
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ..sampled_depth
+                },
+                wgpu::BindGroupLayoutEntry {
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ..entry(
+                        2,
+                        wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    )
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    ..textures[4]
+                },
+            ],
+        });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[Some(&first), Some(&second)],
+            bind_group_layouts: &[Some(&first), Some(&second), Some(&scene_resources)],
             ..Default::default()
         });
         let mut pipelines = Pipelines {
@@ -634,6 +815,7 @@ impl Scene {
             blend: crate::model::Blend::Alpha,
             cull: false,
             depth: None,
+            samples: 1,
         });
         let moon_pipeline = pipelines.make(Style {
             vertex: "vs_card",
@@ -642,6 +824,44 @@ impl Scene {
             blend: crate::model::Blend::None,
             cull: false,
             depth: None,
+            samples: SAMPLES,
+        });
+        let post_pipeline = pipelines.make(Style {
+            vertex: "vs_card",
+            fragment: "fs_composite",
+            buffers: &[],
+            blend: crate::model::Blend::None,
+            cull: false,
+            depth: None,
+            samples: 1,
+        });
+        let post_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let particle_layout = [Some(wgpu::VertexBufferLayout {
+            array_stride: size_of::<Particle>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3],
+        })];
+        let smoke_pipeline = pipelines.make(Style {
+            vertex: "vs_smoke",
+            fragment: "fs_smoke",
+            buffers: &particle_layout,
+            blend: crate::model::Blend::Alpha,
+            cull: false,
+            depth: Some(false),
+            samples: SAMPLES,
+        });
+        let streak_pipeline = pipelines.make(Style {
+            vertex: "vs_streak",
+            fragment: "fs_streak",
+            buffers: &particle_layout,
+            blend: crate::model::Blend::Add,
+            cull: false,
+            depth: Some(false),
+            samples: SAMPLES,
         });
         let mut loader = Loader {
             gpu,
@@ -650,34 +870,25 @@ impl Scene {
             samplers: HashMap::new(),
             layout: second,
         };
-        // Particle emitters live in the world; the systems in `particles.nma`.
-        let rest = world.rest();
-        let mut emitters = HashMap::new();
-        if let Ok(particles) = files.scene(demo::PARTICLES) {
-            for g in particles.nodes("geometries") {
-                if g.kind != "ParticleSystem" {
-                    continue;
-                }
-                let mut at = Vec3::ZERO;
-                for e in g.nodes("emitters") {
-                    if let Some(i) = world.find(e.text("transform")) {
-                        at = rest[i].transform_point3(Vec3::ZERO);
-                        break;
-                    }
-                }
-                emitters.insert(g.name.clone(), at);
-            }
-        }
+        let particle_scene = files.scene(demo::PARTICLES)?;
+        let effects = Effects::new(&world, &particle_scene, &takes);
+        let smoke_texture = loader.view(Some("textures/jet_smoke_tex_2b.tga"))?;
+        let blank = loader.view(None)?;
+        let particles = ParticleGpu {
+            smoke: smoke_pipeline,
+            streak: streak_pipeline,
+            group: loader.group(vec![smoke_texture, blank.clone(), blank.clone(), blank]),
+            buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("jet and tool particles"),
+                size: (2 * MAX_PARTICLES * size_of::<Particle>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+        };
         let empty: HashMap<String, Vec3> = HashMap::new();
         let world = Actor::new(gpu, world, &mut loader, &mut pipelines, &empty)?;
         let scalp = Actor::new(gpu, scalp, &mut loader, &mut pipelines, &empty)?;
-        let overlay_actors = vec![Actor::new(
-            gpu,
-            hula,
-            &mut loader,
-            &mut pipelines,
-            &emitters,
-        )?];
+        let overlay_actors = vec![Actor::new(gpu, hula, &mut loader, &mut pipelines, &empty)?];
         let strands = Actor::new(gpu, grown, &mut loader, &mut pipelines, &empty)?;
         let menu_model = Model::new(&files.scene(demo::MENU)?, files)?;
         let menu = menu_batches(&mut loader, files, &menu_model)?;
@@ -685,6 +896,49 @@ impl Scene {
         let blank = loader.view(None)?;
         let moon = loader.group(vec![moon, blank.clone(), blank.clone(), blank]);
 
+        let shadow = ShadowMap::new(gpu, &first, &pipelines.shader);
+        let compare = device.create_sampler(&wgpu::SamplerDescriptor {
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let quads = files.scene(demo::QUADS)?;
+        let mut monitor_frames = Vec::new();
+        for tile in quads.nodes("textures").iter().filter(|node| {
+            node.name.strip_prefix("tile").is_some_and(|suffix| {
+                suffix.len() == 3 && suffix.bytes().all(|b| b.is_ascii_digit())
+            })
+        }) {
+            let view = loader.view(Some(tile.text("filename")))?;
+            monitor_frames.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &scene_resources,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&shadow.depth),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&compare),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&post_sampler),
+                    },
+                ],
+            }));
+        }
+        if monitor_frames.len() != 10 {
+            return Err("expected ten mermaid texture tiles".into());
+        }
+
+        let noise = loader.view(Some("textures/noise2d.tga"))?;
         let slots: usize = [&world, &scalp]
             .into_iter()
             .chain(overlay_actors.iter())
@@ -741,6 +995,16 @@ impl Scene {
             menu_pipeline,
             moon,
             moon_pipeline,
+            lights,
+            monitor_frames,
+            shadow,
+            post_pipeline,
+            texture_layout: loader.layout,
+            post_sampler,
+            noise,
+            effects,
+            note_focus,
+            particles,
         })
     }
 
@@ -774,14 +1038,30 @@ impl Scene {
         size: (u32, u32),
     ) {
         if self.targets.as_ref().is_none_or(|t| t.size != size) {
-            let view = |format| {
-                let t = gpu.target(size.0, size.1, format, SAMPLES);
-                t.create_view(&Default::default())
+            let view = |format, samples| {
+                gpu.target(size.0, size.1, format, samples)
+                    .create_view(&Default::default())
             };
+            let scene = view(self.format, 1);
+            let heat = view(self.format, 1);
+            let post_group = texture_group(
+                &gpu.device,
+                &self.texture_layout,
+                &[
+                    scene.clone(),
+                    heat.clone(),
+                    self.noise.clone(),
+                    self.noise.clone(),
+                ],
+                &self.post_sampler,
+            );
             self.targets = Some(Targets {
                 size,
-                color: view(self.format),
-                depth: view(DEPTH),
+                color: view(self.format, SAMPLES),
+                depth: view(DEPTH, SAMPLES),
+                scene,
+                heat,
+                post_group,
             });
         }
         let (width, height) = (size.0 as f32, size.1 as f32);
@@ -888,25 +1168,62 @@ impl Scene {
         let view = shot.place.inverse();
         let projection =
             glam::camera::rh::proj::directx::perspective(shot.fov, aspect, 1.0, 4000.0);
-        let mut lights = [[0.0; 4]; 16];
-        // Moon, omni, lamp and mermaid lights from the world file.
-        for (i, (color, position)) in [
-            (Vec3::new(0.34, 0.37, 0.49), Vec3::new(60.0, 220.0, -80.0)),
-            (Vec3::new(1.0, 0.8, 0.5), Vec3::ZERO),
-            (Vec3::new(0.4, 0.4, 0.4), Vec3::new(-40.0, 150.0, 60.0)),
-            (Vec3::new(1.0, 1.0, 1.0), Vec3::new(0.0, 170.0, 40.0)),
-        ]
-        .iter()
-        .enumerate()
-        {
-            lights[i * 2] = [color.x, color.y, color.z, 1.0];
-            lights[i * 2 + 1] = [position.x, position.y, position.z, 0.0];
-        }
+        let local = frame.local as f32;
+        let fire = if effects::jet_active(take, local) {
+            0.87 + 0.13 * (local * 29.0).sin()
+        } else {
+            0.0
+        };
+        let sparks = if effects::tool_active(take, local) {
+            0.64 + 0.36 * (local * 41.0).sin()
+        } else {
+            0.0
+        };
+        let mut lights = self
+            .lights
+            .frame(&world, take, info.set, local, fire, sparks);
+        let focus_distance = if take == 0 && local < 10.0 {
+            let note_distance = -view.transform_point3(self.note_focus).z;
+            let blend = ((local - 6.5) / 3.5).clamp(0.0, 1.0);
+            note_distance + (-view.transform_point3(focus).z - note_distance) * blend
+        } else {
+            -view.transform_point3(focus).z
+        };
+        lights[14][0] = focus_distance.clamp(32.0, 550.0);
+        let monitor_frame = (local * 30.0).max(0.0) as usize % 87;
+        let resources = &self.monitor_frames[monitor_frame / 9];
+        let key = if sparks > 0.0 {
+            4
+        } else if fire > 0.0 {
+            2
+        } else if info.set == demo::Set::NewBedroom {
+            3
+        } else {
+            1
+        };
+        let light_eye = Vec3::from_array(lights[key * 2 + 1][..3].try_into().unwrap());
+        let direction = (focus - light_eye).try_normalize().unwrap_or(-Vec3::Z);
+        let up = if direction.y.abs() > 0.98 {
+            Vec3::Z
+        } else {
+            Vec3::Y
+        };
+        let light_pose =
+            glam::camera::model::look_to_mat4(light_eye, direction, up, -Vec3::Z, Vec3::Y);
+        let light_projection =
+            glam::camera::rh::proj::directx::perspective(105_f32.to_radians(), 1.0, 4.0, 720.0);
         let uniforms = Uniforms {
             view: view.to_cols_array_2d(),
             projection: projection.to_cols_array_2d(),
             eye: eye.extend(1.0).into(),
-            time: [frame.local as f32, width, height, 0.0],
+            time: [local, width, height, 0.0],
+            effects: [
+                monitor_frame as f32,
+                f32::from(info.set == demo::Set::Workshop),
+                key as f32,
+                f32::from(info.set != demo::Set::None),
+            ],
+            shadow_view_proj: (light_projection * light_pose.inverse()).to_cols_array_2d(),
             lights,
         };
         gpu.queue
@@ -975,13 +1292,53 @@ impl Scene {
                 .then(t.distance.total_cmp(&s.distance))
         });
 
+        if info.set != demo::Set::None {
+            let mut shadow = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("primary light depth"),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            shadow.set_pipeline(&self.shadow.pipeline);
+            for call in calls
+                .iter()
+                .filter(|call| call.actor == 0 && !call.transparent)
+            {
+                let material = &self.world.model.shapes[call.shape];
+                if material.pass == Pass::Color
+                    && let Buffers::Mesh {
+                        moving,
+                        fixed,
+                        indices,
+                        count,
+                        ..
+                    } = &self.world.shapes[call.shape].buffers
+                {
+                    shadow.set_bind_group(
+                        0,
+                        &self.constants,
+                        &[(call.backbone as u64 * STRIDE) as u32],
+                    );
+                    shadow.set_vertex_buffer(0, moving.slice(..));
+                    shadow.set_vertex_buffer(1, fixed.slice(..));
+                    shadow.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+                    shadow.draw_indexed(0..*count, 0, 0..1);
+                }
+            }
+        }
         let target = self.targets.as_ref().expect("made above");
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &target.color,
                 depth_slice: None,
-                resolve_target: Some(window),
+                resolve_target: Some(&target.scene),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Discard,
@@ -991,13 +1348,14 @@ impl Scene {
                 view: &target.depth,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Discard,
+                    store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,
             }),
             ..Default::default()
         });
         pass.set_bind_group(0, &self.constants, &[0]);
+        pass.set_bind_group(2, resources, &[]);
         if info.set == demo::Set::None {
             pass.set_pipeline(&self.moon_pipeline);
             pass.set_bind_group(1, &self.moon, &[]);
@@ -1016,6 +1374,10 @@ impl Scene {
                 &self.overlays[call.actor - 2]
             };
             let shape = &actor.shapes[call.shape];
+            let material = &actor.model.shapes[call.shape];
+            if material.fragment == "flames" {
+                continue;
+            }
             pass.set_pipeline(&shape.pipeline);
             pass.set_bind_group(
                 0,
@@ -1046,6 +1408,100 @@ impl Scene {
                 }
             }
         }
+        let particles = self.effects.at(take, local, eye);
+        let stride = size_of::<Particle>() as u64;
+        pass.set_bind_group(0, &self.constants, &[0]);
+        pass.set_bind_group(1, &self.particles.group, &[]);
+        for (pipeline, instances, offset) in [
+            (&self.particles.smoke, particles.smoke, 0),
+            (
+                &self.particles.streak,
+                particles.streaks,
+                MAX_PARTICLES as u64 * stride,
+            ),
+        ] {
+            if !instances.is_empty() {
+                let bytes = bytemuck::cast_slice(&instances);
+                gpu.queue
+                    .write_buffer(&self.particles.buffer, offset, bytes);
+                pass.set_pipeline(pipeline);
+                pass.set_vertex_buffer(
+                    0,
+                    self.particles
+                        .buffer
+                        .slice(offset..offset + bytes.len() as u64),
+                );
+                pass.draw(0..6, 0..instances.len() as u32);
+            }
+        }
+        drop(pass);
+        if fire > 0.0 {
+            let mut mask = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("depth-tested jet heat mask"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.color,
+                    depth_slice: None,
+                    resolve_target: Some(&target.heat),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Discard,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &target.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            for call in calls.iter().filter(|call| {
+                call.actor == 0 && self.world.model.shapes[call.shape].fragment == "flames"
+            }) {
+                let shape = &self.world.shapes[call.shape];
+                if let Buffers::Mesh {
+                    moving,
+                    fixed,
+                    indices,
+                    count,
+                    ..
+                } = &shape.buffers
+                {
+                    mask.set_pipeline(&shape.pipeline);
+                    mask.set_bind_group(
+                        0,
+                        &self.constants,
+                        &[(call.backbone as u64 * STRIDE) as u32],
+                    );
+                    mask.set_bind_group(1, &shape.group, &[]);
+                    mask.set_bind_group(2, resources, &[]);
+                    mask.set_vertex_buffer(0, moving.slice(..));
+                    mask.set_vertex_buffer(1, fixed.slice(..));
+                    mask.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+                    mask.draw_indexed(0..*count, 0, 0..1);
+                }
+            }
+        }
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Mad Mod Mike composite"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: window,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.post_pipeline);
+        pass.set_bind_group(2, resources, &[]);
+        pass.set_bind_group(0, &self.constants, &[0]);
+        pass.set_bind_group(1, &target.post_group, &[]);
+        pass.draw(0..3, 0..1);
         if frame.menu {
             pass.set_pipeline(&self.menu_pipeline);
             pass.set_vertex_buffer(0, self.menu.points.slice(..));

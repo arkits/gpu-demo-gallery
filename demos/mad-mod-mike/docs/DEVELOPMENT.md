@@ -81,26 +81,20 @@ scripts/dev.sh all
 
 | Original programs | Port entry | Notes |
 |---|---|---|
-| `mike_*_MERMAID*.vp30` + `mike*.fp30`, `ROOM.fp30`, `IllumObjects.*` | `vs_main` / `fs_main` | skinned, bump-mapped, 4-light rig + ambient; env/shadow maps skipped |
-| `mike_wetball_*` | `fs_wetball` (`vs_main`) | transparent cornea gloss over the eyeball (analytic highlight; the port has no cube maps), alpha-blended |
-| `hair*.vp30` / `hair*.fp30`, `hair_black*` | `vs_hair` / `fs_hair` | camera-facing ribbons, Kajiya-ish streak |
-| `card1*`, `copytex`, menu quads | `fs_card` (`vs_main`) | textured overlay; runtime-placed cards skipped |
-| `particle_*`, `flames*`, `feedback*` | `vs_particle` / `fs_particle` | instanced billboards, smoke `.t3d` volumes |
-| `cast_hard_omnishadow*`, `*ShadowCube*`, `cube_blur_*`, `blit_*`, `composite*`, `blur_*`, `HiPassFilter`, `loResBlackShader` | — | skipped (shadow maps, cube blur, post chain) |
-| `_forceInitPBuffers*`, `_white`, `_black`, `_defaultShader*`, `artist_mode_*` | — | skipped (init/debug shaders) |
+| `mike*.fp30`, `room.fp30` | `fs_main`, `fs_skin`, `fs_room`, `fs_emissive` | Signed HILO/DXT5 normals, authored occlusion, animated lights, projected key shadows |
+| `screen_old*`, `screen*` | `fs_screen_old`, `fs_screen`, `fs_keyboard` | Amber CRT, original mermaid tiles, emissive keyboard |
+| `mike_wetball_*` | `fs_wetball` | Transparent cornea with analytic gloss |
+| `hair*.vp30`, `hair*.fp30` | `vs_hair`, `fs_hair` | Camera-facing ribbons attached to the head |
+| `particle_*` | `vs_smoke`, `fs_smoke`, `vs_streak`, `fs_streak` | Filed tool and jet emitters with deterministic animation history |
+| `flames*`, `composite_heat.fp30`, `composite.fp30` | `vs_flame`, `fs_flame_mask`, `fs_composite` | Depth-tested heat mask, refraction, glow, depth-aware softness |
+| `cast_hard_omnishadow*`, `*ShadowCube*`, `cube_blur_*` | `vs_shadow` for the primary source | The original cube-map and radiance loops remain unported |
 
-Fragment program names select the entry (`fs_main` by default, `fs_card` for
-card/particle render settings, hair for grown strands).
-
-## Test outputs (2026-11-27, Apple Silicon, headless Chrome)
-
-- `cargo test --release`: 14 lib + 7 integration, all pass.
-- `dev.sh smoke 3`: `frames 130 (shown 0, offscreen 130)`.
-- `dev.sh webtest`: WebGPU and WebGL2 show, action, wide and phone shots.
-- `dev.sh compare`: 10 stills × 3 backends within mean 2.5.
-- Pack: `target/package/mad-mod-mike.xz` (~81.7 MB uncompressed manifest
-  size class L), split into 24 MiB parts + `assets.json`, plus
-  `soundtrack.flac` and `musicloop.flac`.
+Compare the opening and doorway, the grinder and welder, the flyaway smoke
+trail, and the upgraded display against
+[NVIDIA's original capture](https://download.nvidia.com/downloads/nZone/videos/nvidia/640-1mbits-NVIDIA-MadModMike.wmv).
+The [2005 NVIDIA presentation](https://download.nvidia.com/developer/presentations/2005/SIGGRAPH/Truth_About_NVIDIA_Demos.pdf)
+documents the original's lighting, shadow and depth-of-field passes. The
+backend still comparisons only measure consistency across the port's renderers.
 
 ## Deploy
 
