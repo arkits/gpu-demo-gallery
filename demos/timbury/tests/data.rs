@@ -252,3 +252,24 @@ fn pass_copies_coincide_with_the_visible_shapes() {
     }
     assert!(compared > 100, "only {compared} copies compared");
 }
+
+/// Face culling follows the filed cullParams, not the shape's own `cull`
+/// (view culling): garments and leaves filed _CullNoCull show both sides.
+#[test]
+fn double_sided_shapes_draw_both_sides() {
+    let Some(files) = files() else { return };
+    let model = timbury::model::Model::new(&binary(&files, demo::TIMBURY), &files).unwrap();
+    let both: Vec<_> = model
+        .shapes
+        .iter()
+        .filter(|s| !s.cull)
+        .map(|s| s.name.as_str())
+        .collect();
+    assert!(both.len() >= 150, "only {} double-sided", both.len());
+    for name in [
+        "BL_SHORTSShapeShape_nvPrimaryRenderPass_2",
+        "BL_SHIRTShapeShape_nvPrimaryRenderPass_5",
+    ] {
+        assert!(both.contains(&name), "{name} culls its back");
+    }
+}

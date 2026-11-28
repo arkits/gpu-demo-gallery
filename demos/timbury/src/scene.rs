@@ -143,6 +143,7 @@ struct Offscreen {
     lens_color: wgpu::TextureView,
     lens_depth: wgpu::TextureView,
     lens: wgpu::TextureView,
+    lens_texture: wgpu::Texture,
     shadow: wgpu::TextureView,
     tree: wgpu::TextureView,
     tree_a: wgpu::TextureView,
@@ -1291,6 +1292,7 @@ impl Scene {
         let plain = |(w, h): (u32, u32), format| {
             gpu.target(w, h, format, 1).create_view(&Default::default())
         };
+        let lens_texture = gpu.target(LENS.0, LENS.1, hdr, 1);
         let lens_color = gpu
             .target(LENS.0, LENS.1, hdr, SAMPLES)
             .create_view(&Default::default());
@@ -1302,7 +1304,8 @@ impl Scene {
         let fixed = Offscreen {
             lens_color,
             lens_depth,
-            lens: plain(LENS, hdr),
+            lens: lens_texture.create_view(&Default::default()),
+            lens_texture,
             shadow: shadow_depth.create_view(&Default::default()),
             tree: plain((TREE_MAP, TREE_MAP), tree_format),
             tree_a: plain((TREE_MAP, TREE_MAP), tree_format),
@@ -1412,10 +1415,11 @@ impl Scene {
                     depth_write_enabled: Some(true),
                     depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: Default::default(),
-                    // A little slope bias keeps lit faces off their own map [I].
+                    // ShadowRenderTargetProxy_depth's filed polygon offset:
+                    // factor 8, units 11.
                     bias: wgpu::DepthBiasState {
-                        constant: 2,
-                        slope_scale: 2.0,
+                        constant: 11,
+                        slope_scale: 8.0,
                         clamp: 0.0,
                     },
                 }),
@@ -1606,6 +1610,12 @@ impl Scene {
     /// Forgets the measured exposure, so the next frame sets it outright as
     /// the original's first frame does (g_mixAmount 1). For unseen warm-up
     /// draws, which must not tint the first frames shown.
+    /// The lens picture (`glassLenses_f_sceneTex`) of the last frame, for
+    /// checking it.
+    pub fn lens_picture(&self) -> &wgpu::Texture {
+        &self.fixed.lens_texture
+    }
+
     pub fn reset_exposure(&mut self) {
         self.frames = 0;
     }
@@ -1877,6 +1887,8 @@ impl Scene {
         // the finale's pull-back; drawn first with no depth write, the rest
         // overdraws it (_DepthNoWrite, sortSet -999).
         let mut data = Vec::new();
+        // Each bone slot's first matrix, which places the shape's sphere.
+        let mut firsts: Vec<Mat4> = Vec::new();
         let shift = Mat4::from_translation(eye);
         for (a, actor) in actors.iter().enumerate() {
             let rest = actor.model.pose(None, &[]);
@@ -1891,6 +1903,7 @@ impl Scene {
             };
             for shape in &actor.model.shapes {
                 let bones = actor.model.bones(shape, w);
+                firsts.push(bones.first().copied().unwrap_or(Mat4::IDENTITY));
                 for m in &bones {
                     data.extend_from_slice(bytemuck::bytes_of(&m.to_cols_array_2d()));
                 }
@@ -1912,6 +1925,7 @@ impl Scene {
             for &k in &body {
                 let shape = &self.bugs.model.shapes[k];
                 let bones = self.bugs.model.bones(shape, &w);
+                firsts.push(bones.first().copied().unwrap_or(Mat4::IDENTITY));
                 for m in &bones {
                     data.extend_from_slice(bytemuck::bytes_of(&m.to_cols_array_2d()));
                 }
@@ -1922,12 +1936,14 @@ impl Scene {
             }
         }
         gpu.queue.write_buffer(&self.bones, 0, &data);
+        self.sort(&mut draws, &firsts, eye);
 
         // The passes in the file's order: hard shadows, tree shadow and its
         // two blurs, the lens picture, then the primary pass and blur.nma.
         let shadow_draws = of_group("ShadowRenderTargetProxy_group");
         let tree_draws = of_group("TreeShadowRenderTargetProxy_group");
-        let lens_draws = of_group("LensRenderTargetProxy_group");
+        let mut lens_draws = of_group("LensRenderTargetProxy_group");
+        self.sort(&mut lens_draws, &firsts, lens_place.w_axis.truncate());
         self.cast_pass(enc, &shadow_draws, false);
         self.cast_pass(enc, &tree_draws, true);
         self.tree_blur(enc, gpu);
@@ -1952,6 +1968,33 @@ impl Scene {
         );
         self.post_chain(enc, gpu, window, &runtime, frame);
         self.frames += 1;
+    }
+
+    /// Draw order: sortSet first (the sky's -999 leads), then opaque shapes
+    /// before blended ones, then by distance to the sphere center: opaque
+    /// front_to_back (sortType 2, as nearly every shape files it), blended
+    /// far to near. Drawing in file order let a cornea (additive, depth
+    /// writing, filed before its ball for the left eye) hide the ball [I].
+    fn sort(&self, draws: &mut [Draw], firsts: &[Mat4], eye: Vec3) {
+        let actors = [&self.sky, &self.set, &self.timbury, &self.bugs];
+        let key = |d: &Draw| {
+            let shape = &actors[d.actor].model.shapes[d.shape];
+            let blended = shape_blend(shape) != Blend::None;
+            let place = firsts.get(d.bones).copied().unwrap_or(Mat4::IDENTITY);
+            let distance = place.transform_point3(shape.center).distance(eye);
+            let toward = if blended || shape.far_first {
+                -distance
+            } else {
+                distance
+            };
+            (shape.set, blended, toward)
+        };
+        draws.sort_by(|a, b| {
+            let (ka, kb) = (key(a), key(b));
+            ka.0.cmp(&kb.0)
+                .then(ka.1.cmp(&kb.1))
+                .then(ka.2.total_cmp(&kb.2))
+        });
     }
 
     /// The bone and parameter offsets of a draw.

@@ -8,6 +8,7 @@ backend against native frames.
 `?time=15&yaw=0.4&pitch=-0.1&key=2` shows a frozen moment. Use the same values with
 `scripts/dev.sh shot` to save a native frame. The shot draws the moment 60 times so the
 measured exposure settles (`TIMBURY_FRAMES=1` shows the first frame only);
+`TIMBURY_LENS=lens.png` also saves the lens picture (`glassLenses_f_sceneTex`), and
 `TIMBURY_ZOOM=n` moves the free camera in by e^n for close-ups, e.g.
 `TIMBURY_ZOOM=1.6 scripts/dev.sh shot 25 3.14 0 f face.png` for the lenses.
 `cargo run --release --example dump -- DATA models/test.nmb renderPasses` prints any

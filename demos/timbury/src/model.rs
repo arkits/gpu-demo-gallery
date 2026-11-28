@@ -753,7 +753,11 @@ impl Model {
             program: program.to_owned(),
             textures,
             constants,
-            cull: s.text("cull") != "never" && s.int("cull") == 0,
+            // Face culling follows the filed cullParams: the built-in
+            // _CullDefault culls back faces, _CullNoCull draws both sides.
+            // (The shape's own `cull` is view culling, not face culling;
+            // reading it dropped the back of every double-sided garment.)
+            cull: setting.text("cullParams") != "_CullNoCull",
             blend,
             set: setting.int("sortSet") as i32,
             far_first: setting.text("sortType") == "back_to_front" || setting.int("sortType") == 1,

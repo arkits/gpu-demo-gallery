@@ -100,13 +100,31 @@ pins the table:
 - Cube maps are crosses cut as `FUN_00460a60` cuts them: +X, -X, +Y, -Y, +Z,
   -Z.
 
+- Face culling follows the filed `cullParams`: the built-in `_CullDefault`
+  culls back faces, `_CullNoCull` (158 shapes: shirt, shorts, legs, leaves,
+  glasses) draws both sides. The shape's own `cull` field is view culling;
+  reading it as face culling punched holes in every double-sided surface
+  (`double_sided_shapes_draw_both_sides`).
+- Draw order: sortSet, then opaque shapes before blended ones, then by the
+  distance to the shape's sphere center, opaque near to far (sortType 2 is
+  `front_to_back` in the binary's enum: 0 none, 1 back_to_front, 2
+  front_to_back) and blended far to near. In file order the left cornea
+  (`BL_EYE_Wetball_Left`, additive, depth writing) drew before its ball and
+  hid it, leaving that lens showing an empty socket; the right eye is filed
+  ball first. Opaque-before-blended is the port's reading [I], matching the
+  sibling Mad Mod Mike port.
+- The island beetle (`bug__Utar_Bug_*`) is keyed ~14,500 units below the
+  island (`bug__Main2` translation y ≈ −14590 under its root's pivot) under
+  every transform composition tried, and neither movie camera looks at it:
+  it is staged offscreen in the file, not misplaced by the port.
+
 ### Passes (test.nmb `renderPasses`, then blur.nma)
 
 1. `ShadowRenderTargetProxy`: `ShadowRenderTargetProxy_group` from
    `ShadowCameraShape` (the root `ShadowCamera` transform, fov 0.307, near
    1400, far 2300) into the 2048² depth map `bumpedEnv2Tex_f_shadowtex`.
-   Compared with linear filtering (NV3x shadow PCF); the depth bias
-   (constant 2, slope 2) is the port's [I].
+   Compared with linear filtering (NV3x shadow PCF), with the filed
+   `ShadowRenderTargetProxy_depth` polygon offset (factor 8, units 11).
 2. `TreeShadowRenderTargetProxy`: the tree group into a 256² target cleared
    white, writing (0, 0, window depth) (`shadows.fp30` reads WPOS.z).
 3. `BlurRenderTargetProxy_A/B`: `_blur2D` along the filed invTexSize ×

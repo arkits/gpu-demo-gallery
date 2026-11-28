@@ -42,6 +42,28 @@ fn main() -> Result<(), timbury::Error> {
         scene.draw(&g, &mut enc, &show.frame(), &view, SIZE);
         g.queue.submit([enc.finish()]);
     }
+    // TIMBURY_LENS=path also saves the lens picture (half floats, clamped).
+    if let Ok(path) = std::env::var("TIMBURY_LENS") {
+        let t = scene.lens_picture();
+        let raw = g.read(t);
+        let rgb: Vec<u8> = if t.format() == wgpu::TextureFormat::Rgba16Float {
+            raw.chunks_exact(8)
+                .flat_map(|p| {
+                    (0..3).map(move |c| {
+                        let h = half::f16::from_le_bytes([p[c * 2], p[c * 2 + 1]]);
+                        (h.to_f32().clamp(0.0, 1.0) * 255.0) as u8
+                    })
+                })
+                .collect()
+        } else {
+            raw.chunks_exact(4)
+                .flat_map(|p| [p[0], p[1], p[2]])
+                .collect()
+        };
+        let mut png = png::Encoder::new(std::fs::File::create(&path)?, t.width(), t.height());
+        png.set_color(png::ColorType::Rgb);
+        png.write_header()?.write_image_data(&rgb)?;
+    }
     let rgba = g.read(&target);
     let rgb: Vec<u8> = rgba
         .chunks_exact(4)
