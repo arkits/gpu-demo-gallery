@@ -16,6 +16,22 @@ const BONES: usize = 96;
 /// Uniform offsets are multiples of this.
 const STRIDE: u64 = (BONES as u64 * 64).next_multiple_of(SLOT);
 const PARAM_STRIDE: u64 = SLOT;
+/// Fullscreen pass settings: one SLOT each.
+const POST_SLOTS: u64 = 16;
+/// The tree-shadow blurs' settings follow the primary chain's.
+const TREE_SLOT: u64 = 8;
+/// `glassLenses_f_sceneTex`, `bumpedEnv2Tex_f_shadowtex` and the tree-shadow
+/// targets, at their filed `ProcTexture` sizes.
+const LENS: (u32, u32) = (1024, 512);
+const SHADOW_MAP: u32 = 2048;
+const TREE_MAP: u32 = 256;
+/// `PrimaryBlurX/Y`, `LightLevelTarget1` and `LightLevelTarget2a/b` (blur.nma).
+const BLUR: (u32, u32) = (256, 128);
+const LEVEL: u32 = 8;
+const EXPOSURE: u32 = 2;
+/// The show restarts after 63 seconds (0x41c840), fading in over the first
+/// two and out from 57.3 to 60.9.
+pub const SHOW_LENGTH: f64 = 63.0;
 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
@@ -26,15 +42,60 @@ struct Uniforms {
     time: [f32; 4],
     look: [f32; 4],
     size: [f32; 4],
-    menu: [f32; 4],
+    light: [f32; 4],
     fade: [f32; 4],
+    /// viewProjWin_Target0: the shadow camera's view and projection.
+    shadow: [[f32; 4]; 4],
+    tim_look: [f32; 4],
+    tim_side: [f32; 4],
+    tim_up: [f32; 4],
+    /// g_bitten, bkg g_brightnessScale, g_grassBrightScale.
+    runtime: [f32; 4],
 }
 
+/// A shape's filed constants with the Cg defaults; see `Params` in the shader.
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 struct Params {
+    diffuse: [f32; 4],
+    ambient: [f32; 4],
+    light: [f32; 4],
     spec: [f32; 4],
-    misc: [f32; 4],
+    extra: [f32; 4],
+    more: [f32; 4],
+}
+
+impl Params {
+    fn of(shape: &Shape) -> Self {
+        let c =
+            |name: &str, default: [f32; 4]| shape.constants.get(name).copied().unwrap_or(default);
+        let one = |name: &str, default: f32| c(name, [default; 4])[0];
+        let rgb = |v: [f32; 4], w: f32| [v[0], v[1], v[2], w];
+        // _blur2D: one step along the blur axis, in texture units.
+        let inv = c("invTexSize", [0.0; 4]);
+        let axis = c("blurAxis", [0.0; 4]);
+        Self {
+            diffuse: rgb(c("diffuseColor", [1.0; 4]), one("specularScale", 0.1)),
+            ambient: rgb(c("ambientColor", [0.1; 4]), one("bump_scale", 1.0)),
+            light: rgb(
+                c("worldShadowCameraVec", [0.0, 1.0, 0.0, 0.0]),
+                one("shadow_str", 0.5),
+            ),
+            spec: rgb(c("specularColor", [1.0; 4]), one("transparency", 0.5)),
+            extra: [
+                one("rim_ndotv_exp_mult", 1.0),
+                one("rim_color_scale", 1.0),
+                one("hard_shadow_inv_texsize", 1.0 / 2048.0),
+                one("modulate_by", 0.5),
+            ],
+            more: [
+                one("flipUCoord", 0.0),
+                inv[0] * axis[0],
+                inv[1] * axis[1],
+                0.0,
+            ],
+        }
+    }
 }
 
 enum Buffers {
@@ -69,14 +130,33 @@ struct Actor {
     shapes: Vec<GpuShape>,
 }
 
+/// Window-sized targets: the scene (multisampled, then resolved).
 struct Targets {
     size: (u32, u32),
     color: wgpu::TextureView,
     depth: wgpu::TextureView,
     resolved: wgpu::TextureView,
-    blur_a: wgpu::TextureView,
-    #[allow(dead_code)]
-    blur_b: wgpu::TextureView,
+}
+
+/// Fixed-size targets: lens, shadows and the post chain.
+struct Offscreen {
+    lens_color: wgpu::TextureView,
+    lens_depth: wgpu::TextureView,
+    lens: wgpu::TextureView,
+    shadow: wgpu::TextureView,
+    tree: wgpu::TextureView,
+    tree_a: wgpu::TextureView,
+    soft: wgpu::TextureView,
+    blur_x: wgpu::TextureView,
+    blur_y: wgpu::TextureView,
+    level: wgpu::TextureView,
+    exposure: [wgpu::TextureView; 2],
+}
+
+/// One camera's uniforms and the group-0 bindings that carry them.
+struct View {
+    uniforms: wgpu::Buffer,
+    constants: wgpu::BindGroup,
 }
 
 pub struct Scene {
@@ -91,20 +171,39 @@ pub struct Scene {
     menu_layout: wgpu::BindGroupLayout,
     menu_verts: wgpu::Buffer,
     menu_indices: wgpu::Buffer,
-    uniforms: wgpu::Buffer,
     bones: wgpu::Buffer,
-    constants: wgpu::BindGroup,
+    /// The watched camera, LensCameraShape and ShadowCameraShape.
+    main: View,
+    lens: View,
+    shadow: View,
+    /// Group 2 for the main pass, and for the lens pass (which cannot read
+    /// the lens target it draws).
+    global_main: wgpu::BindGroup,
+    global_lens: wgpu::BindGroup,
+    cast_depth: [wgpu::RenderPipeline; 2],
+    cast_tree: wgpu::RenderPipeline,
     post: Post,
-    format: wgpu::TextureFormat,
+    hdr: wgpu::TextureFormat,
     targets: Option<Targets>,
+    fixed: Offscreen,
+    /// Frames drawn, for the exposure ping-pong and its first-frame mix.
+    frames: u64,
 }
 
 struct Post {
-    blur: wgpu::RenderPipeline,
+    blur_xy: wgpu::RenderPipeline,
+    blur_05: wgpu::RenderPipeline,
+    blur_07: wgpu::RenderPipeline,
+    blur_2d: wgpu::RenderPipeline,
+    lightlev: wgpu::RenderPipeline,
+    lightlev2: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// One 16-byte setting per fullscreen pass, SLOT apart.
     uniforms: wgpu::Buffer,
+    /// Stands in for an unused texture binding.
+    blank: wgpu::TextureView,
 }
 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -199,10 +298,12 @@ impl Loader<'_> {
                 .create_view(&Default::default())
         } else if lower.ends_with(".tga") {
             let data = self.files.get(file)?;
-            let (w, h, pixels) = tga::read(data)?;
             if signed {
+                // Signed maps go to the GPU in file byte order (x, y, z, ramp).
+                let (w, h, pixels) = tga::read_raw(data)?;
                 self.gpu.upload_snorm((w as u32, h as u32), &[pixels])
             } else {
+                let (w, h, pixels) = tga::read(data)?;
                 self.gpu.upload_rgba((w as u32, h as u32), &[pixels], true)
             }
             .create_view(&Default::default())
@@ -334,10 +435,9 @@ impl Loader<'_> {
 
     fn group(
         &mut self,
-        planes: [wgpu::TextureView; 3],
+        planes: [wgpu::TextureView; 5],
         cubes: [wgpu::TextureView; 2],
         repeat: [bool; 2],
-        signed: bool,
     ) -> wgpu::BindGroup {
         let [u, v] = repeat.map(|r| match r {
             true => wgpu::AddressMode::Repeat,
@@ -353,7 +453,6 @@ impl Loader<'_> {
                 ..Default::default()
             })
         });
-        let _ = signed;
         let mut entries: Vec<_> = planes
             .iter()
             .chain(&cubes)
@@ -364,7 +463,7 @@ impl Loader<'_> {
             })
             .collect();
         entries.push(wgpu::BindGroupEntry {
-            binding: 5,
+            binding: 7,
             resource: wgpu::BindingResource::Sampler(sampler),
         });
         self.gpu
@@ -376,20 +475,40 @@ impl Loader<'_> {
             })
     }
 
-    /// Which pictures a shape's fragment program reads.
+    /// Which pictures a shape's fragment program reads, by its parameter
+    /// names: (color, bump, specular, special, ramp) planes and (diffuse,
+    /// specular) cubes.
     fn material(&mut self, model: &Model, shape: &Shape) -> Result<wgpu::BindGroup, Error> {
-        // (color, bump, extra) planes and (diffuse, specular) cubes.
-        let names: [&str; 5] = match shape.program.as_str() {
-            p if p.starts_with("hair") => {
-                ["colorTex", "anisoTex", "", "crossEnvDiffuseCubemap", ""]
+        let names: [&str; 7] = match shape.program.as_str() {
+            p if p.starts_with("hair") => [
+                "colorTex",
+                "anisoTex",
+                "",
+                "",
+                "",
+                "crossEnvDiffuseCubemap",
+                "",
+            ],
+            p if p.starts_with("grass") => ["grassTex", "", "", "", "", "", ""],
+            p if p.starts_with("lambert") => ["c_diffCol", "", "", "", "", "", ""],
+            p if p.starts_with("_texture") || p.starts_with("_bkg") => {
+                ["texture", "", "", "", "", "", ""]
             }
-            p if p.starts_with("grass") => ["grassTex", "", "", "", ""],
-            p if p.starts_with("lambert") => ["c_diffCol", "", "", "", ""],
-            p if p.starts_with("_texture") || p.starts_with("_bkg") => ["texture", "", "", "", ""],
+            p if p.starts_with("eyeballGloss") => [
+                "",
+                "bumpTex",
+                "",
+                "",
+                "",
+                "crossEnvDiffuseCubemap",
+                "crossEnvSpecularCubemap",
+            ],
             _ => [
                 "colorTex",
                 "bump",
                 "specularTex",
+                "specialTex",
+                "rampTex",
                 "crossEnvDiffuseCubemap",
                 "crossEnvSpecularCubemap",
             ],
@@ -402,10 +521,15 @@ impl Loader<'_> {
             } else {
                 shape.textures.get(*name)
             };
-            views.push(self.view(&models, texture, i >= 3)?);
+            // A missing bump map reads flat (signed zero); other missing
+            // pictures read white.
+            views.push(match (texture, i) {
+                (None, 1) => self.load("", false, true)?,
+                _ => self.view(&models, texture, i >= 5)?,
+            });
         }
-        let [a, b, c, d, e] = views.try_into().map_err(|_| "five textures")?;
-        Ok(self.group([a, b, c], [d, e], [false; 2], false))
+        let [a, b, c, d, e, f, g] = views.try_into().map_err(|_| "seven textures")?;
+        Ok(self.group([a, b, c, d, e], [f, g], [false; 2]))
     }
 }
 
@@ -507,30 +631,52 @@ impl Pipelines<'_> {
     }
 
     fn shape(&mut self, shape: &Shape) -> (&'static str, Blend, bool, Option<bool>) {
-        let program = shape.program.as_str();
-        let fragment = if program.starts_with("hair") {
-            "fs_hair"
-        } else if program.starts_with("grass") {
-            "fs_grass"
-        } else if program.starts_with("lambert") {
-            "fs_lambert"
-        } else if program.starts_with("glass") {
-            "fs_glass"
-        } else if program.starts_with("eyeballGloss") {
-            "fs_gloss"
-        } else if program.starts_with("eyeballShadow") {
-            "fs_shadow"
-        } else if program.starts_with("_texture") || program.starts_with("_bkg") {
-            "fs_flat"
-        } else {
-            "fs_lit"
-        };
-        let mut blend = shape.blend;
-        if program.starts_with("glass") || program.starts_with("hair") {
-            blend = Blend::Alpha;
-        }
-        // Depth mode comes from the shape's depthParams.
-        (fragment, blend, shape.cull, shape.depth)
+        (
+            fragment(&shape.program),
+            shape_blend(shape),
+            shape.cull,
+            shape.depth,
+        )
+    }
+}
+
+/// The fragment entry point that ports a shape's fragment program. Longer
+/// names go first: `bumpedEnv2Tex_CLOTHES_f` before `bumpedEnv2Tex_f`.
+fn fragment(program: &str) -> &'static str {
+    const PORTS: &[(&str, &str)] = &[
+        ("hair", "fs_hair"),
+        ("grass", "fs_grass"),
+        ("lambert", "fs_lambert"),
+        ("glassLenses", "fs_glass"),
+        ("eyeballGloss", "fs_gloss"),
+        ("eyeballShadow", "fs_shadow"),
+        ("_texture", "fs_flat"),
+        ("_bkg", "fs_flat"),
+        ("bumpedEnv2Tex_CLOTHES", "fs_env2_clothes"),
+        ("bumpedEnv2Tex_TREE", "fs_env2_tree"),
+        ("bumpedEnv2Tex_BITE", "fs_env2_bite"),
+        ("bumpedEnv2Tex_NO_SHADOW", "fs_env2_noshadow"),
+        ("bumpedEnv2Tex", "fs_env2"),
+        ("bumpedEnv3Tex_SKIN", "fs_env3_skin"),
+        ("bumpedEnv3Tex_BUG", "fs_env3_bug"),
+        ("bumpedEnv3Tex_transp", "fs_env3_transp"),
+        ("bumpedEnv3Tex", "fs_env3"),
+        ("env0Tex", "fs_env0"),
+        ("env1Tex_transp", "fs_env1_transp"),
+        ("env2Tex", "fs_env2tex"),
+    ];
+    PORTS
+        .iter()
+        .find(|(name, _)| program.starts_with(name))
+        .map_or("fs_env0", |(_, entry)| entry)
+}
+
+/// The filed blending; hair has no blend proxy and is always see-through.
+fn shape_blend(shape: &Shape) -> Blend {
+    if shape.program.starts_with("hair") {
+        Blend::Alpha
+    } else {
+        shape.blend
     }
 }
 
@@ -968,31 +1114,30 @@ impl Scene {
             ty,
             count: None,
         };
+        let plane = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: D2,
+            multisampled: false,
+        };
+        let cube = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: Cube,
+            multisampled: false,
+        };
+        let filtering = wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering);
         let frame_size = size_of::<Uniforms>() as u64;
         let first = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
                 entry(0, buffer(false, frame_size)),
                 entry(1, buffer(true, BONES as u64 * 64)),
-                entry(2, buffer(true, PARAM_STRIDE)),
+                entry(2, buffer(true, size_of::<Params>() as u64)),
             ],
         });
-        let mut textures: Vec<_> = (0..5)
-            .map(|i| {
-                entry(
-                    i,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: if i < 3 { D2 } else { Cube },
-                        multisampled: false,
-                    },
-                )
-            })
+        let mut textures: Vec<_> = (0..7)
+            .map(|i| entry(i, if i < 5 { plane } else { cube }))
             .collect();
-        textures.push(entry(
-            5,
-            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-        ));
+        textures.push(entry(7, filtering));
         for t in &mut textures {
             t.visibility = wgpu::ShaderStages::FRAGMENT;
         }
@@ -1000,35 +1145,51 @@ impl Scene {
             label: None,
             entries: &textures,
         });
+        let fragment_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty,
+            count: None,
+        };
+        let third = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                fragment_entry(
+                    0,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: D2,
+                        multisampled: false,
+                    },
+                ),
+                fragment_entry(
+                    1,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                ),
+                fragment_entry(2, plane),
+                fragment_entry(3, plane),
+                fragment_entry(4, cube),
+                fragment_entry(5, filtering),
+            ],
+        });
         let post_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
-                entry(
-                    0,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: D2,
-                        multisampled: false,
-                    },
-                ),
-                entry(
-                    1,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: D2,
-                        multisampled: false,
-                    },
-                ),
-                entry(2, buffer(false, 16)),
-                entry(
-                    3,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                ),
+                fragment_entry(0, plane),
+                fragment_entry(1, plane),
+                fragment_entry(2, buffer(false, 16)),
+                fragment_entry(3, filtering),
+                fragment_entry(4, plane),
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[Some(&first), Some(&second)],
+            bind_group_layouts: &[Some(&first), Some(&second), Some(&third)],
+            ..Default::default()
+        });
+        let cast_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&first)],
             ..Default::default()
         });
         let post_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1036,14 +1197,16 @@ impl Scene {
             bind_group_layouts: &[Some(&post_layout)],
             ..Default::default()
         });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/timbury.wgsl").into()),
+        });
+        let hdr = gpu.hdr;
         let mut pipelines = Pipelines {
             gpu,
             layout,
-            shader: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/timbury.wgsl").into()),
-            }),
-            format,
+            shader: shader.clone(),
+            format: hdr,
             made: Vec::new(),
         };
         let mut loader = Loader {
@@ -1064,30 +1227,12 @@ impl Scene {
             &timbury.model,
         )?;
         let sky = Actor::new(gpu, sky, &mut loader, &mut pipelines, files, &terrain)?;
-        // Per-shape material constants, written once.
-        let mut param_data = Vec::new();
-        for actor in [&timbury, &bugs, &set, &sky] {
-            for shape in &actor.model.shapes {
-                let c = |name: &str| shape.constants.get(name).copied().unwrap_or([0.0; 4]);
-                let spec = c("specularColor");
-                let scale = c("specularScale")[0];
-                let ambient = c("ambientColor");
-                // The eyelid shadow reads its strength from modulate_by
-                // instead of shadow_str; nothing else files modulate_by.
-                let shadow = shape
-                    .constants
-                    .get("modulate_by")
-                    .map(|m| m[0])
-                    .unwrap_or_else(|| c("shadow_str")[0]);
-                let bump = c("bump_scale")[0];
-                let transp = c("transparency")[0];
-                param_data.push(Params {
-                    spec: [spec[0], spec[1], spec[2], scale],
-                    misc: [ambient[0], shadow, bump, transp],
-                });
-            }
-        }
-
+        // Per-shape material constants, written once, in the draw order
+        // (sky, set, Timbury, bugs) that `draw` indexes them by.
+        let param_data: Vec<Params> = [&sky, &set, &timbury, &bugs]
+            .iter()
+            .flat_map(|a| a.model.shapes.iter().map(Params::of))
+            .collect();
         let slots: usize = [&timbury, &bugs, &set, &sky]
             .iter()
             .map(|a| a.shapes.len())
@@ -1102,55 +1247,199 @@ impl Scene {
                 mapped_at_creation: false,
             })
         };
-        let uniforms = make(frame_size.next_multiple_of(SLOT));
         let bones = make(STRIDE * (slots + bug_slots) as u64);
         let params = make(PARAM_STRIDE * slots.max(1) as u64);
         for (i, p) in param_data.iter().enumerate() {
             gpu.queue
                 .write_buffer(&params, i as u64 * PARAM_STRIDE, bytemuck::bytes_of(p));
         }
-        let part = |buffer, size| {
+        fn part(buffer: &wgpu::Buffer, size: u64) -> wgpu::BindingResource<'_> {
             wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer,
                 offset: 0,
                 size: std::num::NonZero::new(size),
             })
+        }
+        let view = || {
+            let uniforms = make(frame_size.next_multiple_of(SLOT));
+            let constants = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &first,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: part(&uniforms, frame_size),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: part(&bones, BONES as u64 * 64),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: part(&params, size_of::<Params>() as u64),
+                    },
+                ],
+            });
+            View {
+                uniforms,
+                constants,
+            }
         };
-        let constants = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &first,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: part(&uniforms, frame_size),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: part(&bones, BONES as u64 * 64),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: part(&params, PARAM_STRIDE),
-                },
+        let (main, lens, shadow) = (view(), view(), view());
+
+        // Offscreen targets at their filed sizes.
+        let plain = |(w, h): (u32, u32), format| {
+            gpu.target(w, h, format, 1).create_view(&Default::default())
+        };
+        let lens_color = gpu
+            .target(LENS.0, LENS.1, hdr, SAMPLES)
+            .create_view(&Default::default());
+        let lens_depth = gpu
+            .target(LENS.0, LENS.1, DEPTH, SAMPLES)
+            .create_view(&Default::default());
+        let shadow_depth = gpu.target(SHADOW_MAP, SHADOW_MAP, wgpu::TextureFormat::Depth32Float, 1);
+        let tree_format = crate::gpu::COLOR;
+        let fixed = Offscreen {
+            lens_color,
+            lens_depth,
+            lens: plain(LENS, hdr),
+            shadow: shadow_depth.create_view(&Default::default()),
+            tree: plain((TREE_MAP, TREE_MAP), tree_format),
+            tree_a: plain((TREE_MAP, TREE_MAP), tree_format),
+            soft: plain((TREE_MAP, TREE_MAP), tree_format),
+            blur_x: plain(BLUR, hdr),
+            blur_y: plain(BLUR, hdr),
+            level: plain((LEVEL, LEVEL), hdr),
+            exposure: [
+                plain((EXPOSURE, EXPOSURE), hdr),
+                plain((EXPOSURE, EXPOSURE), hdr),
             ],
+        };
+        let clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
         });
-        // Post pipelines share the LDR format.
-        let post_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/timbury.wgsl").into()),
+        // Hardware shadow compares filter bilinearly, as NV3x did.
+        let compare_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
         });
-        let post = |vertex: &str, fragment: &str| {
+        let models = [&timbury.model];
+        let reflection_name = "envReflectionCubemap".to_owned();
+        let reflection = loader.view(&models, Some(&reflection_name), true)?;
+        let blank = loader.load("", false, false)?;
+        let global = |lens: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &third,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&fixed.shadow),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&compare_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&fixed.soft),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(lens),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&reflection),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&clamp_sampler),
+                    },
+                ],
+            })
+        };
+        let global_main = global(&fixed.lens);
+        let global_lens = global(&blank);
+
+        // Shadow casters: depth only for ShadowRenderTargetProxy, and
+        // (0, 0, depth) colors for TreeShadowRenderTargetProxy.
+        let fixed_attrs = wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x2, 4 => Float32x4, 5 => Float32x4];
+        let moving_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
+        let mesh_buffers = [
+            Some(wgpu::VertexBufferLayout {
+                array_stride: size_of::<Moving>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &moving_attrs,
+            }),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: size_of::<Fixed>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &fixed_attrs,
+            }),
+        ];
+        let tree_targets = [Some(wgpu::ColorTargetState {
+            format: tree_format,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        let cast = |cull: bool, color: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(if color { "cast tree" } else { "cast depth" }),
+                layout: Some(&cast_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_cast"),
+                    compilation_options: Default::default(),
+                    buffers: &mesh_buffers,
+                },
+                fragment: color.then(|| wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_cast"),
+                    compilation_options: Default::default(),
+                    targets: &tree_targets,
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: cull.then_some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: (!color).then(|| wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    // A little slope bias keeps lit faces off their own map [I].
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let cast_depth = [cast(false, false), cast(true, false)];
+        let cast_tree = cast(false, true);
+
+        // The fullscreen passes.
+        let post = |fragment: &str, format| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(fragment),
                 layout: Some(&post_pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &post_shader,
-                    entry_point: Some(vertex),
+                    module: &shader,
+                    entry_point: Some("vs_full"),
                     compilation_options: Default::default(),
                     buffers: &[],
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &post_shader,
+                    module: &shader,
                     entry_point: Some(fragment),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
@@ -1173,10 +1462,23 @@ impl Scene {
         });
         let post_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("post"),
-            size: 32,
+            size: SLOT * POST_SLOTS,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let post = Post {
+            blur_xy: post("fs_blur_xy", hdr),
+            blur_05: post("fs_blur_05", hdr),
+            blur_07: post("fs_blur_07", hdr),
+            blur_2d: post("fs_blur2d", tree_format),
+            lightlev: post("fs_lightlev", hdr),
+            lightlev2: post("fs_lightlev2", hdr),
+            composite: post("fs_composite", format),
+            group_layout: post_layout,
+            sampler,
+            uniforms: post_uniforms,
+            blank: blank.clone(),
+        };
         // The menu's pictures.
         let menu_def = crate::menu::MenuDef::load(files, demo::MENU).unwrap_or_default();
         let menu_root = read(demo::MENU).unwrap_or_else(|_| tree::read_text("Scene {}").unwrap());
@@ -1285,19 +1587,27 @@ impl Scene {
             menu_layout,
             menu_verts,
             menu_indices,
-            uniforms,
             bones,
-            constants,
-            format,
-            post: Post {
-                blur: post("vs_full", "fs_blur"),
-                composite: post("vs_full", "fs_composite"),
-                group_layout: post_layout,
-                sampler,
-                uniforms: post_uniforms,
-            },
+            main,
+            lens,
+            shadow,
+            global_main,
+            global_lens,
+            cast_depth,
+            cast_tree,
+            hdr,
+            post,
             targets: None,
+            fixed,
+            frames: 0,
         })
+    }
+
+    /// Forgets the measured exposure, so the next frame sets it outright as
+    /// the original's first frame does (g_mixAmount 1). For unseen warm-up
+    /// draws, which must not tint the first frames shown.
+    pub fn reset_exposure(&mut self) {
+        self.frames = 0;
     }
 
     pub fn show(&self) -> Show {
@@ -1375,28 +1685,23 @@ impl Scene {
         size: (u32, u32),
     ) {
         if self.targets.as_ref().is_none_or(|t| t.size != size) {
-            let format = self.format;
-            let msaa = |format: wgpu::TextureFormat, samples| {
-                let t = gpu.target(size.0, size.1, format, samples);
-                t.create_view(&Default::default())
-            };
-            let plain = |w: u32, h: u32| {
-                let t = gpu.target(w, h, format, 1);
-                t.create_view(&Default::default())
+            let msaa = |format: wgpu::TextureFormat| {
+                gpu.target(size.0, size.1, format, SAMPLES)
+                    .create_view(&Default::default())
             };
             self.targets = Some(Targets {
                 size,
-                color: msaa(format, SAMPLES),
-                depth: msaa(DEPTH, SAMPLES),
-                resolved: plain(size.0, size.1),
-                blur_a: plain(size.0.max(4) / 4, size.1.max(4) / 4),
-                blur_b: plain(size.0.max(4) / 4, size.1.max(4) / 4),
+                color: msaa(self.hdr),
+                depth: msaa(DEPTH),
+                resolved: gpu
+                    .target(size.0, size.1, self.hdr, 1)
+                    .create_view(&Default::default()),
             });
         }
         let (width, height) = (size.0 as f32, size.1 as f32);
-        // Timbury dances a 59-second loop; the bugs flap theirs every second.
+        // The show runs 63 seconds; the dance holds its last pose at the end.
+        let seconds = frame.time % SHOW_LENGTH;
         let dance = &self.timbury.model.animations[0];
-        let seconds = frame.time % 59.0;
         let mut values = HashMap::new();
         for n in &dance.numbers {
             let v = n.curve.at(seconds);
@@ -1410,23 +1715,91 @@ impl Scene {
         let view = shot.place.inverse();
         let projection =
             glam::camera::rh::proj::directx::perspective(shot.fov, width / height, 0.1, 30000.0);
-        let uniforms = Uniforms {
+
+        // ShadowCameraShape: the filed placement, lens and clip planes.
+        let shadow_cam = self.timbury.model.camera("ShadowCameraShape");
+        let (shadow_place, shadow_proj) = match shadow_cam {
+            Some(c) => {
+                let place = self
+                    .timbury
+                    .model
+                    .find(&c.transform)
+                    .map_or(Mat4::IDENTITY, |i| world[i]);
+                (
+                    place,
+                    glam::camera::rh::proj::directx::perspective(c.fov, 1.0, 1400.0, 2300.0),
+                )
+            }
+            None => (Mat4::IDENTITY, Mat4::IDENTITY),
+        };
+        let shadow_view = shadow_place.inverse();
+        let shadow_vp = shadow_proj * shadow_view;
+        // LensCameraShape rides on the head: its axes give g_timLookDir,
+        // g_timSideDir and g_timUpDir (negated Z, X and Y, as 0x41a870 does).
+        let lens_place = self
+            .timbury
+            .model
+            .camera("LensCameraShape")
+            .and_then(|c| self.timbury.model.find(&c.transform))
+            .map_or(Mat4::IDENTITY, |i| world[i]);
+        let axis = |v: Vec4| (-v.truncate().normalize_or_zero()).extend(0.0).to_array();
+        let (tim_look, tim_side, tim_up) = (
+            axis(lens_place.z_axis),
+            axis(lens_place.x_axis),
+            axis(lens_place.y_axis),
+        );
+        let lens_fov = self
+            .timbury
+            .model
+            .camera("LensCameraShape")
+            .map_or(0.337, |c| c.fov);
+        let lens_proj = glam::camera::rh::proj::directx::perspective(
+            lens_fov,
+            LENS.0 as f32 / LENS.1 as f32,
+            0.1,
+            100.0,
+        );
+
+        // Per-frame settings that 0x41a870 hands the programs.
+        let runtime = Runtime::new(frame, eye, shadow_place.w_axis.truncate(), self.frames);
+        let light = self
+            .timbury
+            .model
+            .lights
+            .first()
+            .map_or(Vec3::NEG_Y, |l| l.direction);
+        let uniforms = |view: Mat4, projection: Mat4, eye: Vec3| Uniforms {
             view: view.to_cols_array_2d(),
             projection: projection.to_cols_array_2d(),
             eye: eye.extend(1.0).into(),
             time: [frame.time as f32, 0.0, 0.0, 0.0],
-            look: [
-                frame.sliders[0],
-                frame.sliders[1],
-                frame.sliders[2],
-                frame.sliders[3],
-            ],
-            size: [width, height, frame.sliders[4], 0.0],
-            menu: [0.0; 4],
-            fade: [frame.white; 4],
+            look: [0.0; 4],
+            size: [width, height, 0.0, 0.0],
+            light: light.extend(0.0).into(),
+            fade: [runtime.fade; 4],
+            shadow: shadow_vp.to_cols_array_2d(),
+            tim_look,
+            tim_side,
+            tim_up,
+            runtime: [runtime.bitten, runtime.sky, runtime.grass, 0.0],
         };
-        gpu.queue
-            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        let write = |v: &View, u: Uniforms| {
+            gpu.queue
+                .write_buffer(&v.uniforms, 0, bytemuck::bytes_of(&u));
+        };
+        write(&self.main, uniforms(view, projection, eye));
+        write(
+            &self.lens,
+            uniforms(
+                lens_place.inverse(),
+                lens_proj,
+                lens_place.w_axis.truncate(),
+            ),
+        );
+        write(
+            &self.shadow,
+            uniforms(shadow_view, shadow_proj, shadow_place.w_axis.truncate()),
+        );
 
         // Timbury's face and body follow the morph weights.
         for (k, shape) in self.timbury.model.shapes.iter().enumerate() {
@@ -1453,6 +1826,18 @@ impl Scene {
             }
             p
         };
+        let of_group = |name: &str| -> Vec<Draw> {
+            self.timbury
+                .model
+                .shapes_in(Some(name))
+                .into_iter()
+                .map(|k| Draw {
+                    actor: 2,
+                    shape: k,
+                    bones: prefix[2] + k,
+                })
+                .collect()
+        };
         let mut draws: Vec<Draw> = Vec::new();
         // Sky and set (grass and terrain) draw as themselves.
         for a in 0..2 {
@@ -1465,17 +1850,7 @@ impl Scene {
             }
         }
         // Timbury: the main pass group only.
-        let main = self
-            .timbury
-            .model
-            .shapes_in(Some("nvPrimaryRenderPass_group"));
-        for &k in &main {
-            draws.push(Draw {
-                actor: 2,
-                shape: k,
-                bones: prefix[2] + k,
-            });
-        }
+        draws.extend(of_group("nvPrimaryRenderPass_group"));
         // His hair rides along.
         for &k in &self.timbury.model.absorbed() {
             draws.push(Draw {
@@ -1504,25 +1879,23 @@ impl Scene {
         let mut data = Vec::new();
         let shift = Mat4::from_translation(eye);
         for (a, actor) in actors.iter().enumerate() {
-            let w = if a == 2 { Some(&world) } else { None };
             let rest = actor.model.pose(None, &[]);
             let shifted;
-            let w = match (a, w) {
-                (2, Some(w)) => w,
-                (0, _) => {
+            let w = match a {
+                2 => &world,
+                0 => {
                     shifted = rest.iter().map(|m| shift * *m).collect::<Vec<_>>();
                     &shifted
                 }
                 _ => &rest,
             };
-            for (k, (shape, _)) in actor.model.shapes.iter().zip(&actor.shapes).enumerate() {
-                let _ = k;
-                for m in &actor.model.bones(shape, w) {
+            for shape in &actor.model.shapes {
+                let bones = actor.model.bones(shape, w);
+                for m in &bones {
                     data.extend_from_slice(bytemuck::bytes_of(&m.to_cols_array_2d()));
                 }
                 data.resize(
-                    data.len()
-                        + (STRIDE as usize - 64 * actor.model.bones(shape, w).len().min(BONES)),
+                    data.len() + (STRIDE as usize - 64 * bones.len().min(BONES)),
                     0,
                 );
             }
@@ -1549,41 +1922,156 @@ impl Scene {
             }
         }
         gpu.queue.write_buffer(&self.bones, 0, &data);
-        // Post chain settings: texel size, softness, exposure, radius.
-        // The original scales by the measured light level so the night stays
-        // visible; the port uses a fixed gain times the output slider [I].
-        let post: [f32; 8] = [
-            4.0 / width,
-            4.0 / height,
-            frame.sliders[1],
-            frame.sliders[0] * 8.0,
-            frame.sliders[4] * 2.0 + 0.5,
-            frame.sliders[2],
-            frame.sliders[3],
-            0.0,
-        ];
-        gpu.queue
-            .write_buffer(&self.post.uniforms, 0, bytemuck::cast_slice(&post));
+
+        // The passes in the file's order: hard shadows, tree shadow and its
+        // two blurs, the lens picture, then the primary pass and blur.nma.
+        let shadow_draws = of_group("ShadowRenderTargetProxy_group");
+        let tree_draws = of_group("TreeShadowRenderTargetProxy_group");
+        let lens_draws = of_group("LensRenderTargetProxy_group");
+        self.cast_pass(enc, &shadow_draws, false);
+        self.cast_pass(enc, &tree_draws, true);
+        self.tree_blur(enc, gpu);
         let target = self.targets.as_ref().expect("made above");
-        self.scene_pass(enc, target, &draws);
-        self.blur_pass(enc, target, gpu);
-        self.composite_pass(enc, target, window, gpu, frame);
+        self.scene_pass(
+            enc,
+            (
+                &self.fixed.lens_color,
+                &self.fixed.lens_depth,
+                &self.fixed.lens,
+            ),
+            &self.lens,
+            &self.global_lens,
+            &lens_draws,
+        );
+        self.scene_pass(
+            enc,
+            (&target.color, &target.depth, &target.resolved),
+            &self.main,
+            &self.global_main,
+            &draws,
+        );
+        self.post_chain(enc, gpu, window, &runtime, frame);
+        self.frames += 1;
     }
 
-    fn scene_pass(&self, enc: &mut wgpu::CommandEncoder, target: &Targets, draws: &[Draw]) {
+    /// The bone and parameter offsets of a draw.
+    fn offsets(&self, d: &Draw) -> [u32; 2] {
+        let actors = [&self.sky, &self.set, &self.timbury, &self.bugs];
+        let before: usize = actors[..d.actor].iter().map(|a| a.shapes.len()).sum();
+        [
+            (d.bones as u64 * STRIDE) as u32,
+            ((before + d.shape) as u64 * PARAM_STRIDE) as u32,
+        ]
+    }
+
+    /// ShadowRenderTargetProxy (depth only) or TreeShadowRenderTargetProxy
+    /// (coverage and depth over white), from ShadowCameraShape.
+    fn cast_pass(&self, enc: &mut wgpu::CommandEncoder, draws: &[Draw], tree: bool) {
+        let color = [tree.then_some(wgpu::RenderPassColorAttachment {
+            view: &self.fixed.tree,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                store: wgpu::StoreOp::Store,
+            },
+        })];
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(if tree { "tree shadow" } else { "shadow" }),
+            color_attachments: if tree { &color } else { &[] },
+            depth_stencil_attachment: (!tree).then_some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.fixed.shadow,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        for d in draws {
+            let shape = &self.timbury.shapes[d.shape];
+            let Buffers::Mesh {
+                moving,
+                fixed,
+                indices,
+                count,
+                ..
+            } = &shape.buffers
+            else {
+                continue;
+            };
+            let pipeline = if tree {
+                &self.cast_tree
+            } else {
+                &self.cast_depth[usize::from(self.timbury.model.shapes[d.shape].cull)]
+            };
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &self.shadow.constants, &self.offsets(d));
+            pass.set_vertex_buffer(0, moving.slice(..));
+            pass.set_vertex_buffer(1, fixed.slice(..));
+            pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..*count, 0, 0..1);
+        }
+    }
+
+    /// BlurRenderTargetProxy_A and _B: `_blur2D` across, then down, into
+    /// `bumpedEnv2Tex_f_softTreeShadowTex`.
+    fn tree_blur(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu) {
+        let steps = [
+            "BlurRenderTargetProxy_A_group",
+            "BlurRenderTargetProxy_B_group",
+        ]
+        .map(|g| {
+            self.timbury
+                .model
+                .shapes_in(Some(g))
+                .first()
+                .map(|&k| {
+                    let p = Params::of(&self.timbury.model.shapes[k]);
+                    [p.more[1], p.more[2]]
+                })
+                .unwrap_or_default()
+        });
+        let passes = [
+            (&self.fixed.tree, &self.fixed.tree_a, steps[0]),
+            (&self.fixed.tree_a, &self.fixed.soft, steps[1]),
+        ];
+        for (i, (src, dst, step)) in passes.into_iter().enumerate() {
+            // The filed steps are in the original's (v up) texture space.
+            self.fullscreen(
+                enc,
+                gpu,
+                &self.post.blur_2d,
+                [src, src, &self.post.blank],
+                dst,
+                TREE_SLOT + i as u64,
+                [step[0], step[1], 0.0, 0.0],
+            );
+        }
+    }
+
+    fn scene_pass(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        (color, depth, resolved): (&wgpu::TextureView, &wgpu::TextureView, &wgpu::TextureView),
+        view: &View,
+        global: &wgpu::BindGroup,
+        draws: &[Draw],
+    ) {
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &target.color,
+                view: color,
                 depth_slice: None,
-                resolve_target: Some(&target.resolved),
+                resolve_target: Some(resolved),
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                     store: wgpu::StoreOp::Discard,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &target.depth,
+                view: depth,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Discard,
@@ -1592,28 +2080,13 @@ impl Scene {
             }),
             ..Default::default()
         });
-        // NOTE: blur_a doubles as the MSAA resolve target; the blur passes
-        // below reuse it afterwards.
         let actors = [&self.sky, &self.set, &self.timbury, &self.bugs];
-        let prefix = {
-            let mut p = vec![0];
-            for a in &actors {
-                p.push(p.last().unwrap() + a.shapes.len());
-            }
-            p
-        };
+        pass.set_bind_group(2, global, &[]);
         for d in draws {
             let shape = &actors[d.actor].shapes[d.shape];
             pass.set_pipeline(&shape.pipeline);
             // Bones and material constants ride in the dynamic slots.
-            pass.set_bind_group(
-                0,
-                &self.constants,
-                &[
-                    (d.bones as u64 * STRIDE) as u32,
-                    ((prefix[d.actor] + d.shape) as u64 * PARAM_STRIDE) as u32,
-                ],
-            );
+            pass.set_bind_group(0, &view.constants, &self.offsets(d));
             pass.set_bind_group(1, &shape.group, &[]);
             match &shape.buffers {
                 Buffers::Mesh {
@@ -1645,94 +2118,58 @@ impl Scene {
         }
     }
 
-    fn blur_pass(&self, enc: &mut wgpu::CommandEncoder, target: &Targets, gpu: &Gpu) {
-        // Downsamples the resolved scene and blurs it once.
-        let (src, dst) = (&target.resolved, &target.blur_a);
-        {
-            let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.post.group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(src),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(src),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &self.post.uniforms,
-                            offset: 0,
-                            size: std::num::NonZero::new(32),
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(&self.post.sampler),
-                    },
-                ],
-            });
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: dst,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
-            });
-            pass.set_pipeline(&self.post.blur);
-            pass.set_bind_group(0, &group, &[]);
-            pass.draw(0..3, 0..1);
-        }
-    }
-
-    fn composite_pass(
+    /// One fullscreen pass of the post chain: three textures, a 16-byte
+    /// setting in `slot`, drawn into `dst`.
+    #[allow(clippy::too_many_arguments)]
+    fn fullscreen(
         &self,
         enc: &mut wgpu::CommandEncoder,
-        target: &Targets,
-        window: &wgpu::TextureView,
         gpu: &Gpu,
-        frame: &Frame,
+        pipeline: &wgpu::RenderPipeline,
+        [t0, t1, t2]: [&wgpu::TextureView; 3],
+        dst: &wgpu::TextureView,
+        slot: u64,
+        setting: [f32; 4],
     ) {
+        gpu.queue.write_buffer(
+            &self.post.uniforms,
+            slot * SLOT,
+            bytemuck::cast_slice(&setting),
+        );
         let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.post.group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&target.resolved),
+                    resource: wgpu::BindingResource::TextureView(t0),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&target.blur_a),
+                    resource: wgpu::BindingResource::TextureView(t1),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &self.post.uniforms,
-                        offset: 0,
-                        size: std::num::NonZero::new(32),
+                        offset: slot * SLOT,
+                        size: std::num::NonZero::new(16),
                     }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&self.post.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(t2),
+                },
             ],
         });
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: window,
+                view: dst,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -1743,10 +2180,103 @@ impl Scene {
             depth_stencil_attachment: None,
             ..Default::default()
         });
-        pass.set_pipeline(&self.post.composite);
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);
-        drop(pass);
+    }
+
+    /// blur.nma: Initial2DBlurPass, PrimaryBlurPassX/Y twice, the two light
+    /// level passes, then CompositePass into the window and the menu.
+    fn post_chain(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        gpu: &Gpu,
+        window: &wgpu::TextureView,
+        runtime: &Runtime,
+        frame: &Frame,
+    ) {
+        let target = self.targets.as_ref().expect("made in draw");
+        let f = &self.fixed;
+        let p = &self.post;
+        let blank = &p.blank;
+        let (s256, s128) = (1.0 / 256.0, 1.0 / 128.0);
+        self.fullscreen(
+            enc,
+            gpu,
+            &p.blur_xy,
+            [&target.resolved, blank, blank],
+            &f.blur_y,
+            0,
+            [s256, s128, 0.0, 0.0],
+        );
+        let w05 = [0.2, 0.2];
+        let w07 = [0.142857, 0.142857];
+        self.fullscreen(
+            enc,
+            gpu,
+            &p.blur_05,
+            [&f.blur_y, blank, blank],
+            &f.blur_x,
+            1,
+            [s256, 0.0, w05[0], w05[1]],
+        );
+        self.fullscreen(
+            enc,
+            gpu,
+            &p.blur_07,
+            [&f.blur_x, blank, blank],
+            &f.blur_y,
+            2,
+            [0.0, s256, w07[0], w07[1]],
+        );
+        self.fullscreen(
+            enc,
+            gpu,
+            &p.blur_05,
+            [&f.blur_y, blank, blank],
+            &f.blur_x,
+            3,
+            [s256, 0.0, w05[0], w05[1]],
+        );
+        self.fullscreen(
+            enc,
+            gpu,
+            &p.blur_07,
+            [&f.blur_x, blank, blank],
+            &f.blur_y,
+            4,
+            [0.0, s256, w07[0], w07[1]],
+        );
+        self.fullscreen(
+            enc,
+            gpu,
+            &p.lightlev,
+            [&f.blur_y, blank, blank],
+            &f.level,
+            5,
+            [0.0; 4],
+        );
+        // LightLevelTarget2a on odd frames, 2b on even ones; each reads the other.
+        let now = (self.frames & 1) as usize;
+        let (write, read) = (&f.exposure[now], &f.exposure[1 - now]);
+        self.fullscreen(
+            enc,
+            gpu,
+            &p.lightlev2,
+            [&f.level, read, blank],
+            write,
+            6,
+            [0.0, 0.0, runtime.mix, 0.0],
+        );
+        self.fullscreen(
+            enc,
+            gpu,
+            &p.composite,
+            [&target.resolved, &f.blur_y, write],
+            window,
+            7,
+            [0.0, 0.0, runtime.softness, runtime.output],
+        );
         self.menu_pass(enc, window, gpu, frame);
     }
 
@@ -1865,6 +2395,90 @@ impl Scene {
             pass.draw_indexed((quad * 6) as u32..((quad + n) * 6) as u32, 0, 0..1);
             quad += n;
             i += n;
+        }
+    }
+}
+
+/// What 0x41a870 and 0x41c840 hand the programs each frame, from the show
+/// time, the sliders and the cameras.
+struct Runtime {
+    /// The fade: up over the first two seconds, down from 57.3 to 60.9.
+    fade: f32,
+    /// composite's g_userOutputScale.
+    output: f32,
+    /// composite's g_softness.
+    softness: f32,
+    /// lightlev2's g_mixAmount: all new on the first frame, then damped.
+    mix: f32,
+    /// _bkg_split's g_brightnessScale.
+    sky: f32,
+    /// grass's g_grassBrightScale.
+    grass: f32,
+    /// bumpedEnv2Tex_BITE's g_bitten, on after 4.77 seconds.
+    bitten: f32,
+}
+
+impl Runtime {
+    fn new(frame: &Frame, eye: Vec3, shadow_eye: Vec3, frames: u64) -> Self {
+        let t = frame.time % SHOW_LENGTH;
+        let fade = if t < 2.0 {
+            t / 2.0
+        } else if t <= 57.3 {
+            1.0
+        } else {
+            ((60.9 - t) / 3.6).clamp(0.0, 1.0)
+        } as f32;
+        // Slider order is the menu file's: output scale, AGC damping, light
+        // angle, softening amount, softening radius.
+        let [out, agc, _angle, soften, _radius] = frame.sliders;
+        // Below the island (y < -100) the picture brightens and the sky dims.
+        let low = ((-100.0 - eye.y) / 492.0).clamp(0.0, 1.0);
+        let lift = 1.0 + 0.32 * low;
+        let smooth = fade * fade * 3.0 - 2.0 * fade * fade * fade;
+        let faded = fade.powf(2.7);
+        Self {
+            fade,
+            output: smooth * lift * (out.powf(2.322) * 0.83 + 0.05) * 4.629_629_6,
+            softness: soften.powf(1.12) * faded + (1.0 - faded),
+            mix: if frames == 0 {
+                1.0
+            } else {
+                (1.0 - agc) * (1.0 - agc) * 0.5 + 0.12
+            },
+            sky: 1.0 / lift,
+            grass: eye.normalize_or_zero().dot(shadow_eye.normalize_or_zero()) * 0.12 + 0.21,
+            bitten: if t > 4.77 { 1.0 } else { 0.0 },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every fragment program the scenes name has its own port; none falls
+    /// back. Longer names win over their prefixes.
+    #[test]
+    fn programs_have_ports() {
+        for (program, entry) in [
+            ("bumpedEnv2Tex_f", "fs_env2"),
+            ("bumpedEnv2Tex_CLOTHES_f", "fs_env2_clothes"),
+            ("bumpedEnv2Tex_TREE_f", "fs_env2_tree"),
+            ("bumpedEnv2Tex_BITE_f", "fs_env2_bite"),
+            ("bumpedEnv2Tex_NO_SHADOW_f", "fs_env2_noshadow"),
+            ("bumpedEnv3Tex_f", "fs_env3"),
+            ("bumpedEnv3Tex_SKIN_f", "fs_env3_skin"),
+            ("bumpedEnv3Tex_BUG_f", "fs_env3_bug"),
+            ("bumpedEnv3Tex_transp_f", "fs_env3_transp"),
+            ("env0Tex_f", "fs_env0"),
+            ("env1Tex_transp_f", "fs_env1_transp"),
+            ("env2Tex_f", "fs_env2tex"),
+            ("eyeballGloss_f", "fs_gloss"),
+            ("eyeballShadow_f", "fs_shadow"),
+            ("glassLenses_f", "fs_glass"),
+            ("hair_f", "fs_hair"),
+            ("grass_f", "fs_grass"),
+            ("_texture_f", "fs_flat"),
+        ] {
+            assert_eq!(super::fragment(program), entry, "{program}");
         }
     }
 }

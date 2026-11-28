@@ -22,11 +22,26 @@ fn main() -> Result<(), timbury::Error> {
         pitch.parse()?,
         key.trim_matches('-'),
     );
+    // TIMBURY_ZOOM=n zooms the free camera in by e^n (debug close-ups).
+    if let Some(z) = std::env::var("TIMBURY_ZOOM")
+        .ok()
+        .and_then(|z| z.parse().ok())
+    {
+        show.zoom(z);
+    }
     let target = g.target(SIZE.0, SIZE.1, gpu::COLOR, 1);
-    let mut enc = g.device.create_command_encoder(&Default::default());
     let view = target.create_view(&Default::default());
-    scene.draw(&g, &mut enc, &show.frame(), &view, SIZE);
-    g.queue.submit([enc.finish()]);
+    // The exposure adapts over frames (lightlev2); like the player holding a
+    // moment, draw it until it settles. TIMBURY_FRAMES=1 shows the first.
+    let frames: u32 = std::env::var("TIMBURY_FRAMES")
+        .ok()
+        .and_then(|f| f.parse().ok())
+        .unwrap_or(60);
+    for _ in 0..frames.max(1) {
+        let mut enc = g.device.create_command_encoder(&Default::default());
+        scene.draw(&g, &mut enc, &show.frame(), &view, SIZE);
+        g.queue.submit([enc.finish()]);
+    }
     let rgba = g.read(&target);
     let rgb: Vec<u8> = rgba
         .chunks_exact(4)

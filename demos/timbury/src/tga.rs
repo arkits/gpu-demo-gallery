@@ -22,6 +22,17 @@ pub fn read(d: &[u8]) -> Result<(usize, usize, Vec<u8>), Error> {
     Ok((w, h, out))
 }
 
+/// Width, height and the bytes in file order (no BGR swap). The signed
+/// `_norm` maps store x, y, z and the specular ramp in that order: byte 2 (z)
+/// averages +1 in every one.
+pub fn read_raw(d: &[u8]) -> Result<(usize, usize, Vec<u8>), Error> {
+    let (w, h, mut px) = read(d)?;
+    for p in px.chunks_exact_mut(4) {
+        p.swap(0, 2);
+    }
+    Ok((w, h, px))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

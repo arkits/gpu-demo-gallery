@@ -188,3 +188,67 @@ fn text_and_binary_agree() {
     assert_eq!((t.name.as_str(), t.kind), ("a", "MayaTransform"));
     assert_eq!(t.vec::<3>("translation"), Some([1.0, 2.0, 3.0]));
 }
+
+/// The signed `_norm` bump maps keep x, y, z in file byte order: z (byte 2)
+/// is about +1 everywhere, so a BGR swap would tilt every normal sideways.
+#[test]
+fn signed_maps_face_out_in_file_order() {
+    let Some(files) = files() else { return };
+    let timbury = binary(&files, demo::TIMBURY);
+    let mut checked = 0;
+    for t in timbury.nodes("textures") {
+        let name = t.text("filename");
+        if t.kind != "2DTexture" || t.int("format") == 24 || !name.ends_with(".tga") {
+            continue;
+        }
+        let data = files.get(&timbury::data::asset_name(name)).unwrap();
+        let (_, _, px) = timbury::tga::read_raw(data).unwrap();
+        let z: f64 = px
+            .chunks_exact(4)
+            .step_by(97)
+            .map(|p| f64::from(p[2] as i8))
+            .sum::<f64>()
+            / (px.len() / 4 / 97 + 1) as f64;
+        assert!(z > 100.0, "{name}: mean z {z}");
+        checked += 1;
+    }
+    assert!(checked > 20, "only {checked} signed maps");
+}
+
+/// Every shadow caster (and lens copy) of a shape sits exactly where the
+/// visible shape does: rigid copies that name only `modelViewProj` (map 9)
+/// carry their transform rather than bend through the inverse bind pose.
+#[test]
+fn pass_copies_coincide_with_the_visible_shapes() {
+    let Some(files) = files() else { return };
+    let model = timbury::model::Model::new(&binary(&files, demo::TIMBURY), &files).unwrap();
+    let anim = binary(&files, demo::ANIMATION);
+    let dance = timbury::anim::Animation::read(&anim.nodes("animations")[0]).unwrap();
+    let world = model.pose(Some((&dance, 25.0)), &[]);
+    let index: std::collections::HashMap<_, _> = model
+        .shapes
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.as_str(), i))
+        .collect();
+    let mut compared = 0;
+    for pass in ["ShadowRenderTargetProxy", "LensRenderTargetProxy"] {
+        for &k in &model.group(&format!("{pass}_group")).unwrap().1 {
+            let copy = &model.shapes[k];
+            let twin = copy.name.replace(pass, "nvPrimaryRenderPass");
+            let Some(&t) = index.get(twin.as_str()) else {
+                continue;
+            };
+            let (a, b) = (
+                model.bones(copy, &world),
+                model.bones(&model.shapes[t], &world),
+            );
+            assert_eq!(a.len(), b.len(), "{}", copy.name);
+            for (x, y) in a.iter().zip(&b) {
+                assert!(x.abs_diff_eq(*y, 1e-3), "{} strays from {twin}", copy.name);
+            }
+            compared += 1;
+        }
+    }
+    assert!(compared > 100, "only {compared} copies compared");
+}

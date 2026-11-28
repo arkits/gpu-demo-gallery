@@ -112,6 +112,9 @@ pub struct Show {
     pub quit: bool,
 }
 
+/// The sliders' starting values from 0x4115b0: output scale, AGC damping,
+/// light angle, softening amount, softening radius.
+pub const SLIDERS: [f32; 5] = [0.465, 0.35, 0.565, 0.5, 0.5];
 const HOME: (f32, f32, f32) = (0.0, 0.0, 420.0);
 const FARTHEST: f32 = 1500.0;
 const NEAREST: f32 = 2.0;
@@ -139,7 +142,7 @@ impl Show {
             cues: Vec::new(),
             paused: false,
             logo: true,
-            sliders: [0.5; 5],
+            sliders: SLIDERS,
             about: -1.0,
             center,
             menu_def,
@@ -225,6 +228,10 @@ impl Show {
             return;
         }
         self.time += dt;
+        // The show restarts with its music after 63 seconds (0x41c840).
+        if self.time - self.started > crate::scene::SHOW_LENGTH {
+            self.begin();
+        }
         if self.mode != Mode::Movie && self.time - self.touched > demo::IDLE {
             self.mode = Mode::Movie;
         }
