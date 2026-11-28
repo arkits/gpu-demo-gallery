@@ -30,7 +30,8 @@ paraboloid map (0x4249e0 builds its texture matrix). Culling is clockwise.
 
 Mirrors (0x419090) are drawn before the room the eye is in: their backdrop without depth
 writes, their reflected rooms cut by user clip planes through the eye and the mirror's four
-corners, reflected characters, then the surface added with a Fresnel weight
+corners, reflected characters (only those standing in a room the mirror shows, and whose
+reflection lies behind its plane), then the surface added with a Fresnel weight
 ((1 - v·n)² between the mirror's alpha and one, 0x419f50).
 
 Exhibit tanks (a room's 0x120 records, 0x426490) are windows: what is behind is drawn
@@ -59,7 +60,16 @@ frame for the whole and for every bone, played by the flight's clock and lerped 
 frames. A character lives in the tank whose box holds its first frame, else in its room.
 They are lit by two white directional lights.
 
+Version 2 animations carry events, (start, end, kind) in seconds: Noelle's three teleports
+are each a fade out (0), a gap while she is moved (2, not drawn) and a fade in (1, played
+backwards). Through a fade (0x40b770) the lights are halved, the second light's ambient rises
+with the fade, the colour is doubled against the lit colour, and past halfway the body is
+cut away by an alpha test against a noise texture (0x40a640: Perlin's reference `noise2`
+seeded by `srand(0x15f)`, six octaves, fading towards the bottom rows). Its coordinates
+(0x40ec40) go round the body and up it as it stands at frame 0, so she goes from the head
+down.
+
 ## Not ported
 
-Noelle's nine animation events (their own drawing path), the eight tank windows that
+The eight tank windows that
 render reflections to textures (on only with that option), and the menu of effect samples.

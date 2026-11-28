@@ -9,7 +9,7 @@ use crate::ati::{self, Room, World};
 use crate::d3d::{self, BufferId, Device, Gpu, Light, Material, Source, TextureId, Vertex};
 use crate::data::Files;
 use crate::path::Path;
-use crate::proteus::{Animation, Object};
+use crate::proteus::{Animation, Mesh, Object};
 use crate::water::Water;
 
 /// The pools' springs step this often (the original steps once a frame).
@@ -216,6 +216,57 @@ struct Character {
     tank: Option<(usize, usize)>,
     /// REFLECT in obj.ini: seen in mirrors.
     reflect: bool,
+    /// The teleporter's texture coordinates by mesh and vertex (0x40ec40): round the body
+    /// and up it, as it stands at the animation's first frame.
+    uv1: Vec<Vec<[f32; 2]>>,
+}
+
+/// A Proteus vertex blended by `bones` exactly as the Radeon blends: the last weight is one
+/// less the others. Place and normal.
+fn skin(mesh: &Mesh, v: &[f32; 12], bones: &[Mat4]) -> (Vec3, Vec3) {
+    let p = Vec3::new(v[0], v[1], v[2]).extend(1.0);
+    let n = Vec3::new(v[7], v[8], v[9]).extend(0.0);
+    let k = mesh.bones.len().clamp(1, 4);
+    let mut w = [v[3], v[4], v[5], 0.0];
+    let sum: f32 = w[..k - 1].iter().sum();
+    w[k - 1] = 1.0 - sum;
+    let (mut pp, mut nn) = (Vec4::ZERO, Vec4::ZERO);
+    for (j, w) in w.iter().enumerate().take(k) {
+        let m = mesh
+            .bones
+            .get(j)
+            .and_then(|&b| bones.get(b))
+            .copied()
+            .unwrap_or(Mat4::IDENTITY);
+        pp += m * p * *w;
+        nn += m * n * *w;
+    }
+    (pp.truncate(), nn.truncate())
+}
+
+/// 0x40ec40: u is the angle round the box's upright middle line (0 to 2 over a half turn and
+/// back), v the height in the box.
+fn teleport_uv(object: &Object, animation: &Animation) -> Vec<Vec<[f32; 2]>> {
+    let bones = animation.bones_at(0.0, object);
+    let (lo, hi) = object.bounds;
+    let mid = (lo + hi) * 0.5;
+    object
+        .meshes
+        .iter()
+        .map(|mesh| {
+            mesh.vertices
+                .iter()
+                .map(|v| {
+                    let (p, _) = skin(mesh, v, &bones);
+                    let (dx, dy) = (p.x - mid.x, p.y - mid.y);
+                    let l2 = dx * dx + dy * dy;
+                    let c = if l2 > 0.0 { dx / l2.sqrt() } else { 0.0 };
+                    let u = c.clamp(-1.0, 1.0).acos() * std::f32::consts::FRAC_2_PI;
+                    [u, (p.z - lo.z) / (hi.z - lo.z)]
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// A Proteus object on the GPU: textures by material.
@@ -232,6 +283,8 @@ pub struct Demo {
     /// The room the camera is in (world + 8).
     room: usize,
     textures: Vec<TextureId>,
+    /// The teleporter's noise (0x40a640).
+    noise: TextureId,
     path: Path,
     objects: Vec<ObjectData>,
     characters: Vec<Character>,
@@ -284,6 +337,7 @@ impl Demo {
             .iter()
             .map(|m| m.rooms.iter().map(|r| prepare_room(gpu, dev, r)).collect())
             .collect();
+        let noise = dev.texture(gpu, &crate::noise::teleport(), true);
         let path = Path::parse(&String::from_utf8_lossy(files.get("fly.pth")?)).ok_or("fly.pth")?;
         let mut objects: Vec<(String, ObjectData)> = Vec::new();
         let mut characters = Vec::new();
@@ -333,11 +387,13 @@ impl Demo {
                     .position(|t| inside(t.bounds.0, t.bounds.1))
                     .map(|t| (r, t));
             }
+            let uv1 = teleport_uv(&objects[index].1.object, &anim);
             characters.push(Character {
                 object: index,
                 animation: anim,
                 tank,
                 reflect,
+                uv1,
             });
         }
         Ok(Self {
@@ -346,6 +402,7 @@ impl Demo {
             mirrors,
             room: 0,
             textures,
+            noise,
             path,
             objects: objects.into_iter().map(|o| o.1).collect(),
             characters,
@@ -387,7 +444,12 @@ impl Demo {
             return false;
         }
         match key {
-            " " => self.paused = !self.paused,
+            " " => {
+                self.paused = !self.paused;
+                // The music holds still with the picture.
+                self.cues
+                    .push(if self.paused { "!pause" } else { "!resume" }.into());
+            }
             "r" => {
                 self.time = 0.0;
                 self.cues.push("music".into());
@@ -671,10 +733,20 @@ impl Demo {
             let refl = Mat4::from_cols_array(&std::array::from_fn(|k| f(0x38 + 4 * k))).transpose();
             let t = self.time as f32;
             dev.set_render_state(d3d::CULLMODE, 3);
+            // Only those standing in a room this mirror shows (each copy keeps its world
+            // room's number at +2): the world's rooms list who is in them.
+            let shown: Vec<usize> = list
+                .iter()
+                .filter_map(|&i| rec.rooms.get(i))
+                .map(|r| u16::from_le_bytes([r.raw[2], r.raw[3]]) as usize)
+                .collect();
             self.draw_some(dev, t, refl, |c| {
                 c.reflect && c.tank.is_none() && {
-                    let p = (refl * c.animation.root_at(t).w_axis).truncate();
-                    p.dot(n) + f(0x34) < 0.0
+                    let at = c.animation.root_at(t).w_axis;
+                    let p = (refl * at).truncate();
+                    self.room_of(at.truncate())
+                        .is_some_and(|r| shown.contains(&r))
+                        && p.dot(n) + f(0x34) < 0.0
                 }
             });
             dev.set_render_state(d3d::CULLMODE, 2);
@@ -938,24 +1010,28 @@ impl Demo {
         self.draw_some(dev, t, world, |c| c.tank == tank);
     }
 
+    /// The first world room whose box holds `p`.
+    fn room_of(&self, p: Vec3) -> Option<usize> {
+        self.world.rooms.iter().position(|r| {
+            let (lo, hi) = r.bounds();
+            (0..3).all(|k| lo[k] <= p[k] && p[k] < hi[k])
+        })
+    }
+
     fn draw_some(&self, dev: &mut Device, t: f32, world: Mat4, keep: impl Fn(&Character) -> bool) {
-        // Two white directional lights (0x40aaf0); the first gives a fifth of ambient.
-        let light = |dir: Vec3, ambient: f32| Light {
-            kind: d3d::LIGHT_DIRECTIONAL,
-            diffuse: Vec4::ONE,
-            specular: Vec4::ONE,
-            ambient: Vec4::new(ambient, ambient, ambient, 1.0),
-            direction: dir,
-            ..Default::default()
-        };
-        dev.set_light(0, light(Vec3::new(1.0, -1.0, -1.0), 0.2));
-        dev.set_light(1, light(Vec3::new(-1.0, 1.0, 0.0), 0.0));
-        dev.light_enable(0, true);
-        dev.light_enable(1, true);
         dev.set_render_state(d3d::LIGHTING, 1);
         dev.set_render_state(d3d::COLORVERTEX, 0);
         dev.set_world(Mat4::IDENTITY);
         for ch in self.characters.iter().filter(|c| keep(c)) {
+            // Events (0x40aaf0): 0 fades out through the teleporter, 1 fades in (backwards),
+            // 2 is gone.
+            let fade = match ch.animation.event(t) {
+                Some((2, _)) => continue,
+                Some((0, p)) => Some(p),
+                Some((1, p)) => Some(1.0 - p),
+                _ => None,
+            };
+            self.lights(dev, fade);
             let o = &self.objects[ch.object];
             let root = ch.animation.root_at(t);
             let bones: Vec<Mat4> = ch
@@ -964,7 +1040,7 @@ impl Demo {
                 .into_iter()
                 .map(|b| world * root * b)
                 .collect();
-            for mesh in &o.object.meshes {
+            for (mi, mesh) in o.object.meshes.iter().enumerate() {
                 let m = o.object.materials.get(mesh.material);
                 let tex = o.textures.get(mesh.material).copied().flatten();
                 // 0x40aa50: textured materials are a light grey; others their own colours.
@@ -987,8 +1063,51 @@ impl Demo {
                 dev.set_material(material);
                 Self::off(dev, 0);
                 dev.set_texture_stage_state(0, d3d::TEXCOORDINDEX, 0);
-                if let Some(t) = tex {
-                    dev.set_texture(0, Some(t));
+                dev.set_texture(0, tex);
+                let first = if tex.is_some() {
+                    d3d::SELECTARG1
+                } else {
+                    d3d::SELECTARG2
+                };
+                if fade.is_some() {
+                    // 0x40b770: the material's colour, alpha from the noise round the body,
+                    // then twice the lit colour.
+                    Self::stage(
+                        dev,
+                        0,
+                        first,
+                        d3d::TA_TEXTURE,
+                        d3d::TA_DIFFUSE,
+                        d3d::SELECTARG2,
+                        d3d::TA_TEXTURE,
+                        d3d::TA_DIFFUSE,
+                    );
+                    dev.set_texture(1, Some(self.noise));
+                    dev.set_texture_stage_state(1, d3d::TEXCOORDINDEX, 1);
+                    dev.set_texture_stage_state(1, d3d::ADDRESSU, 1);
+                    dev.set_texture_stage_state(1, d3d::ADDRESSV, 1);
+                    Self::stage(
+                        dev,
+                        1,
+                        d3d::SELECTARG2,
+                        d3d::TA_TEXTURE,
+                        d3d::TA_CURRENT,
+                        d3d::SELECTARG1,
+                        d3d::TA_TEXTURE,
+                        d3d::TA_CURRENT,
+                    );
+                    dev.set_texture(2, None);
+                    Self::stage(
+                        dev,
+                        2,
+                        d3d::MODULATE2X,
+                        d3d::TA_CURRENT,
+                        d3d::TA_DIFFUSE,
+                        d3d::SELECTARG1,
+                        d3d::TA_CURRENT,
+                        d3d::TA_DIFFUSE,
+                    );
+                } else if tex.is_some() {
                     Self::stage(
                         dev,
                         0,
@@ -1011,47 +1130,69 @@ impl Demo {
                         d3d::TA_DIFFUSE,
                     );
                 }
-                // Blended on the CPU exactly as the Radeon blends: the last weight is one less
-                // the others.
+                let uv1 = ch.uv1.get(mi);
                 let verts: Vec<Vertex> = mesh
                     .vertices
                     .iter()
-                    .map(|v| {
-                        let p = Vec3::new(v[0], v[1], v[2]).extend(1.0);
-                        let n = Vec3::new(v[7], v[8], v[9]).extend(0.0);
-                        let k = mesh.bones.len().clamp(1, 4);
-                        let mut w = [v[3], v[4], v[5], 0.0];
-                        let sum: f32 = w[..k - 1].iter().sum();
-                        w[k - 1] = 1.0 - sum;
-                        let (mut pp, mut nn) = (Vec4::ZERO, Vec4::ZERO);
-                        #[allow(clippy::needless_range_loop)]
-                        for j in 0..k {
-                            let m = mesh
-                                .bones
-                                .get(j)
-                                .and_then(|&b| bones.get(b))
-                                .copied()
-                                .unwrap_or(Mat4::IDENTITY);
-                            pp += m * p * w[j];
-                            nn += m * n * w[j];
-                        }
-                        Vertex::at(pp.truncate())
-                            .normal(nn.truncate().normalize_or_zero())
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let (p, n) = skin(mesh, v, &bones);
+                        let w = uv1.and_then(|u| u.get(i)).copied().unwrap_or([0.0; 2]);
+                        Vertex::at(p)
+                            .normal(n.normalize_or_zero())
                             .uv(0, v[10], v[11])
+                            .uv(1, w[0], w[1])
                     })
                     .collect();
                 let idx: Vec<u16> = mesh.triangles.iter().flatten().map(|&i| i as u16).collect();
                 dev.draw(
                     d3d::TRIANGLELIST,
-                    d3d::FVF_XYZ | d3d::FVF_NORMAL | 0x100,
+                    d3d::FVF_XYZ | d3d::FVF_NORMAL | if fade.is_some() { 0x200 } else { 0x100 },
                     Source::Data(&verts),
                     Some(&idx),
                 );
+            }
+            if fade.is_some() {
+                Self::off(dev, 1);
+                dev.set_texture(1, None);
+                dev.set_render_state(d3d::ALPHATESTENABLE, 0);
             }
         }
         dev.set_render_state(d3d::LIGHTING, 0);
         dev.light_enable(0, false);
         dev.light_enable(1, false);
+    }
+
+    /// Two white directional lights (0x40aaf0); the first gives a fifth of ambient. Through
+    /// the teleporter (0x40b770) both are half as bright, the first's ambient a tenth and the
+    /// second's the way through; past halfway the body is cut away where the noise is above
+    /// a falling line (alpha test, LESS).
+    fn lights(&self, dev: &mut Device, fade: Option<f32>) {
+        let (k, a0, a1) = match fade {
+            Some(p) => (0.5, 0.1, p),
+            None => (1.0, 0.2, 0.0),
+        };
+        let light = |dir: Vec3, ambient: f32| Light {
+            kind: d3d::LIGHT_DIRECTIONAL,
+            diffuse: Vec4::new(k, k, k, 1.0),
+            specular: Vec4::new(k, k, k, 1.0),
+            ambient: Vec4::new(ambient, ambient, ambient, 1.0),
+            direction: dir,
+            ..Default::default()
+        };
+        dev.set_light(0, light(Vec3::new(1.0, -1.0, -1.0), a0));
+        dev.set_light(1, light(Vec3::new(-1.0, 1.0, 0.0), a1));
+        dev.light_enable(0, true);
+        dev.light_enable(1, true);
+        match fade {
+            Some(p) if p > 0.5 => {
+                dev.set_render_state(d3d::ALPHATESTENABLE, 1);
+                let r = ((2.0 * p - 1.0) * 255.0) as u32 & 0xff;
+                dev.set_render_state(d3d::ALPHAREF, 255 - r);
+                dev.set_render_state(d3d::ALPHAFUNC, 2);
+            }
+            _ => dev.set_render_state(d3d::ALPHATESTENABLE, 0),
+        }
     }
 
     pub fn draw(&mut self, _gpu: &Gpu, dev: &mut Device) {

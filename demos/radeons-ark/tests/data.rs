@@ -57,6 +57,18 @@ fn characters_read() {
         (a.length, a.root.len(), a.bones.len(), a.events.len()),
         (228.0, 3421, 49, 9)
     );
+    // She teleports three times; the jumps in her place all fall while she is gone.
+    assert_eq!(a.event(30.0), Some((0, 0.5)));
+    assert_eq!(a.event(31.5).map(|e| e.0), Some(2));
+    assert_eq!(a.event(33.0), Some((1, 0.5)));
+    assert_eq!(a.event(40.0), None);
+    let step = a.length / (a.root.len() - 1) as f32;
+    for i in 1..a.root.len() {
+        if (a.root[i].w_axis - a.root[i - 1].w_axis).length() > 200.0 {
+            let mid = (i as f32 - 0.5) * step;
+            assert_eq!(a.event(mid).map(|e| e.0), Some(2), "jump at {mid}");
+        }
+    }
     for name in f.names().into_iter().filter(|n| n.ends_with(".obj")) {
         Object::read(f.get(&name).unwrap()).unwrap_or_else(|e| panic!("{name}: {e}"));
     }

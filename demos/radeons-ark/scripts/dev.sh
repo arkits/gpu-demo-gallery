@@ -20,7 +20,7 @@ OUT=target/devtest
 PORT=8132
 mkdir -p "$OUT"
 # Seconds and keys of the moments that `compare` looks at.
-STILLS="2: 20: 60: 140: 180:"
+STILLS="2: 20: 30.4: 60: 140: 180:"
 
 need_data() {
   [ -d "$ARK_DATA" ] || { echo "demo not found: $ARK_DATA" >&2; exit 1; }

@@ -4,6 +4,7 @@ pub mod d3d;
 pub mod data;
 pub mod demo;
 pub mod image;
+pub mod noise;
 pub mod path;
 mod player;
 pub mod proteus;

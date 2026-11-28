@@ -230,6 +230,20 @@ impl Animation {
         }))
     }
 
+    /// The event under way at `t` and how far through it is (0x40a880): of those whose span
+    /// holds the wrapped time, the last.
+    pub fn event(&self, t: f32) -> Option<(i32, f32)> {
+        let t = if self.length > 0.0 {
+            t % self.length
+        } else {
+            0.0
+        };
+        self.events
+            .iter()
+            .rfind(|e| e.0 <= t && t <= e.1)
+            .map(|e| (e.2, (t - e.0) / (e.1 - e.0)))
+    }
+
     pub fn root_at(&self, t: f32) -> Mat4 {
         let (i, j, k) = self.frame(t);
         Self::lerp(&self.root[i], &self.root[j], k)

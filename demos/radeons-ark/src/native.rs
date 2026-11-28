@@ -162,6 +162,8 @@ struct Sound {
     device: MixerDeviceSink,
     playing: HashMap<String, rodio::Player>,
     muted: bool,
+    /// The demo is paused: players hold where they are.
+    paused: bool,
 }
 
 impl Sound {
@@ -177,10 +179,18 @@ impl Sound {
             device,
             playing: HashMap::new(),
             muted: false,
+            paused: false,
         })
     }
 
     fn cue(&mut self, files: &Files, cue: &str) {
+        if let Some(what) = cue.strip_prefix('!') {
+            self.paused = what == "pause";
+            for p in self.playing.values() {
+                if self.paused { p.pause() } else { p.play() }
+            }
+            return;
+        }
         if let Some(name) = cue.strip_prefix('-') {
             self.playing.remove(name);
             return;
@@ -197,6 +207,9 @@ impl Sound {
         match cue.ends_with('*') {
             true => player.append(buffer.repeat_infinite()),
             false => player.append(buffer),
+        }
+        if self.paused {
+            player.pause();
         }
         self.playing.insert(name.to_string(), player);
     }
