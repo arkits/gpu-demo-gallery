@@ -66,6 +66,7 @@ impl Player {
         self.scene
             .draw(&self.gpu, &mut enc, &frame, &view, (64, 64));
         self.gpu.queue.submit([enc.finish()]);
+        self.scene.reset_exposure();
         let done = self.ready.clone();
         self.gpu
             .queue

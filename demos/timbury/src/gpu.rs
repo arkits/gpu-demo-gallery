@@ -14,6 +14,10 @@ pub const SLOT: u64 = 256;
 pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    /// The scene's color format: half floats like the original's
+    /// `float4_16` targets where the adapter can draw, blend and multisample
+    /// them, plain bytes otherwise.
+    pub hdr: wgpu::TextureFormat,
 }
 
 impl Gpu {
@@ -30,7 +34,17 @@ impl Gpu {
                 ..Default::default()
             })
             .await?;
-        Ok(Self { device, queue })
+        use wgpu::TextureFormatFeatureFlags as F;
+        let half = wgpu::TextureFormat::Rgba16Float;
+        let features = adapter.get_texture_format_features(half);
+        let wanted = F::FILTERABLE | F::BLENDABLE | F::MULTISAMPLE_X4 | F::MULTISAMPLE_RESOLVE;
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let hdr = if features.flags.contains(wanted) && features.allowed_usages.contains(usage) {
+            half
+        } else {
+            COLOR
+        };
+        Ok(Self { device, queue, hdr })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -177,17 +191,7 @@ impl Gpu {
                     size(w, h, 1),
                 );
                 let (hw, hh) = ((w / 2).max(1), (h / 2).max(1));
-                let (dx, dy) = ((w > 1) as u32, (h > 1) as u32);
-                let mut half = Vec::with_capacity((hw * hh * 4) as usize);
-                for (y, x) in (0..hh).flat_map(|y| (0..hw).map(move |x| (y, x))) {
-                    for c in 0..4 {
-                        let at = |i: u32, j: u32| u32::from(pixels[((j * w + i) * 4 + c) as usize]);
-                        let (x0, y0) = (x << dx, y << dy);
-                        let sum =
-                            at(x0, y0) + at(x0 + dx, y0) + at(x0, y0 + dy) + at(x0 + dx, y0 + dy);
-                        half.push((sum / 4) as u8);
-                    }
-                }
+                let half = half_level(&pixels, (w, h), format == wgpu::TextureFormat::Rgba8Snorm);
                 (pixels, w, h) = (half, hw, hh);
             }
         }
@@ -260,5 +264,55 @@ fn size(w: u32, h: u32, layers: u32) -> wgpu::Extent3d {
         width: w,
         height: h,
         depth_or_array_layers: layers,
+    }
+}
+
+/// The next mip level of RGBA bytes: each texel the mean of a 2x2 block.
+/// Signed maps average their normal (x, y, z) as signed bytes: near zero they
+/// flip between 0 and 255 (-1), whose unsigned mean would read as +1. Their
+/// alpha (the specular ramp) is stored unsigned and averages as such.
+pub fn half_level(pixels: &[u8], (w, h): (u32, u32), signed: bool) -> Vec<u8> {
+    let (hw, hh) = ((w / 2).max(1), (h / 2).max(1));
+    let (dx, dy) = ((w > 1) as u32, (h > 1) as u32);
+    let mut half = Vec::with_capacity((hw * hh * 4) as usize);
+    for (y, x) in (0..hh).flat_map(|y| (0..hw).map(move |x| (y, x))) {
+        for c in 0..4 {
+            let as_signed = signed && c < 3;
+            let at = |i: u32, j: u32| {
+                let b = pixels[((j * w + i) * 4 + c) as usize];
+                if as_signed {
+                    i32::from(b as i8)
+                } else {
+                    i32::from(b)
+                }
+            };
+            let (x0, y0) = (x << dx, y << dy);
+            let sum = at(x0, y0) + at(x0 + dx, y0) + at(x0, y0 + dy) + at(x0 + dx, y0 + dy);
+            let mean = sum.div_euclid(4);
+            half.push(if as_signed {
+                mean as i8 as u8
+            } else {
+                mean as u8
+            });
+        }
+    }
+    half
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn signed_mips_average_signed() {
+        // x flips between +0 and -1 (255); y is +1 and -1; z is flat +1.
+        let px = [
+            0, 127, 127, 200, //
+            255, 129, 127, 100, //
+            0, 127, 127, 200, //
+            255, 129, 127, 100,
+        ];
+        let half = super::half_level(&px, (2, 2), true);
+        assert_eq!(half, [255, 0, 127, 150]);
+        // The same bytes as plain color average unsigned.
+        assert_eq!(super::half_level(&px, (2, 2), false), [127, 128, 127, 150]);
     }
 }

@@ -7,7 +7,7 @@ use crate::{Error, demo, tree};
 const MAGIC: &[u8; 8] = b"NVVIEWR1";
 
 /// Paths in scene files are relative to the original viewer executable.
-pub(crate) fn asset_name(path: &str) -> String {
+pub fn asset_name(path: &str) -> String {
     path.replace('\\', "/")
         .trim_start_matches("../")
         .trim_start_matches("./")

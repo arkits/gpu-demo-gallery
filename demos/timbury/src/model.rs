@@ -634,13 +634,16 @@ impl Model {
             }),
             _ => Geometry::Mesh(mesh(g)?),
         };
-        // `model` (7) carries a mesh, `model[n]` (23) bends it; `model[n]` (26)
-        // bends it into the camera's picture. The port uploads both products.
+        // `model` (7) and a plain `modelViewProj` (9) carry a rigid mesh;
+        // `model[n]` (23) and `modelViewProj[n]` (26) bend a skinned one
+        // (joint times inverse bind). The shadow copies of rigid shapes name
+        // only modelViewProj, so 9 must carry like 7 or they leave their
+        // visible twins and shade the scene from the wrong place.
         let mut bones: Vec<(usize, usize, bool)> = Vec::new();
         for p in params(setting, "vertexShaderParams", "TransformParam") {
             let bend = match p.int("map") {
-                7 => false,
-                9 | 23 | 26 => true,
+                7 | 9 => false,
+                23 | 26 => true,
                 _ => continue,
             };
             let name = p.text("paramName");
