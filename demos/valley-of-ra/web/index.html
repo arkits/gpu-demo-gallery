@@ -23,20 +23,22 @@
   #modes { position: fixed; left: 50%; transform: translateX(-50%); top: max(14px, env(safe-area-inset-top)); display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; width: min(860px, calc(100vw - 32px)); transition: opacity .4s; }
   #modes.still { opacity: 0; }
   #modes:hover, #modes:focus-within { opacity: 1; }
-  #modes button { background: var(--panel); padding: 6px 12px; min-height: 44px; }
+  #modes button { background: var(--panel); padding: 6px 12px; min-height: 44px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   #modes button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
 </style>
 <!-- Cloudflare Pages adds its analytics script to an explicit body. -->
 <body>
-<canvas id="view" tabindex="0" aria-label="A textured 3D room"></canvas>
+<canvas id="view" tabindex="0" aria-label="Anubis and Nefertiti fight before a pyramid"></canvas>
 <div id="modes" hidden><button id="mute" aria-pressed="false" hidden>Mute</button></div>
 <main id="start">
   <h1>Valley of Ra</h1>
   <button id="play" class="primary" hidden>Start</button>
   <label id="choose">Choose the demo's folder <input id="folder" type="file" webkitdirectory></label>
   <p id="need">Needs the unpacked files of the original. They stay on this computer.</p>
-  <p>A room built from the demo's own .3DS geometry and .3DF textures — the ATB pioneer.</p>
-  <p><kbd>w</kbd> wireframe &nbsp; <kbd>p</kbd> pause spin &nbsp; Drag to turn &nbsp; Scroll to zoom. &nbsp; <kbd>Enter</kbd> full screen</p>
+  <p>Anubis and Nefertiti fight before a pyramid, played from the demo's own fight.bof.</p>
+  <p>Anubis: <kbd>←</kbd> <kbd>→</kbd> walk, <kbd>↑</kbd> jump, <kbd>7</kbd> <kbd>8</kbd> <kbd>9</kbd> <kbd>6</kbd> block, punch, high kick, low kick.
+    Nefertiti: <kbd>a</kbd> <kbd>s</kbd> walk, <kbd>w</kbd> jump, <kbd>u</kbd> <kbd>i</kbd> <kbd>o</kbd> <kbd>l</kbd>.
+    <kbd>f</kbd> fog &nbsp; <kbd>x</kbd> wireframe &nbsp; <kbd>Enter</kbd> full screen</p>
   <p>3dfx's "Valley of Ra" ATB demo, 1997.</p>
   <progress id="progress" hidden></progress>
   <p id="status" role="status"></p>
@@ -119,7 +121,29 @@
       const b = document.createElement("button");
       b.dataset.key = list[i];
       b.textContent = list[i + 1];
-      b.addEventListener("click", () => { player.key(b.dataset.key, true); player.key(b.dataset.key, false); canvas.focus(); });
+      // Held while pressed, so Block holds; the player counts a tap shorter
+      // than a tick. Keyboard activation arrives as a click with no pointer.
+      const key = b.dataset.key;
+      let held = null;
+      b.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || held !== null) return;
+        held = e.pointerId;
+        b.setPointerCapture(e.pointerId);
+        player.key(key, true);
+      });
+      const release = (e) => {
+        if (e.pointerId !== held) return;
+        held = null;
+        player.key(key, false);
+        canvas.focus();
+      };
+      for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) b.addEventListener(t, release);
+      b.addEventListener("contextmenu", (e) => e.preventDefault());
+      b.addEventListener("click", (e) => {
+        if (e.detail !== 0) return;
+        player.key(key, true);
+        player.key(key, false);
+      });
       $("mute").before(b);
     }
     let hide;

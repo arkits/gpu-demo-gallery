@@ -39,3 +39,41 @@ fn pack_roundtrip() {
         assert_eq!(files.get(f).unwrap(), packed.get(f).unwrap(), "{f}");
     }
 }
+
+/// An on-screen button presses and lets go before the next tick; the
+/// fighter must still see it, and a held block must stay held.
+#[test]
+fn taps_between_ticks_count() {
+    use valley_of_ra::demo::{Demo, PROGRAMS, SHADER};
+    use valley_of_ra::gl::{COLOR, Gl, Gpu};
+    let Some(dir) = data() else { return };
+    let files = Files::from_path(&dir).unwrap();
+    let gpu = Gpu::headless().expect("a GPU");
+    let mut gl = Gl::new(&gpu, SHADER, PROGRAMS, COLOR);
+    let mut demo = Demo::new(&gpu, &mut gl, &files).unwrap();
+    // `step` catches up at most eight ticks at a time.
+    let run = |demo: &mut Demo, seconds: f64| {
+        for _ in 0..(seconds * 60.0).round() as usize {
+            demo.step(1.0 / 60.0);
+        }
+    };
+    run(&mut demo, 0.1);
+    demo.key("8", true);
+    demo.key("8", false);
+    demo.key("o", true);
+    demo.key("o", false);
+    run(&mut demo, 1.0 / 60.0);
+    let r = demo.report();
+    assert!(
+        r.starts_with("anubis 1 ") && r.contains("nefertiti 2 "),
+        "{r}"
+    );
+    // A held key is not dropped: block stays in move 11 until let go.
+    run(&mut demo, 3.0);
+    demo.key("u", true);
+    run(&mut demo, 0.5);
+    assert!(demo.report().contains("nefertiti 11 "), "{}", demo.report());
+    demo.key("u", false);
+    run(&mut demo, 1.0);
+    assert!(demo.report().contains("nefertiti 0 "), "{}", demo.report());
+}

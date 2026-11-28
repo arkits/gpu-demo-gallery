@@ -57,6 +57,10 @@ struct Fighter {
     x: f32,
     pad: Pad,
     last: Pad,
+    /// Pressed since the last tick, and of those, already let go: a tap
+    /// shorter than a tick (an on-screen button) still counts once.
+    unseen: Pad,
+    gone: Pad,
 }
 
 impl Fighter {
@@ -104,6 +108,8 @@ impl Fighter {
             x,
             pad: Pad::default(),
             last: Pad::default(),
+            unseen: Pad::default(),
+            gone: Pad::default(),
         })
     }
 
@@ -202,6 +208,24 @@ impl Fighter {
         }
         self.x = self.x.clamp(-130.0, 100.0);
         self.last = self.pad;
+        for i in 0..self.pad.0.len() {
+            if self.gone.0[i] {
+                self.pad.0[i] = false;
+            }
+        }
+        (self.unseen, self.gone) = Default::default();
+    }
+
+    fn press(&mut self, slot: usize, down: bool) {
+        if down {
+            self.pad.0[slot] = true;
+            self.unseen.0[slot] = true;
+            self.gone.0[slot] = false;
+        } else if self.unseen.0[slot] {
+            self.gone.0[slot] = true;
+        } else {
+            self.pad.0[slot] = false;
+        }
     }
 
     /// Where the upper body is.
@@ -358,7 +382,7 @@ impl Demo {
             }
             _ => return false,
         };
-        self.fighters[who].pad.0[slot] = down;
+        self.fighters[who].press(slot, down);
         true
     }
 
