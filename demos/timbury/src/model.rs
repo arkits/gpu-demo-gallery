@@ -23,10 +23,25 @@ struct Transform {
     rest: Fields,
     orientation: Vec3,
     joint_orientation: Vec3,
+    rotate_pivot: Vec3,
+    rotate_pivot_translate: Vec3,
+    scale_pivot: Vec3,
+    scale_pivot_translate: Vec3,
+    /// Whether the pivots act. Only the eyeball joints use theirs: their
+    /// geometry sits centered on the pivot with live rotation tracks, so
+    /// rotating about the joint origin flings the eyes out of their sockets.
+    /// Everywhere else the port keeps the long-standing offset composition:
+    /// the camera rig's keyed aim matches it to the digit (Camera1's forward
+    /// is within a degree of the head at the sampled times), while honoring
+    /// its pivots moves Camera1 ~450 units and breaks the authored framing.
+    /// The lids never rotate and the body renders identically either way at
+    /// every sampled moment, so they stay as they shipped [I].
+    use_pivot: bool,
     matrix: Option<Mat4>,
 }
 
-/// Around x, then y, then z.
+/// Around x, then y, then z (Maya kXYZ, filed as rotationOrder 0 on all 568
+/// transforms).
 fn euler(v: Vec3) -> Mat4 {
     Mat4::from_euler(EulerRot::ZYX, v.z, v.y, v.x)
 }
@@ -56,24 +71,44 @@ impl Transform {
             },
             orientation: v("rotationOrientation"),
             joint_orientation: v("jointOrientation"),
+            rotate_pivot: v("rotationPivot"),
+            rotate_pivot_translate: v("rotationPivotTranslate"),
+            scale_pivot: v("scalePivot"),
+            scale_pivot_translate: v("scalePivotTranslate"),
+            use_pivot: n.name.starts_with("BL_EYE_Ball") || n.name.starts_with("BL_EYE_Wetball"),
             matrix,
         }
     }
 
-    /// As Maya composes them; the last factor acts first.
+    /// Maya-style composition; the last factor acts first. Only the eyeball
+    /// joints rotate about their pivots (see `use_pivot`); the rest keep the
+    /// long-standing offset composition.
     fn matrix(&self, f: Fields) -> Mat4 {
         if let Some(m) = self.matrix {
             return m;
         }
         let t = Mat4::from_translation;
+        let z = Vec3::ZERO;
+        let (rp, sp) = if self.use_pivot {
+            (self.rotate_pivot, self.scale_pivot)
+        } else {
+            (z, z)
+        };
         let turned = euler(f.rotation) * euler(self.orientation);
-        if self.joint {
-            return t(f.translation)
-                * euler(self.joint_orientation)
-                * turned
-                * Mat4::from_scale(f.scale);
-        }
-        t(f.translation) * turned * Mat4::from_scale(f.scale)
+        let rotate = if self.joint {
+            euler(self.joint_orientation) * turned
+        } else {
+            turned
+        };
+        t(f.translation)
+            * t(rp)
+            * t(self.rotate_pivot_translate)
+            * rotate
+            * t(-rp)
+            * t(-sp)
+            * Mat4::from_scale(f.scale)
+            * t(sp)
+            * t(self.scale_pivot_translate)
     }
 }
 
@@ -440,6 +475,11 @@ impl Model {
             },
             orientation: Vec3::ZERO,
             joint_orientation: Vec3::ZERO,
+            rotate_pivot: Vec3::ZERO,
+            rotate_pivot_translate: Vec3::ZERO,
+            scale_pivot: Vec3::ZERO,
+            scale_pivot_translate: Vec3::ZERO,
+            use_pivot: false,
             matrix: None,
         });
         let fields: Vec<_> = model.transforms.iter().map(|t| t.rest).collect();
