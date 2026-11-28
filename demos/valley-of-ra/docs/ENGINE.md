@@ -10,20 +10,43 @@ reflection, top, backdrop and scene. Each fighter has a table of twelve
 moves in the program's data (`0x45c1c8`, `0x45c268`): first, contact and
 last frame. The port reads them from the user's `fight.exe`.
 
-Each frame (`0x401410`) runs both fighters' move machines (`0x401ff0`):
-idle loops; punches and kicks start on a fresh press the other fighter is
-not also making; walking banks the step's travel when the cycle wraps;
-blocking holds. Fighters stay between x -130 and 100. The camera
-(`0x401a70`, `0x401bb0`) springs towards a point ten below the middle of the
-two upper bodies, and stands off by seven times their separation. Shadows,
-reflection, fighters and scene are lit by one white light along +x; the
-backdrop by a full ambient light. The view is 40 degrees wide, far 5000.
+Each frame (`0x401410`) first checks whether the two touch (`0x401000`):
+any pair of their animation children whose bounding spheres overlap, each
+child at its matrix's translation for the current frame plus the fighter's
+x. If so, `0x4023f0` sorts each by what its move is doing (`0x4025a0`):
+striking (a punch or kick from its contact frame on), reeling, blocking or
+neither. A strike on a fighter who is neither makes them reel (`0x402630`:
+move 3 for the low kick, 4 the high kick, 5 the punch) and costs them 0.1 of
+a health that starts at 1 and is never shown (`0x402650`); a block only
+pushes. They are then pushed a unit apart, or one of them moves. Then both
+move machines run (`0x401ff0`, Nefertiti first): idle loops; punches and
+kicks start on a fresh press; walking banks the step's travel when the cycle
+wraps; blocking holds; reactions play through. Fighters stay between x -130
+and 100.
+
+Input (`0x402970`) fills each fighter's slots from the GCI packet, whose
+bytes and bits key.dat names (table `0x45f148`, positions `0x45f210`):
+slot 0 up, 1 down, 2 right, 3 left, 6 A, 8 B, 10 C, 11 D. A to D are block,
+punch, high kick and low kick, so keypad 8 and i punch (move 6) and keypad 6
+and l low-kick (move 1). Letting go of R (GCI_START_1) restarts.
+
+The camera (`0x401a70`, `0x401bb0`) springs towards a point ten below the
+middle of the two upper bodies. The eye stands back by seven times Anubis's
+offset from the middle and sideways by seven times Nefertiti's height above
+it; it reads her body through Anubis's child index. It starts at rest 4000
+above the floor (`0x4019c0`), so the view drops in at the start and on each
+restart. Shadows, reflection, fighters and scene are lit by one white light
+along +x; the backdrop by a full ambient light. The view is 40 degrees wide,
+far 5000.
+
+`fight.evt`, which Enter plays back, is not among the demo's files; it is
+written by Ctrl R's recording. So the original shows no fight of its own:
+two players fight.
 
 ### Differences from the original
 
-- Pushing apart when the fighters overlap (`0x401000`, `0x4023f0`) is not
-  ported; nor are recording and playback, or the free camera.
-- Key slots for the moves are inferred from the readme and the machine. [I]
+- Recording and playback, the free camera, the help screen and the
+  rendering toggles other than fog and wireframe are not ported.
 
 ## The ATB engine (shared by the ATB ports)
 

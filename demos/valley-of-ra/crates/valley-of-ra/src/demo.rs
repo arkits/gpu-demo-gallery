@@ -28,6 +28,7 @@ pub const BUTTONS: &[(&str, &str)] = &[
     ("l", "Nefertiti low kick"),
     ("u", "Nefertiti block"),
     ("f", "Fog"),
+    ("r", "Restart"),
 ];
 
 /// `fight.exe` is read for the two move tables; nothing else of it.
@@ -37,8 +38,9 @@ pub const SOUNDS: &[&str] = &[];
 
 const RATE: f64 = 60.0;
 
-/// Input slots `0x401ff0` reads: jump, forward, back, block, low kick,
-/// high kick, punch.
+/// Input slots `0x401ff0` reads, as `0x402970` fills them from key.dat's
+/// GCI bits: 0 up (jump), 1 down, 2 right, 3 left, 4 a reset on letting go
+/// of R, 6 A (block), 8 B (punch), 10 C (high kick), 11 D (low kick).
 #[derive(Clone, Copy, Default)]
 struct Pad([bool; 12]);
 
@@ -55,6 +57,11 @@ struct Fighter {
     state: usize,
     frame: u32,
     x: f32,
+    /// Bounding-sphere radius of each animation child (`0x401000`).
+    radius: Vec<f32>,
+    /// Starts at 1; each hit taken costs 0.1 (`0x402650`). Nothing shows it.
+    health: f32,
+    start: f32,
     pad: Pad,
     last: Pad,
     /// Pressed since the last tick, and of those, already let go: a tap
@@ -96,9 +103,22 @@ impl Fighter {
         {
             return Err("fight.exe move table out of range".into());
         }
+        let radius = a
+            .group
+            .children
+            .iter()
+            .map(|&c| {
+                bof.get(c)
+                    .and_then(Object::node)
+                    .map_or(0.0, |n| n.sphere[3])
+            })
+            .collect();
         Ok(Self {
             anim,
             shadow,
+            radius,
+            health: 1.0,
+            start: x,
             count: a.group.children.len(),
             horizontal,
             body,
@@ -133,23 +153,55 @@ impl Fighter {
         Vec3::new(f(0), f(4), f(8))
     }
 
+    /// Back to the opening stance (`0x402700`, `0x402730`).
+    fn reset(&mut self) {
+        self.state = 0;
+        self.frame = self.moves[0][0];
+        self.x = self.start;
+        self.health = 1.0;
+    }
+
+    /// What a move is doing at this frame (`0x4025a0`): 0 striking (an
+    /// attack from its contact frame on), 1 reeling from a hit, 2 neither,
+    /// 3 blocking.
+    fn kind(&self) -> u8 {
+        match self.state {
+            1 | 2 | 6 | 9 if self.moves[self.state][1] <= self.frame => 0,
+            3 | 4 | 5 | 10 => 1,
+            11 => 3,
+            _ => 2,
+        }
+    }
+
+    /// Reels from the other's attack (`0x402630`, `0x402650`): hit by the
+    /// low kick (1), high kick (2) or punch.
+    fn hit_by(&mut self, attack: usize) {
+        self.state = match attack {
+            1 => 3,
+            2 => 4,
+            _ => 5,
+        };
+        self.frame = self.moves[self.state][0];
+        self.health -= 0.1;
+    }
+
     /// One frame of the move machine (`0x401ff0`). Moves 1, 2 and 6 start
-    /// on a fresh press the other fighter is not also making; 7 walks, 8
-    /// jumps, 11 holds a block.
-    fn tick(&mut self, bof: &Bof, other: Pad) {
+    /// on a fresh press; 7 walks, 8 jumps, 11 holds a block; 3 to 5 are hit
+    /// reactions that play through.
+    fn tick(&mut self, bof: &Bof) {
         let p = self.pad.0;
-        let fresh = |i: usize| p[i] && !self.last.0[i] && !other.0[i];
+        let fresh = |i: usize| p[i] && !self.last.0[i];
         let m = self.moves[self.state];
         let travel = |s: &Self, from: u32, to: u32| s.step(bof, to).x - s.step(bof, from).x;
         let mut go = None;
         match self.state {
+            7 if p[0] => go = Some(8),
             0 | 7 if fresh(11) => go = Some(1),
             0 | 7 if fresh(10) => go = Some(2),
             0 | 7 if fresh(8) => go = Some(6),
             0 if p[2] || p[3] => go = Some(7),
             0 if p[6] => go = Some(11),
             0 if p[0] => go = Some(8),
-            7 if p[0] => go = Some(8),
             0 => {
                 self.frame += 1;
                 if self.frame > m[2] {
@@ -233,6 +285,53 @@ impl Fighter {
         let s = self.child(bof, self.frame, self.body);
         Vec3::new(self.x + s.x, s.y, s.z)
     }
+
+    /// Whether any part's bounding sphere meets one of the other's
+    /// (`0x401000`).
+    fn touches(&self, other: &Self, bof: &Bof) -> bool {
+        let at = |f: &Self, i: usize| f.child(bof, f.frame, i) + Vec3::X * f.x;
+        (0..self.count).any(|i| {
+            let p = at(self, i);
+            (0..other.count).any(|j| {
+                let reach = self.radius[i] + other.radius[j];
+                p.distance_squared(at(other, j)) < reach * reach
+            })
+        })
+    }
+}
+
+/// When the two touch (`0x4023f0`, called with Nefertiti first): a strike
+/// on a fighter who is neither striking, reeling nor blocking makes them
+/// reel, and they are pushed a unit apart, or only one of them moves.
+fn clash(b: &mut Fighter, a: &mut Fighter) {
+    let (kb, ka) = (b.kind(), a.kind());
+    let (sb, sa) = (b.state, a.state);
+    let (move_b, move_a) = match (kb, ka) {
+        (0, 0) => {
+            b.hit_by(sa);
+            a.hit_by(sb);
+            (true, true)
+        }
+        (0, 2) => {
+            a.hit_by(sb);
+            (false, true)
+        }
+        (0, _) => (false, true),
+        (2, 0) => {
+            b.hit_by(sa);
+            (true, false)
+        }
+        (_, 0) => (true, false),
+        _ => (true, true),
+    };
+    if !move_b {
+        b.x -= 1.0;
+    } else if move_a {
+        b.x += 1.0;
+        a.x -= 1.0;
+    } else {
+        b.x += 1.0;
+    }
 }
 
 /// A critically damped follower: `0x401a70` and `0x401bb0` keep a velocity,
@@ -297,7 +396,10 @@ impl Demo {
             bof,
             pictures: Pictures::default(),
             target: Spring::default(),
-            eye: Spring::default(),
+            eye: Spring {
+                at: Vec3::new(0.0, 4000.0, 0.0),
+                ..Spring::default()
+            },
             fog: false,
             wireframe: false,
             due: 0.0,
@@ -305,26 +407,52 @@ impl Demo {
         })
     }
 
+    /// The opening: both fighters in place, the camera springs at rest and
+    /// the eye 4000 above the floor, so the view drops in (`0x4013c0`,
+    /// `0x4019c0`).
+    fn reset(&mut self) {
+        for f in &mut self.fighters {
+            f.reset();
+        }
+        self.target = Spring::default();
+        self.eye = Spring {
+            at: Vec3::new(0.0, 4000.0, 0.0),
+            ..Spring::default()
+        };
+    }
+
     fn tick(&mut self) {
+        // Letting go of R starts the fight again (`0x401410`).
+        if self.fighters[0].pad.0[4] {
+            self.fighters[0].pad.0[4] = false;
+            self.reset();
+        }
         let [a, b] = &mut self.fighters;
-        let (pa, pb) = (a.pad, b.pad);
-        b.tick(&self.bof, pa);
-        a.tick(&self.bof, pb);
+        if a.touches(b, &self.bof) {
+            clash(b, a);
+        }
+        b.tick(&self.bof);
+        a.tick(&self.bof);
         // The camera looks between them, ten below their middle, and stands
         // off by seven times their separation (`0x401a70`, `0x401bb0`).
         let (wa, wb) = (a.world(&self.bof), b.world(&self.bof));
         let mid = (wa + wb) * 0.5;
         self.target
             .pull(Vec3::new(mid.x, mid.y - 10.0, mid.z), 0.09, 0.7);
-        let low = mid.y - 5.0;
+        // The eye (`0x401bb0`) takes Nefertiti's body through Anubis's
+        // child index, and stands off from that pair's middle: sideways by
+        // seven times her height above it, back by seven times their spread.
+        let nb = b.child(&self.bof, b.frame, a.body) + Vec3::X * b.x;
+        let m = (wa + nb) * 0.5;
+        let low = m.y - 5.0;
         let mut up = 30.0 - self.target.at.y;
         if self.target.at.y < 30.0 {
             up *= 15.0;
         }
         let eye = Vec3::new(
-            (wa.y - low) * 7.0 + mid.x - 10.0,
+            (nb.y - low) * 7.0 + m.x - 10.0,
             up + 30.0,
-            (wb.x - mid.x) * 7.0 + mid.z,
+            (wa.x - m.x) * 7.0 + m.z,
         );
         self.eye.pull(eye, 0.1, 0.55);
         self.frames += 1;
@@ -354,20 +482,31 @@ impl Demo {
         // The README's keys: Anubis on the arrows and keypad, Nefertiti on
         // letters.
         let (who, slot) = match key {
+            // key.dat: arrows GCI_*_4 and keypad GCI_*_2 for Anubis,
+            // letters GCI_*_1 for Nefertiti; A to D are block, punch, high
+            // kick and low kick (`0x402970`).
             "ArrowUp" => (0, 0),
+            "ArrowDown" => (0, 1),
             "ArrowRight" => (0, 2),
             "ArrowLeft" => (0, 3),
             "7" => (0, 6),
-            "6" => (0, 8),
+            "8" => (0, 8),
             "9" => (0, 10),
-            "8" => (0, 11),
+            "6" => (0, 11),
             "w" | "W" => (1, 0),
-            "a" | "A" => (1, 2),
-            "s" | "S" => (1, 3),
+            "s" | "S" => (1, 2),
+            "a" | "A" => (1, 3),
             "u" | "U" => (1, 6),
-            "l" | "L" => (1, 8),
+            "i" | "I" => (1, 8),
             "o" | "O" => (1, 10),
-            "i" | "I" => (1, 11),
+            "l" | "L" => (1, 11),
+            // R (GCI_START_1) restarts the fight when let go.
+            "r" | "R" => {
+                if !down {
+                    self.fighters[0].pad.0[4] = true;
+                }
+                return true;
+            }
             "f" | "F" => {
                 if down {
                     self.fog = !self.fog;
@@ -397,8 +536,8 @@ impl Demo {
     pub fn report(&self) -> String {
         let [a, b] = &self.fighters;
         format!(
-            "anubis {} {} x {:.0} nefertiti {} {} x {:.0} frame {}",
-            a.state, a.frame, a.x, b.state, b.frame, b.x, self.frames
+            "anubis {} {} x {:.0} health {:.1} nefertiti {} {} x {:.0} health {:.1} frame {}",
+            a.state, a.frame, a.x, a.health, b.state, b.frame, b.x, b.health, self.frames
         )
     }
 

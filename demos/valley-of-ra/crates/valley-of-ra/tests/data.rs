@@ -65,9 +65,10 @@ fn taps_between_ticks_count() {
     run(&mut demo, 1.0 / 60.0);
     let r = demo.report();
     assert!(
-        r.starts_with("anubis 1 ") && r.contains("nefertiti 2 "),
+        r.starts_with("anubis 6 ") && r.contains("nefertiti 2 "),
         "{r}"
     );
+    // Keypad 8 is B, the punch (move 6); o is C, the high kick (move 2).
     // A held key is not dropped: block stays in move 11 until let go.
     run(&mut demo, 3.0);
     demo.key("u", true);
@@ -76,4 +77,48 @@ fn taps_between_ticks_count() {
     demo.key("u", false);
     run(&mut demo, 1.0);
     assert!(demo.report().contains("nefertiti 0 "), "{}", demo.report());
+}
+
+/// Anubis walks into Nefertiti, shoving her, and his punch makes her reel
+/// (`0x401000`, `0x4023f0`); R puts them back.
+#[test]
+fn punches_land() {
+    use valley_of_ra::demo::{Demo, PROGRAMS, SHADER};
+    use valley_of_ra::gl::{COLOR, Gl, Gpu};
+    let Some(dir) = data() else { return };
+    let files = Files::from_path(&dir).unwrap();
+    let gpu = Gpu::headless().expect("a GPU");
+    let mut gl = Gl::new(&gpu, SHADER, PROGRAMS, COLOR);
+    let mut demo = Demo::new(&gpu, &mut gl, &files).unwrap();
+    let run = |demo: &mut Demo, ticks: usize| {
+        for _ in 0..ticks {
+            demo.step(1.0 / 60.0);
+        }
+    };
+    let x = |r: &str, who: &str| -> f32 {
+        let r = &r[r.find(who).unwrap()..];
+        r.split(' ').nth(4).unwrap().parse().unwrap()
+    };
+    demo.key("ArrowRight", true);
+    run(&mut demo, 300);
+    demo.key("ArrowRight", false);
+    run(&mut demo, 10);
+    let r = demo.report();
+    assert!(x(&r, "nefertiti") > -27.0, "she was pushed: {r}");
+    demo.key("8", true);
+    demo.key("8", false);
+    run(&mut demo, 20);
+    let r = demo.report();
+    assert!(
+        r.contains("nefertiti 5 ") && r.contains("health 0.9 frame"),
+        "{r}"
+    );
+    demo.key("r", true);
+    demo.key("r", false);
+    run(&mut demo, 1);
+    let r = demo.report();
+    assert!(
+        r.contains("x -50 health 1.0 nefertiti 0") && r.contains("x -27 health 1.0"),
+        "{r}"
+    );
 }
