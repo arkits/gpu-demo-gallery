@@ -115,8 +115,9 @@ impl Curve {
             _ => return None,
         };
         Some(Curve {
-            start: n.float("startTime").unwrap_or(0.0) as f64,
-            stop: n.float("stopTime").unwrap_or(0.0) as f64,
+            // Doubles in the file (`MayaCurve` +0x28, +0x30).
+            start: n.double("startTime").unwrap_or(0.0),
+            stop: n.double("stopTime").unwrap_or(0.0),
             pre: n.int("preStart").unwrap_or(0),
             post: n.int("postStop").unwrap_or(0),
             method: n.int("interpMethod").unwrap_or(1),
